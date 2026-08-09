@@ -1,5 +1,3 @@
-//go:build !localtest
-
 package githubrunner
 
 import (
