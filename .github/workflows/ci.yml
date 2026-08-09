@@ -14,6 +14,7 @@ jobs:
           go-version: '1.23.x'
           cache: true
       - run: go test ./...
+      - run: go test -tags localtest ./tests/soak -count=1
       - run: go vet ./...
   scaleset:
     runs-on: ubuntu-latest
