@@ -6,15 +6,33 @@ RunnerHub treats workflow code as arbitrary code with the privileges of its work
 
 - `container-trusted`: disposable Docker/TrueNAS worker for trusted private repositories. No published ports and no host Docker socket by default.
 - `host-persistent`: compatibility mode for trusted special hardware, macOS, or Windows using the process provider.
-- `microvm`: Firecracker/KVM worker. The provider creates a fresh writable rootfs and a separate read-only seed disk containing only the short-lived JIT configuration.
+- `microvm`: Firecracker/KVM worker. The provider creates a fresh writable rootfs, per-worker TAP interface, and separate read-only seed disk containing only the short-lived JIT configuration.
 - `vm-provider`: provider-created VM, currently Proxmox, bootstrapped with a generated cloud-init snippet containing only the JIT configuration.
 
-Public/untrusted workflows are denied by default and should remain disabled until the microVM/VM path has received a dedicated security review.
+Public/untrusted workflows are denied by default and should remain disabled until the microVM/VM path has received a dedicated live security review.
+
+## GitHub assignment boundary
+
+A RunnerHub pool is not considered safe merely because its local configuration contains an allowlist. GitHub runner groups are the assignment boundary for organization-scoped runners. RunnerHub inspects the actual GitHub runner-group visibility, public-repository setting, selected repositories, and workflow restrictions before creating or using a pool.
+
+Repository-scoped pools may be used for trusted private repositories. RunnerHub does not claim that a repository-scoped local workflow allowlist is enforceable at GitHub's runner assignment boundary; use an organization pool with a workflow-restricted runner group when workflow-specific access control is required.
 
 ## Credentials
 
-Long-lived GitHub App credentials remain in the control plane. Workers receive only JIT configuration. Enrollment tokens bootstrap per-host HMAC identities; API keys are hashed in memory before comparison. Secret-bearing files are created mode `0600` and are deleted with the worker lifecycle.
+Long-lived GitHub App credentials remain in the control plane. Workers receive only JIT configuration.
+
+The global enrollment token is a bootstrap credential. After first enrollment, the agent persists only its rotating per-host token in an owner-only credential file and can restart without the enrollment token. Per-host tokens expire and are refreshed during normal heartbeats.
+
+Durable create commands must briefly retain JIT material while an agent is offline. RunnerHub encrypts those command payloads with AEAD using a key derived from the control-plane agent secret, decrypts them only for delivery to the authenticated host, scrubs the stored payload after acknowledgment, and prunes old acknowledged rows.
+
+API keys are hashed in memory before comparison. Trusted identity headers are accepted only from a loopback reverse proxy. A control plane bound beyond loopback requires native TLS unless the operator deliberately enables the insecure-HTTP override for a separately protected network.
 
 ## Privilege
 
-The Docker provider does not publish ports or mount `/var/run/docker.sock`. Privileged capabilities require a future explicit profile/policy. Container isolation is not described as equivalent to a VM security boundary.
+The Docker provider does not publish ports or mount `/var/run/docker.sock`. `no-new-privileges` is enabled and workers receive explicit CPU/memory/workdir limits. Privileged capabilities require a future explicit profile/policy. Container isolation is not described as equivalent to a VM security boundary.
+
+Firecracker and Proxmox remain experimental until their target-host firewall, guest image/template, storage, teardown and privilege assumptions have been validated on real infrastructure.
+
+## Diagnostics
+
+GitHub recommends preserving ephemeral-runner diagnostics externally. RunnerHub currently centralizes lifecycle/audit/health metadata but intentionally does **not** ingest workflow stdout or runner diagnostic files by default because those streams can contain job secrets or sensitive build output. A future diagnostics sink should be explicit, capped, separately retained and reviewed for secret handling.
