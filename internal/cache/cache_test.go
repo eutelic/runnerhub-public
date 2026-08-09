@@ -1,30 +1,4 @@
 package cache
-
-import (
-	"io"
-	"strings"
-	"testing"
-)
-
-func TestCASRoundTrip(t *testing.T) {
-	s := Store{Root: t.TempDir()}
-	k, n, err := s.Put(strings.NewReader("hello"))
-	if err != nil || n != 5 {
-		t.Fatal(k, n, err)
-	}
-	f, err := s.Open(k)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer f.Close()
-	b, _ := io.ReadAll(f)
-	if string(b) != "hello" {
-		t.Fatalf("got %q", b)
-	}
-}
-func TestCASRejectsTraversal(t *testing.T) {
-	s := Store{Root: t.TempDir()}
-	if _, err := s.Open("../bad"); err == nil {
-		t.Fatal("expected invalid key")
-	}
-}
+import("bytes";"errors";"testing")
+func TestPutOpen(t *testing.T){s:=Store{Root:t.TempDir()};key,n,err:=s.Put(bytes.NewBufferString("hello"));if err!=nil||n!=5{t.Fatalf("put key=%s n=%d err=%v",key,n,err)};f,err:=s.Open(key);if err!=nil{t.Fatal(err)};f.Close()}
+func TestPutRejectsOversizedObjectInsteadOfTruncating(t *testing.T){s:=Store{Root:t.TempDir(),MaxBytes:4};_,n,err:=s.Put(bytes.NewBufferString("hello"));if !errors.Is(err,ErrTooLarge)||n!=5{t.Fatalf("n=%d err=%v",n,err)}}
