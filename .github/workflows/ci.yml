@@ -12,9 +12,7 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: '1.23.x'
-          cache: false
-      - run: go mod tidy
-      - run: cat go.mod
+          cache: true
       - run: go test ./...
       - run: go vet ./...
   scaleset:
@@ -27,8 +25,6 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: '1.25.x'
-          cache: false
-      - run: go mod tidy
-      - run: cat go.mod
+          cache-dependency-path: scaleset/go.sum
       - run: go test ./...
       - run: go vet ./...
