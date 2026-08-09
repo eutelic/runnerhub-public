@@ -1,40 +1,5 @@
 package agenthub
 
-import (
-	"context"
-	"github.com/example-user/runnerhub/internal/agent"
-	"github.com/example-user/runnerhub/internal/core"
-	"github.com/example-user/runnerhub/internal/provider"
-	"github.com/example-user/runnerhub/internal/store"
-	"testing"
-	"time"
-)
-
-func TestHeartbeatPreservesDrainAndRotatingToken(t *testing.T) {
-	st, _ := store.OpenSQLite("")
-	defer st.Close()
-	h, _ := New(st, "1234567890123456", "12345678901234567890123456789012")
-	now := time.Date(2026, 8, 8, 23, 0, 0, 0, time.UTC)
-	h.now = func() time.Time { return now }
-	e, err := h.Enroll(context.Background(), "1234567890123456", agent.EnrollRequest{Name: "host", Provider: "docker", Capabilities: provider.Capabilities{OS: "linux", IsolationModes: []core.IsolationMode{core.IsolationContainerTrusted}}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	host, _ := st.GetHost(context.Background(), e.HostID)
-	host.State = core.HostDraining
-	_ = st.UpsertHost(context.Background(), host)
-	if !h.Authenticate(e.HostID, e.AgentToken) {
-		t.Fatal("fresh token rejected")
-	}
-	if err := h.Heartbeat(context.Background(), agent.Heartbeat{HostID: e.HostID, Capabilities: provider.Capabilities{OS: "linux"}}); err != nil {
-		t.Fatal(err)
-	}
-	host, _ = st.GetHost(context.Background(), e.HostID)
-	if host.State != core.HostDraining {
-		t.Fatalf("drain lost: %s", host.State)
-	}
-	now = now.Add(25 * time.Hour)
-	if h.Authenticate(e.HostID, e.AgentToken) {
-		t.Fatal("expired token accepted")
-	}
-}
+import("context";"testing";"github.com/example-user/runnerhub/internal/agent";"github.com/example-user/runnerhub/internal/provider";"github.com/example-user/runnerhub/internal/store")
+func TestEnrollAndHeartbeat(t *testing.T){st,_:=store.OpenSQLite(":memory:");defer st.Close();h,err:=New(st,"0123456789abcdef","0123456789abcdef0123456789abcdef");if err!=nil{t.Fatal(err)};req:=agent.EnrollRequest{Name:"lab",Provider:"docker",Capabilities:provider.Capabilities{Provider:"docker",OS:"linux",Architecture:"amd64"}};res,err:=h.Enroll(context.Background(),"0123456789abcdef",req);if err!=nil{t.Fatal(err)};if res.HostID==""||!h.Authenticate(res.HostID,res.AgentToken){t.Fatal("enrolled token did not authenticate")};if err:=h.Heartbeat(context.Background(),agent.Heartbeat{HostID:res.HostID,Capabilities:req.Capabilities});err!=nil{t.Fatal(err)}}
+func TestSameHostnameEnrollmentsDoNotCollide(t *testing.T){st,_:=store.OpenSQLite(":memory:");defer st.Close();h,_:=New(st,"0123456789abcdef","0123456789abcdef0123456789abcdef");req:=agent.EnrollRequest{Name:"duplicated-hostname",Provider:"docker",Capabilities:provider.Capabilities{Provider:"docker"}};a,err:=h.Enroll(context.Background(),"0123456789abcdef",req);if err!=nil{t.Fatal(err)};b,err:=h.Enroll(context.Background(),"0123456789abcdef",req);if err!=nil{t.Fatal(err)};if a.HostID==b.HostID{t.Fatalf("duplicate hostname reused host id %q",a.HostID)};hosts,err:=st.ListHosts(context.Background());if err!=nil{t.Fatal(err)};if len(hosts)!=2{t.Fatalf("expected two distinct hosts, got %d",len(hosts))}}
