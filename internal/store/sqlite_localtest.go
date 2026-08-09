@@ -2,13 +2,7 @@
 
 package store
 
-import (
-	"context"
-	"sync"
-	"time"
-	"github.com/example-user/runnerhub/internal/agent"
-	"github.com/example-user/runnerhub/internal/core"
-)
+import("context";"sync";"time";"github.com/example-user/runnerhub/internal/agent";"github.com/example-user/runnerhub/internal/core")
 type SQLite struct{mu sync.Mutex;hosts map[string]core.Host;pools map[string]core.RunnerPool;workers map[string]core.Worker;audit []core.AuditEvent;commands map[string]CommandRecord}
 func OpenSQLite(string)(*SQLite,error){return &SQLite{hosts:map[string]core.Host{},pools:map[string]core.RunnerPool{},workers:map[string]core.Worker{},commands:map[string]CommandRecord{}},nil}
 func(s *SQLite)Close()error{return nil}
@@ -26,4 +20,4 @@ func(s *SQLite)ListAudit(_ context.Context,limit int)([]core.AuditEvent,error){s
 func(s *SQLite)EnqueueCommand(_ context.Context,hostID string,c agent.Command)error{s.mu.Lock();defer s.mu.Unlock();for _,rec:=range s.commands{if rec.AckedAt.IsZero()&&rec.HostID==hostID&&rec.Command.WorkerID==c.WorkerID&&rec.Command.Type==c.Type{return nil}};s.commands[c.ID]=CommandRecord{HostID:hostID,Command:c};return nil}
 func(s *SQLite)LeaseCommands(_ context.Context,hostID string,now,leaseUntil time.Time,limit int)([]agent.Command,error){s.mu.Lock();defer s.mu.Unlock();if limit<=0{limit=20};var out []agent.Command;for id,rec:=range s.commands{if len(out)>=limit||rec.HostID!=hostID||!rec.AckedAt.IsZero()||(!rec.LeaseUntil.IsZero()&&rec.LeaseUntil.After(now)){continue};rec.LeaseUntil=leaseUntil;rec.Attempts++;s.commands[id]=rec;out=append(out,rec.Command)};return out,nil}
 func(s *SQLite)GetCommand(_ context.Context,id string)(CommandRecord,error){s.mu.Lock();defer s.mu.Unlock();v,ok:=s.commands[id];if !ok{return CommandRecord{},ErrNotFound};return v,nil}
-func(s *SQLite)AckCommand(_ context.Context,id string,at time.Time)error{s.mu.Lock();defer s.mu.Unlock();v,ok:=s.commands[id];if !ok{return ErrNotFound};if v.AckedAt.IsZero(){v.AckedAt=at;v.LeaseUntil=time.Time{};s.commands[id]=v};return nil}
+func(s *SQLite)AckCommand(_ context.Context,id string,at time.Time)error{s.mu.Lock();defer s.mu.Unlock();v,ok:=s.commands[id];if !ok{return ErrNotFound};if v.AckedAt.IsZero(){v.AckedAt=at;v.LeaseUntil=time.Time{};v.Command.Spec=nil;v.Command.Handle=nil;s.commands[id]=v};return nil}
