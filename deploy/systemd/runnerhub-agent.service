@@ -1,18 +1,21 @@
 [Unit]
-Description=RunnerHub host agent
+Description=RunnerHub Agent
 After=network-online.target docker.service
 Wants=network-online.target
 
 [Service]
 Type=simple
-EnvironmentFile=/etc/runnerhub/agent.env
+EnvironmentFile=-/etc/runnerhub/agent.env
 ExecStart=/usr/local/bin/runnerhub-agent
-Restart=on-failure
-RestartSec=5
+Restart=always
+RestartSec=3
+StateDirectory=runnerhub
+User=root
 NoNewPrivileges=true
-ProtectSystem=strict
-ReadWritePaths=/var/lib/runnerhub /run /tmp
 PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/runnerhub
 
 [Install]
 WantedBy=multi-user.target
