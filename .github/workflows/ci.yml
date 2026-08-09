@@ -43,3 +43,25 @@ jobs:
           go-version: '1.26.x'
           cache: true
       - run: GOOS=${{ matrix.goos }} GOARCH=amd64 CGO_ENABLED=0 go build ./cmd/runnerhub-agent
+  container-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build --target control -f deploy/docker/Dockerfile -t runnerhub-control:test .
+      - name: Boot control plane with fresh persistent volume
+        run: |
+          set -euo pipefail
+          volume="runnerhub-ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          container="runnerhub-ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          cleanup() { docker rm -f "$container" >/dev/null 2>&1 || true; docker volume rm "$volume" >/dev/null 2>&1 || true; }
+          trap cleanup EXIT
+          docker volume create "$volume" >/dev/null
+          docker run -d --name "$container" -p 18080:8080 -v "$volume:/data" \
+            -e RUNNERHUB_HTTP_ADDR=0.0.0.0:8080 \
+            -e RUNNERHUB_ALLOW_INSECURE_HTTP=true \
+            -e RUNNERHUB_DB=/data/runnerhub.db \
+            -e RUNNERHUB_ENROLLMENT_TOKEN=ci-enrollment-secret \
+            -e RUNNERHUB_AGENT_SECRET=ci-agent-secret-that-is-more-than-32-bytes \
+            runnerhub-control:test >/dev/null
+          curl --fail --retry 20 --retry-delay 1 --retry-connrefused http://127.0.0.1:18080/healthz
+          docker exec "$container" test -f /data/runnerhub.db
