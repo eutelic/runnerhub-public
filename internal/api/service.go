@@ -1,189 +1,53 @@
 package api
 
-import (
-	"context"
-	"crypto/rand"
-	"encoding/base64"
-	"encoding/json"
-	"errors"
-	"fmt"
-	"github.com/example-user/runnerhub/internal/agent"
-	"github.com/example-user/runnerhub/internal/agenthub"
-	"github.com/example-user/runnerhub/internal/auth"
-	cachepkg "github.com/example-user/runnerhub/internal/cache"
-	"github.com/example-user/runnerhub/internal/core"
-	"github.com/example-user/runnerhub/internal/fleet"
-	"github.com/example-user/runnerhub/internal/githubrunner"
-	"github.com/example-user/runnerhub/internal/images"
-	"github.com/example-user/runnerhub/internal/policy"
-	"github.com/example-user/runnerhub/internal/provider"
-	"github.com/example-user/runnerhub/internal/scheduler"
-	"github.com/example-user/runnerhub/internal/store"
-	"github.com/example-user/runnerhub/internal/telemetry"
-	"io"
-	"net/http"
-	"strconv"
-	"strings"
-	"time"
-)
+import(
+"context";"crypto/rand";"encoding/base64";"encoding/json";"errors";"fmt";"io";"net/http";"strconv";"strings";"time";
+"github.com/example-user/runnerhub/internal/agent";"github.com/example-user/runnerhub/internal/agenthub";"github.com/example-user/runnerhub/internal/auth";cachepkg "github.com/example-user/runnerhub/internal/cache";"github.com/example-user/runnerhub/internal/core";"github.com/example-user/runnerhub/internal/fleet";"github.com/example-user/runnerhub/internal/githubrunner";"github.com/example-user/runnerhub/internal/images";"github.com/example-user/runnerhub/internal/policy";"github.com/example-user/runnerhub/internal/provider";"github.com/example-user/runnerhub/internal/scheduler";"github.com/example-user/runnerhub/internal/store";"github.com/example-user/runnerhub/internal/telemetry")
 
-type Service struct {
-	Store store.Store
-	GitHub githubrunner.Backend
-	Catalog githubrunner.Catalog
-	Hub *agenthub.Hub
-	Scheduler scheduler.Scheduler
-	Policy policy.Engine
-	Metrics *telemetry.Metrics
-	EnrollmentToken string
-	Auth *auth.Manager
-	Cache *cachepkg.Store
-	Static http.Handler
-}
-
-func (s *Service) Handler() http.Handler {
-	m := http.NewServeMux()
-	m.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, 200, map[string]string{"status":"ok"}) })
-	m.HandleFunc("POST /api/v1/agent/enroll", s.enroll)
-	m.HandleFunc("POST /api/v1/agent/heartbeat", s.heartbeat)
-	m.HandleFunc("GET /api/v1/agent/commands", s.commands)
-	m.HandleFunc("POST /api/v1/agent/results", s.results)
-	m.HandleFunc("GET /api/v1/hosts", s.hosts)
-	m.HandleFunc("POST /api/v1/hosts/{id}/drain", s.drain)
-	m.HandleFunc("PATCH /api/v1/hosts/{id}", s.updateHost)
-	m.HandleFunc("POST /api/v1/hosts/drain", s.bulkDrain)
-	m.HandleFunc("GET /api/v1/pools", s.pools)
-	m.HandleFunc("POST /api/v1/pools", s.createPool)
-	m.HandleFunc("PUT /api/v1/pools/{id}/image", s.updatePoolImage)
-	m.HandleFunc("GET /api/v1/pools/{id}/health", s.poolHealth)
-	m.HandleFunc("GET /api/v1/pools/{id}/recommendation", s.poolRecommendation)
-	m.HandleFunc("GET /api/v1/workers", s.workers)
-	m.HandleFunc("POST /api/v1/pools/{id}/workers", s.createWorker)
-	m.HandleFunc("POST /api/v1/pools/{id}/scale-workers", s.createScaleWorker)
-	m.HandleFunc("POST /api/v1/scale-events", s.scaleEvent)
-	m.HandleFunc("GET /api/v1/audit", s.audit)
-	m.HandleFunc("GET /api/v1/metrics", s.metrics)
-	m.HandleFunc("GET /api/v1/fleet/versions", s.versions)
-	m.HandleFunc("POST /api/v1/cost/estimate", s.costEstimate)
-	m.HandleFunc("PUT /api/v1/cache", s.cachePut)
-	m.HandleFunc("GET /api/v1/cache/{key}", s.cacheGet)
-	m.HandleFunc("GET /api/v1/github/repositories", s.repositories)
-	m.HandleFunc("GET /api/v1/github/runner-groups", s.runnerGroups)
-	if s.Static != nil { m.Handle("/", s.Static) }
-	h := securityHeaders(m)
-	if s.Auth != nil { h = s.Auth.Middleware(h) }
-	return h
-}
-func (s *Service) enroll(w http.ResponseWriter, r *http.Request) {
-	var in agent.EnrollRequest
-	if !decode(w,r,&in) { return }
-	res, err := s.Hub.Enroll(r.Context(), bearer(r), in)
-	if err != nil { problem(w,401,err); return }
-	writeJSON(w,201,res)
-}
-func (s *Service) heartbeat(w http.ResponseWriter, r *http.Request) {
-	var in agent.Heartbeat
-	if !decode(w,r,&in) { return }
-	if !s.Hub.Authenticate(in.HostID,bearer(r)) { problem(w,401,errors.New("unauthorized agent")); return }
-	if err:=s.Hub.Heartbeat(r.Context(),in); err!=nil { problem(w,400,err); return }
-	w.Header().Set("X-RunnerHub-Agent-Token",s.Hub.RefreshToken(in.HostID)); w.WriteHeader(204)
-}
-func (s *Service) commands(w http.ResponseWriter, r *http.Request) {
-	id:=r.URL.Query().Get("host_id")
-	if !s.Hub.Authenticate(id,bearer(r)) { problem(w,401,errors.New("unauthorized agent")); return }
-	writeJSON(w,200,s.Hub.Next(id))
-}
-func (s *Service) results(w http.ResponseWriter, r *http.Request) {
-	var in agent.CommandResult; if !decode(w,r,&in) { return }
-	workers,_:=s.Store.ListWorkers(r.Context()); hostID:=""
-	for _,x:=range workers { if x.ID==in.WorkerID { hostID=x.HostID; break } }
-	if hostID=="" || !s.Hub.Authenticate(hostID,bearer(r)) { problem(w,401,errors.New("unauthorized agent")); return }
-	if err:=s.Hub.HandleResult(r.Context(),hostID,in); err!=nil { problem(w,400,err); return }; w.WriteHeader(204)
-}
-func (s *Service) hosts(w http.ResponseWriter,r *http.Request) { v,err:=s.Store.ListHosts(r.Context()); if err!=nil { problem(w,500,err); return }; writeJSON(w,200,v) }
-func (s *Service) drain(w http.ResponseWriter,r *http.Request) {
-	h,err:=s.Store.GetHost(r.Context(),r.PathValue("id")); if err!=nil { problem(w,404,err); return }
-	if h.State==core.HostOnline { h.State=core.HostDraining }
-	if err:=s.Store.UpsertHost(r.Context(),h); err!=nil { problem(w,500,err); return }; writeJSON(w,200,h)
-}
-type updateHostRequest struct { Name *string `json:"name,omitempty"`; Tags map[string]string `json:"tags,omitempty"`; State *core.HostState `json:"state,omitempty"` }
-func (s *Service) updateHost(w http.ResponseWriter,r *http.Request) {
-	h,err:=s.Store.GetHost(r.Context(),r.PathValue("id")); if err!=nil { problem(w,404,err); return }
-	var in updateHostRequest; if !decode(w,r,&in) { return }
-	if in.Name!=nil && strings.TrimSpace(*in.Name)!="" { h.Name=strings.TrimSpace(*in.Name) }
-	if in.Tags!=nil { h.Tags=in.Tags }
-	if in.State!=nil { if !core.CanTransitionHost(h.State,*in.State) { problem(w,409,fmt.Errorf("invalid host transition %s -> %s",h.State,*in.State)); return }; h.State=*in.State }
-	if err:=s.Store.UpsertHost(r.Context(),h); err!=nil { problem(w,500,err); return }
-	_=s.Store.AppendAudit(r.Context(),core.AuditEvent{Actor:actor(r.Context()),Action:"update_host",ResourceType:"host",ResourceID:h.ID,Result:"ok"}); writeJSON(w,200,h)
-}
-func (s *Service) bulkDrain(w http.ResponseWriter,r *http.Request) {
-	hosts,err:=s.Store.ListHosts(r.Context()); if err!=nil { problem(w,500,err); return }; n:=0
-	for _,h:=range hosts { if h.State==core.HostOnline { h.State=core.HostDraining; if s.Store.UpsertHost(r.Context(),h)==nil { n++ } } }
-	_=s.Store.AppendAudit(r.Context(),core.AuditEvent{Actor:actor(r.Context()),Action:"bulk_drain",ResourceType:"host",Result:"ok",SafeDetail:fmt.Sprintf("%d hosts",n)}); writeJSON(w,200,map[string]int{"drained":n})
-}
-type imageUpdateRequest struct { Image string `json:"image"`; RequireDigest bool `json:"requireDigest"` }
-func (s *Service) updatePoolImage(w http.ResponseWriter,r *http.Request) {
-	p,err:=s.Store.GetPool(r.Context(),r.PathValue("id")); if err!=nil { problem(w,404,err); return }
-	var in imageUpdateRequest; if !decode(w,r,&in) { return }
-	if in.RequireDigest { if err:=images.ValidatePinned(in.Image); err!=nil { problem(w,400,err); return } }
-	p.Image=strings.TrimSpace(in.Image); if err:=core.ValidateRunnerPool(p); err!=nil { problem(w,400,err); return }
-	if err:=s.Store.UpsertPool(r.Context(),p); err!=nil { problem(w,500,err); return }
-	_=s.Store.AppendAudit(r.Context(),core.AuditEvent{Actor:actor(r.Context()),Action:"update_pool_image",ResourceType:"pool",ResourceID:p.ID,Result:"ok",SafeDetail:p.Image}); writeJSON(w,200,p)
-}
-func (s *Service) poolHealth(w http.ResponseWriter,r *http.Request) {
-	p,err:=s.Store.GetPool(r.Context(),r.PathValue("id")); if err!=nil { problem(w,404,err); return }; hosts,err:=s.Store.ListHosts(r.Context()); if err!=nil { problem(w,500,err); return }; workers,err:=s.Store.ListWorkers(r.Context()); if err!=nil { problem(w,500,err); return }; writeJSON(w,200,fleet.PoolHealth(p,hosts,workers,time.Now().UTC()))
-}
-func (s *Service) poolRecommendation(w http.ResponseWriter,r *http.Request) {
-	p,err:=s.Store.GetPool(r.Context(),r.PathValue("id")); if err!=nil { problem(w,404,err); return }; snap:=telemetry.Snapshot{}; if s.Metrics!=nil { snap=s.Metrics.Snapshot() }; avg:=time.Duration(0); if snap.QueueSamples>0 { avg=snap.QueueTotal/time.Duration(snap.QueueSamples) }
-	workers,_:=s.Store.ListWorkers(r.Context()); active,busy:=0,0; for _,wk:=range workers { if wk.PoolID!=p.ID || wk.State==core.WorkerDeleted { continue }; active++; if wk.State==core.WorkerBusy { busy++ } }; util:=0.0; if active>0 { util=float64(busy)/float64(active) }; writeJSON(w,200,map[string]any{"current":p.MaxConcurrency,"recommended":telemetry.RecommendConcurrency(avg,util,p.MaxConcurrency),"averageQueue":avg.String(),"utilization":util})
-}
-func (s *Service) versions(w http.ResponseWriter,r *http.Request) { hosts,err:=s.Store.ListHosts(r.Context()); if err!=nil { problem(w,500,err); return }; workers,err:=s.Store.ListWorkers(r.Context()); if err!=nil { problem(w,500,err); return }; pools,_:=s.Store.ListPools(r.Context()); writeJSON(w,200,map[string]any{"fleet":fleet.Versions(hosts,workers),"images":images.Inventory(pools,workers)}) }
-func (s *Service) costEstimate(w http.ResponseWriter,r *http.Request) { var in telemetry.CostInput; if !decode(w,r,&in) { return }; writeJSON(w,200,telemetry.EstimateCost(in)) }
-func (s *Service) cachePut(w http.ResponseWriter,r *http.Request) { if s.Cache==nil { problem(w,503,errors.New("cache is not configured")); return }; key,n,err:=s.Cache.Put(r.Body); if err!=nil { problem(w,500,err); return }; writeJSON(w,201,map[string]any{"key":key,"bytes":n}) }
-func (s *Service) cacheGet(w http.ResponseWriter,r *http.Request) { if s.Cache==nil { problem(w,503,errors.New("cache is not configured")); return }; f,err:=s.Cache.Open(r.PathValue("key")); if err!=nil { problem(w,404,err); return }; defer f.Close(); w.Header().Set("Content-Type","application/octet-stream"); _,_=io.Copy(w,f) }
-func (s *Service) pools(w http.ResponseWriter,r *http.Request) { v,err:=s.Store.ListPools(r.Context()); if err!=nil { problem(w,500,err); return }; writeJSON(w,200,v) }
-func (s *Service) createPool(w http.ResponseWriter,r *http.Request) { var p core.RunnerPool; if !decode(w,r,&p) { return }; if p.ID=="" { p.ID="pool-"+randomID() }; if err:=core.ValidateRunnerPool(p); err!=nil { problem(w,400,err); return }; if err:=s.Store.UpsertPool(r.Context(),p); err!=nil { problem(w,500,err); return }; _=s.Store.AppendAudit(r.Context(),core.AuditEvent{Actor:actor(r.Context()),Action:"create_pool",ResourceType:"pool",ResourceID:p.ID,Result:"ok"}); writeJSON(w,201,p) }
-func (s *Service) workers(w http.ResponseWriter,r *http.Request) { v,err:=s.Store.ListWorkers(r.Context()); if err!=nil { problem(w,500,err); return }; writeJSON(w,200,v) }
-type createWorkerRequest struct { Repository string `json:"repository"`; Workflow string `json:"workflow"`; Public bool `json:"public"` }
-func (s *Service) createWorker(w http.ResponseWriter,r *http.Request) {
-	if s.GitHub==nil { problem(w,503,errors.New("github backend is not configured")); return }
-	pool,err:=s.Store.GetPool(r.Context(),r.PathValue("id")); if err!=nil { problem(w,404,err); return }
-	var in createWorkerRequest; if !decode(w,r,&in) { return }; if in.Repository=="" && pool.Scope.Kind==core.ScopeRepository { in.Repository=pool.Scope.Owner+"/"+pool.Scope.Repository }
-	if err:=s.Policy.Evaluate(policy.Request{Pool:pool,Repository:in.Repository,Workflow:in.Workflow,Public:in.Public}); err!=nil { problem(w,403,err); return }
-	decision,err:=s.Scheduler.SelectHost(r.Context(),pool); if err!=nil { problem(w,409,err); return }
-	id:="worker-"+randomID(); runnerName:=pool.Name+"-"+strings.TrimPrefix(id,"worker-"); jit,err:=s.GitHub.GenerateJITConfig(r.Context(),githubrunner.JITConfigRequest{Scope:pool.Scope,RunnerName:runnerName,RunnerGroupID:pool.RunnerGroupID,Labels:pool.Labels}); if err!=nil { problem(w,502,err); return }
-	now:=time.Now().UTC(); worker:=core.Worker{ID:id,HostID:decision.Host.ID,PoolID:pool.ID,RunnerName:jit.RunnerName,GitHubRunnerID:jit.RunnerID,State:core.WorkerProvisioning,ProviderID:decision.Host.Provider,Scope:pool.Scope,Labels:pool.Labels,Resources:pool.Resources,Image:pool.Image,CreatedAt:now,UpdatedAt:now}
-	if err:=s.Store.UpsertWorker(r.Context(),worker); err!=nil { _=s.GitHub.DeleteRunner(r.Context(),pool.Scope,jit.RunnerID); problem(w,500,err); return }
-	spec:=provider.WorkerSpec{WorkerID:id,PoolID:pool.ID,RunnerName:jit.RunnerName,JITConfig:jit.EncodedConfig,Labels:pool.Labels,Isolation:pool.Isolation,Resources:pool.Resources,Image:pool.Image,Metadata:map[string]string{"repository":in.Repository,"workflow":in.Workflow}}
-	if err:=s.Hub.Enqueue(worker.HostID,agent.Command{Type:agent.CommandCreate,WorkerID:id,Provider:worker.ProviderID,Spec:&spec}); err!=nil { problem(w,500,err); return }
-	if s.Metrics!=nil { s.Metrics.RunnerRequested() }; _=s.Store.AppendAudit(r.Context(),core.AuditEvent{Actor:actor(r.Context()),Action:"request_worker",ResourceType:"worker",ResourceID:id,Result:"ok",SafeDetail:decision.Reason}); writeJSON(w,202,worker)
-}
-type createScaleWorkerRequest struct { RunnerName string `json:"runnerName"`; JITConfig string `json:"jitConfig"`; Repository string `json:"repository,omitempty"`; Workflow string `json:"workflow,omitempty"` }
-func (s *Service) createScaleWorker(w http.ResponseWriter,r *http.Request) {
-	pool,err:=s.Store.GetPool(r.Context(),r.PathValue("id")); if err!=nil { problem(w,404,err); return }; var in createScaleWorkerRequest; if !decode(w,r,&in) { return }
-	if strings.TrimSpace(in.RunnerName)=="" || strings.TrimSpace(in.JITConfig)=="" { problem(w,400,errors.New("runnerName and jitConfig are required")); return }; if in.Repository=="" && pool.Scope.Kind==core.ScopeRepository { in.Repository=pool.Scope.Owner+"/"+pool.Scope.Repository }
-	if err:=s.Policy.Evaluate(policy.Request{Pool:pool,Repository:in.Repository,Workflow:in.Workflow}); err!=nil { problem(w,403,err); return }; worker,err:=s.enqueueWorker(r.Context(),pool,in.RunnerName,0,in.JITConfig,in.Repository,in.Workflow); if err!=nil { problem(w,409,err); return }; _=s.Store.AppendAudit(r.Context(),core.AuditEvent{Actor:actor(r.Context()),Action:"scale_request_worker",ResourceType:"worker",ResourceID:worker.ID,Result:"ok"}); writeJSON(w,202,worker)
-}
-type scaleEventRequest struct { PoolID string `json:"poolId"`; RunnerName string `json:"runnerName"`; State string `json:"state"`; Detail string `json:"detail,omitempty"` }
-func (s *Service) scaleEvent(w http.ResponseWriter,r *http.Request) {
-	var in scaleEventRequest; if !decode(w,r,&in) { return }; workers,err:=s.Store.ListWorkers(r.Context()); if err!=nil { problem(w,500,err); return }; var wk *core.Worker
-	for i:=range workers { if workers[i].PoolID==in.PoolID && workers[i].RunnerName==in.RunnerName && workers[i].State!=core.WorkerDeleted { c:=workers[i]; wk=&c; break } }; if wk==nil { problem(w,404,errors.New("scale-set worker not found")); return }
-	next:=wk.State; switch strings.ToLower(strings.TrimSpace(in.State)) { case "started","busy": next=core.WorkerBusy; case "completed","canceled": next=core.WorkerCompleted; case "failed": next=core.WorkerFailed; default: problem(w,400,errors.New("unsupported scale event state")); return }
-	if next==core.WorkerBusy && wk.State==core.WorkerRegistering { wk.State=core.WorkerReady }; if wk.State!=next && !core.CanTransitionWorker(wk.State,next) { problem(w,409,fmt.Errorf("invalid worker transition %s -> %s",wk.State,next)); return }; wk.State=next; wk.UpdatedAt=time.Now().UTC(); if next==core.WorkerFailed { wk.FailureReason=truncate(in.Detail) }; if err:=s.Store.UpsertWorker(r.Context(),*wk); err!=nil { problem(w,500,err); return }; _=s.Store.AppendAudit(r.Context(),core.AuditEvent{Actor:actor(r.Context()),Action:"scale_event",ResourceType:"worker",ResourceID:wk.ID,Result:"ok",SafeDetail:truncate(in.State)}); writeJSON(w,200,wk)
-}
-func (s *Service) enqueueWorker(ctx context.Context,pool core.RunnerPool,runnerName string,githubRunnerID int64,jitConfig,repository,workflow string)(core.Worker,error){
-	decision,err:=s.Scheduler.SelectHost(ctx,pool); if err!=nil { return core.Worker{},err }; id:="worker-"+randomID(); now:=time.Now().UTC(); worker:=core.Worker{ID:id,HostID:decision.Host.ID,PoolID:pool.ID,RunnerName:runnerName,GitHubRunnerID:githubRunnerID,State:core.WorkerProvisioning,ProviderID:decision.Host.Provider,Scope:pool.Scope,Labels:pool.Labels,Resources:pool.Resources,Image:pool.Image,CreatedAt:now,UpdatedAt:now}; if err:=s.Store.UpsertWorker(ctx,worker); err!=nil { return core.Worker{},err }; spec:=provider.WorkerSpec{WorkerID:id,PoolID:pool.ID,RunnerName:runnerName,JITConfig:jitConfig,Labels:pool.Labels,Isolation:pool.Isolation,Resources:pool.Resources,Image:pool.Image,Metadata:map[string]string{"repository":repository,"workflow":workflow}}; if err:=s.Hub.Enqueue(worker.HostID,agent.Command{Type:agent.CommandCreate,WorkerID:id,Provider:worker.ProviderID,Spec:&spec}); err!=nil { worker.State=core.WorkerFailed; worker.FailureReason=truncate(err.Error()); worker.UpdatedAt=time.Now().UTC(); _=s.Store.UpsertWorker(ctx,worker); return core.Worker{},err }; if s.Metrics!=nil { s.Metrics.RunnerRequested() }; return worker,nil
-}
-func (s *Service) repositories(w http.ResponseWriter,r *http.Request){ if s.Catalog==nil { problem(w,503,errors.New("github catalog is not configured")); return }; owner:=r.URL.Query().Get("owner"); repo:=r.URL.Query().Get("repo"); kind:=core.ScopeOrganization; if repo!="" { kind=core.ScopeRepository }; v,err:=s.Catalog.ListRepositories(r.Context(),core.GitHubScope{Kind:kind,Owner:owner,Repository:repo}); if err!=nil { problem(w,502,err); return }; writeJSON(w,200,v) }
-func (s *Service) runnerGroups(w http.ResponseWriter,r *http.Request){ if s.Catalog==nil { problem(w,503,errors.New("github catalog is not configured")); return }; v,err:=s.Catalog.ListRunnerGroups(r.Context(),r.URL.Query().Get("org")); if err!=nil { problem(w,502,err); return }; writeJSON(w,200,v) }
-func (s *Service) audit(w http.ResponseWriter,r *http.Request){ limit,_:=strconv.Atoi(r.URL.Query().Get("limit")); v,err:=s.Store.ListAudit(r.Context(),limit); if err!=nil { problem(w,500,err); return }; writeJSON(w,200,v) }
-func (s *Service) metrics(w http.ResponseWriter,_ *http.Request){ if s.Metrics==nil { writeJSON(w,200,map[string]int{}); return }; writeJSON(w,200,s.Metrics.Snapshot()) }
-func (s *Service) HandleAgentResult(ctx context.Context,hostID string,res agent.CommandResult) error { wk,err:=s.Store.GetWorker(ctx,res.WorkerID); if err!=nil { return err }; wk.UpdatedAt=time.Now().UTC(); if !res.OK { wk.State=core.WorkerFailed; wk.FailureReason=truncate(res.SafeError); _=s.Store.AppendAudit(ctx,core.AuditEvent{Actor:"agent:"+hostID,Action:"command_result",ResourceType:"worker",ResourceID:wk.ID,Result:"error",SafeDetail:wk.FailureReason}); return s.Store.UpsertWorker(ctx,wk) }; if res.Handle!=nil { wk.ProviderHandle=res.Handle.ProviderID; if core.CanTransitionWorker(wk.State,core.WorkerStarting){wk.State=core.WorkerStarting}; if core.CanTransitionWorker(wk.State,core.WorkerRegistering){wk.State=core.WorkerRegistering} }; if res.State!=nil { switch res.State.State { case core.WorkerCompleted: if core.CanTransitionWorker(wk.State,core.WorkerCompleted){wk.State=core.WorkerCompleted}; case core.WorkerFailed: wk.State=core.WorkerFailed; wk.FailureReason=truncate(res.State.SafeDetail); case core.WorkerDeleted: wk.State=core.WorkerDeleted } }; if res.Handle==nil && res.State==nil && wk.State==core.WorkerCleanupPending { wk.State=core.WorkerDeleted; wk.ProviderHandle="" }; return s.Store.UpsertWorker(ctx,wk) }
-func decode(w http.ResponseWriter,r *http.Request,v any) bool { defer r.Body.Close(); d:=json.NewDecoder(io.LimitReader(r.Body,1<<20)); d.DisallowUnknownFields(); if err:=d.Decode(v); err!=nil { problem(w,400,err); return false }; return true }
-func writeJSON(w http.ResponseWriter,status int,v any){ w.Header().Set("Content-Type","application/json"); w.WriteHeader(status); _=json.NewEncoder(w).Encode(v) }
-func problem(w http.ResponseWriter,status int,err error){ writeJSON(w,status,map[string]any{"error":http.StatusText(status),"detail":truncate(err.Error())}) }
-func bearer(r *http.Request) string { v:=r.Header.Get("Authorization"); if strings.HasPrefix(v,"Bearer "){return strings.TrimSpace(strings.TrimPrefix(v,"Bearer "))}; return "" }
-func randomID() string { b:=make([]byte,8); _,_=rand.Read(b); return base64.RawURLEncoding.EncodeToString(b) }
-func truncate(s string) string { if len(s)>512{return s[:512]}; return s }
-func actor(ctx context.Context) string { p:=auth.PrincipalFrom(ctx); if p.Name!="" {return p.Name}; return "api" }
-func securityHeaders(next http.Handler) http.Handler { return http.HandlerFunc(func(w http.ResponseWriter,r *http.Request){ w.Header().Set("X-Content-Type-Options","nosniff"); w.Header().Set("X-Frame-Options","DENY"); w.Header().Set("Referrer-Policy","no-referrer"); w.Header().Set("Content-Security-Policy","default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'"); next.ServeHTTP(w,r) }) }
+type Service struct{Store store.Store;GitHub githubrunner.Backend;Catalog githubrunner.Catalog;Hub *agenthub.Hub;Scheduler scheduler.Scheduler;Policy policy.Engine;Metrics *telemetry.Metrics;EnrollmentToken string;Auth *auth.Manager;Cache *cachepkg.Store;Static http.Handler}
+func(s *Service)Handler()http.Handler{m:=http.NewServeMux();m.HandleFunc("GET /healthz",func(w http.ResponseWriter,_ *http.Request){writeJSON(w,200,map[string]string{"status":"ok"})});m.HandleFunc("POST /api/v1/agent/enroll",s.enroll);m.HandleFunc("POST /api/v1/agent/heartbeat",s.heartbeat);m.HandleFunc("GET /api/v1/agent/commands",s.commands);m.HandleFunc("POST /api/v1/agent/results",s.results);m.HandleFunc("GET /api/v1/hosts",s.hosts);m.HandleFunc("POST /api/v1/hosts/{id}/drain",s.drain);m.HandleFunc("PATCH /api/v1/hosts/{id}",s.updateHost);m.HandleFunc("POST /api/v1/hosts/drain",s.bulkDrain);m.HandleFunc("GET /api/v1/pools",s.pools);m.HandleFunc("POST /api/v1/pools",s.createPool);m.HandleFunc("PUT /api/v1/pools/{id}/image",s.updatePoolImage);m.HandleFunc("GET /api/v1/pools/{id}/health",s.poolHealth);m.HandleFunc("GET /api/v1/pools/{id}/recommendation",s.poolRecommendation);m.HandleFunc("GET /api/v1/pools/{id}/security",s.poolSecurity);m.HandleFunc("GET /api/v1/workers",s.workers);m.HandleFunc("POST /api/v1/pools/{id}/workers",s.createWorker);m.HandleFunc("POST /api/v1/pools/{id}/scale-workers",s.createScaleWorker);m.HandleFunc("POST /api/v1/scale-events",s.scaleEvent);m.HandleFunc("GET /api/v1/audit",s.audit);m.HandleFunc("GET /api/v1/metrics",s.metrics);m.HandleFunc("GET /api/v1/fleet/versions",s.versions);m.HandleFunc("POST /api/v1/cost/estimate",s.costEstimate);m.HandleFunc("PUT /api/v1/cache",s.cachePut);m.HandleFunc("GET /api/v1/cache/{key}",s.cacheGet);m.HandleFunc("DELETE /api/v1/cache/{key}",s.cacheDelete);m.HandleFunc("GET /api/v1/github/repositories",s.repositories);m.HandleFunc("GET /api/v1/github/runner-groups",s.runnerGroups);if s.Static!=nil{m.Handle("/",s.Static)};h:=securityHeaders(m);if s.Auth!=nil{h=s.Auth.Middleware(h)};return h}
+func(s *Service)enroll(w http.ResponseWriter,r *http.Request){var in agent.EnrollRequest;if !decode(w,r,&in){return};res,err:=s.Hub.Enroll(r.Context(),bearer(r),in);if err!=nil{problem(w,401,err);return};writeJSON(w,201,res)}
+func(s *Service)heartbeat(w http.ResponseWriter,r *http.Request){var in agent.Heartbeat;if !decode(w,r,&in){return};if !s.Hub.Authenticate(in.HostID,bearer(r)){problem(w,401,errors.New("unauthorized agent"));return};if err:=s.Hub.Heartbeat(r.Context(),in);err!=nil{problem(w,400,err);return};w.Header().Set("X-RunnerHub-Agent-Token",s.Hub.RefreshToken(in.HostID));w.WriteHeader(204)}
+func(s *Service)commands(w http.ResponseWriter,r *http.Request){id:=r.URL.Query().Get("host_id");if !s.Hub.Authenticate(id,bearer(r)){problem(w,401,errors.New("unauthorized agent"));return};writeJSON(w,200,s.Hub.Next(id))}
+func(s *Service)results(w http.ResponseWriter,r *http.Request){var in agent.CommandResult;if !decode(w,r,&in){return};workers,err:=s.Store.ListWorkers(r.Context());if err!=nil{problem(w,500,err);return};hostID:="";for _,x:=range workers{if x.ID==in.WorkerID{hostID=x.HostID;break}};if hostID==""||!s.Hub.Authenticate(hostID,bearer(r)){problem(w,401,errors.New("unauthorized agent"));return};if err:=s.Hub.HandleResult(r.Context(),hostID,in);err!=nil{problem(w,400,err);return};w.WriteHeader(204)}
+func(s *Service)hosts(w http.ResponseWriter,r *http.Request){v,err:=s.Store.ListHosts(r.Context());if err!=nil{problem(w,500,err);return};writeJSON(w,200,v)}
+func(s *Service)drain(w http.ResponseWriter,r *http.Request){h,err:=s.Store.GetHost(r.Context(),r.PathValue("id"));if err!=nil{problem(w,404,err);return};if h.State==core.HostOnline{h.State=core.HostDraining};if err:=s.Store.UpsertHost(r.Context(),h);err!=nil{problem(w,500,err);return};_=s.Store.AppendAudit(r.Context(),core.AuditEvent{Actor:actor(r.Context()),Action:"drain_host",ResourceType:"host",ResourceID:h.ID,Result:"ok"});writeJSON(w,200,h)}
+type updateHostRequest struct{Name *string `json:"name,omitempty"`;Tags map[string]string `json:"tags,omitempty"`;State *core.HostState `json:"state,omitempty"`}
+func(s *Service)updateHost(w http.ResponseWriter,r *http.Request){h,err:=s.Store.GetHost(r.Context(),r.PathValue("id"));if err!=nil{problem(w,404,err);return};var in updateHostRequest;if !decode(w,r,&in){return};if in.Name!=nil&&strings.TrimSpace(*in.Name)!=""{h.Name=strings.TrimSpace(*in.Name)};if in.Tags!=nil{h.Tags=in.Tags};if in.State!=nil{if !core.CanTransitionHost(h.State,*in.State){problem(w,409,fmt.Errorf("invalid host transition %s -> %s",h.State,*in.State));return};h.State=*in.State};if err:=s.Store.UpsertHost(r.Context(),h);err!=nil{problem(w,500,err);return};_=s.Store.AppendAudit(r.Context(),core.AuditEvent{Actor:actor(r.Context()),Action:"update_host",ResourceType:"host",ResourceID:h.ID,Result:"ok"});writeJSON(w,200,h)}
+func(s *Service)bulkDrain(w http.ResponseWriter,r *http.Request){hosts,err:=s.Store.ListHosts(r.Context());if err!=nil{problem(w,500,err);return};n:=0;for _,h:=range hosts{if h.State==core.HostOnline{h.State=core.HostDraining;if s.Store.UpsertHost(r.Context(),h)==nil{n++}}};_=s.Store.AppendAudit(r.Context(),core.AuditEvent{Actor:actor(r.Context()),Action:"bulk_drain",ResourceType:"host",Result:"ok",SafeDetail:fmt.Sprintf("%d hosts",n)});writeJSON(w,200,map[string]int{"drained":n})}
+type imageUpdateRequest struct{Image string `json:"image"`;RequireDigest bool `json:"requireDigest"`}
+func(s *Service)updatePoolImage(w http.ResponseWriter,r *http.Request){p,err:=s.Store.GetPool(r.Context(),r.PathValue("id"));if err!=nil{problem(w,404,err);return};var in imageUpdateRequest;if !decode(w,r,&in){return};if in.RequireDigest{if err:=images.ValidatePinned(in.Image);err!=nil{problem(w,400,err);return}};p.Image=strings.TrimSpace(in.Image);if err:=core.ValidateRunnerPool(p);err!=nil{problem(w,400,err);return};if err:=s.Policy.ValidatePool(p);err!=nil{problem(w,403,err);return};if err:=s.Store.UpsertPool(r.Context(),p);err!=nil{problem(w,500,err);return};_=s.Store.AppendAudit(r.Context(),core.AuditEvent{Actor:actor(r.Context()),Action:"update_pool_image",ResourceType:"pool",ResourceID:p.ID,Result:"ok",SafeDetail:p.Image});writeJSON(w,200,p)}
+func(s *Service)poolHealth(w http.ResponseWriter,r *http.Request){p,err:=s.Store.GetPool(r.Context(),r.PathValue("id"));if err!=nil{problem(w,404,err);return};hosts,err:=s.Store.ListHosts(r.Context());if err!=nil{problem(w,500,err);return};workers,err:=s.Store.ListWorkers(r.Context());if err!=nil{problem(w,500,err);return};writeJSON(w,200,fleet.PoolHealth(p,hosts,workers,time.Now().UTC()))}
+func(s *Service)poolRecommendation(w http.ResponseWriter,r *http.Request){p,err:=s.Store.GetPool(r.Context(),r.PathValue("id"));if err!=nil{problem(w,404,err);return};snap:=telemetry.Snapshot{};if s.Metrics!=nil{snap=s.Metrics.Snapshot()};avg:=time.Duration(0);if snap.QueueSamples>0{avg=snap.QueueTotal/time.Duration(snap.QueueSamples)};workers,_:=s.Store.ListWorkers(r.Context());active,busy:=0,0;for _,wk:=range workers{if wk.PoolID!=p.ID||!scheduler.CountsTowardPoolConcurrency(wk.State){continue};active++;if wk.State==core.WorkerBusy{busy++}};util:=0.0;if active>0{util=float64(busy)/float64(active)};writeJSON(w,200,map[string]any{"current":p.MaxConcurrency,"recommended":telemetry.RecommendConcurrency(avg,util,p.MaxConcurrency),"averageQueue":avg.String(),"utilization":util})}
+func(s *Service)poolSecurity(w http.ResponseWriter,r *http.Request){p,err:=s.Store.GetPool(r.Context(),r.PathValue("id"));if err!=nil{problem(w,404,err);return};posture,err:=s.inspectSecurity(r.Context(),p);if err!=nil{problem(w,502,err);return};writeJSON(w,200,posture)}
+func(s *Service)versions(w http.ResponseWriter,r *http.Request){hosts,err:=s.Store.ListHosts(r.Context());if err!=nil{problem(w,500,err);return};workers,err:=s.Store.ListWorkers(r.Context());if err!=nil{problem(w,500,err);return};pools,_:=s.Store.ListPools(r.Context());writeJSON(w,200,map[string]any{"fleet":fleet.Versions(hosts,workers),"images":images.Inventory(pools,workers)})}
+func(s *Service)costEstimate(w http.ResponseWriter,r *http.Request){var in telemetry.CostInput;if !decode(w,r,&in){return};writeJSON(w,200,telemetry.EstimateCost(in))}
+func(s *Service)cachePut(w http.ResponseWriter,r *http.Request){if s.Cache==nil{problem(w,503,errors.New("cache is not configured"));return};key,n,err:=s.Cache.Put(r.Body);if errors.Is(err,cachepkg.ErrTooLarge){problem(w,http.StatusRequestEntityTooLarge,err);return};if err!=nil{problem(w,500,err);return};writeJSON(w,201,map[string]any{"key":key,"bytes":n})}
+func(s *Service)cacheGet(w http.ResponseWriter,r *http.Request){if s.Cache==nil{problem(w,503,errors.New("cache is not configured"));return};f,err:=s.Cache.Open(r.PathValue("key"));if err!=nil{problem(w,404,err);return};defer f.Close();w.Header().Set("Content-Type","application/octet-stream");_,_=io.Copy(w,f)}
+func(s *Service)cacheDelete(w http.ResponseWriter,r *http.Request){if s.Cache==nil{problem(w,503,errors.New("cache is not configured"));return};if err:=s.Cache.Remove(r.PathValue("key"));err!=nil{problem(w,400,err);return};w.WriteHeader(204)}
+func(s *Service)pools(w http.ResponseWriter,r *http.Request){v,err:=s.Store.ListPools(r.Context());if err!=nil{problem(w,500,err);return};writeJSON(w,200,v)}
+func(s *Service)createPool(w http.ResponseWriter,r *http.Request){var p core.RunnerPool;if !decode(w,r,&p){return};if p.ID==""{p.ID="pool-"+randomID()};if err:=core.ValidateRunnerPool(p);err!=nil{problem(w,400,err);return};if err:=s.Policy.ValidatePool(p);err!=nil{problem(w,403,err);return};if s.Catalog!=nil{posture,err:=githubrunner.InspectPoolSecurity(r.Context(),s.Catalog,p);if err!=nil{problem(w,502,err);return};if !posture.Safe{problem(w,409,errors.New(strings.Join(posture.Reasons,"; ")));return}};if err:=s.Store.UpsertPool(r.Context(),p);err!=nil{problem(w,500,err);return};_=s.Store.AppendAudit(r.Context(),core.AuditEvent{Actor:actor(r.Context()),Action:"create_pool",ResourceType:"pool",ResourceID:p.ID,Result:"ok"});writeJSON(w,201,p)}
+func(s *Service)workers(w http.ResponseWriter,r *http.Request){v,err:=s.Store.ListWorkers(r.Context());if err!=nil{problem(w,500,err);return};writeJSON(w,200,v)}
+type createWorkerRequest struct{Repository string `json:"repository"`;Workflow string `json:"workflow"`;Public bool `json:"public"`}
+func(s *Service)createWorker(w http.ResponseWriter,r *http.Request){if s.GitHub==nil{problem(w,503,errors.New("github backend is not configured"));return};pool,err:=s.Store.GetPool(r.Context(),r.PathValue("id"));if err!=nil{problem(w,404,err);return};if _,err:=s.requireSafeSecurity(r.Context(),pool);err!=nil{problem(w,403,err);return};var in createWorkerRequest;if !decode(w,r,&in){return};if in.Repository==""&&pool.Scope.Kind==core.ScopeRepository{in.Repository=pool.Scope.Owner+"/"+pool.Scope.Repository};if err:=s.Policy.Evaluate(policy.Request{Pool:pool,Repository:in.Repository,Workflow:in.Workflow,Public:in.Public});err!=nil{problem(w,403,err);return};decision,err:=s.Scheduler.SelectHost(r.Context(),pool);if err!=nil{problem(w,409,err);return};id:="worker-"+randomID();runnerName:=pool.Name+"-"+strings.TrimPrefix(id,"worker-");jit,err:=s.GitHub.GenerateJITConfig(r.Context(),githubrunner.JITConfigRequest{Scope:pool.Scope,RunnerName:runnerName,RunnerGroupID:pool.RunnerGroupID,Labels:pool.Labels});if err!=nil{problem(w,502,err);return};now:=time.Now().UTC();worker:=core.Worker{ID:id,HostID:decision.Host.ID,PoolID:pool.ID,RunnerName:jit.RunnerName,GitHubRunnerID:jit.RunnerID,State:core.WorkerProvisioning,ProviderID:decision.Host.Provider,Scope:pool.Scope,Labels:pool.Labels,Resources:pool.Resources,Image:pool.Image,Repository:in.Repository,WorkflowRef:in.Workflow,CreatedAt:now,UpdatedAt:now};if err:=s.Store.UpsertWorker(r.Context(),worker);err!=nil{_=s.GitHub.DeleteRunner(r.Context(),pool.Scope,jit.RunnerID);problem(w,500,err);return};spec:=provider.WorkerSpec{WorkerID:id,PoolID:pool.ID,RunnerName:jit.RunnerName,JITConfig:jit.EncodedConfig,Labels:pool.Labels,Isolation:pool.Isolation,Resources:pool.Resources,Image:pool.Image,Metadata:map[string]string{"repository":in.Repository,"workflow":in.Workflow}};if err:=s.Hub.Enqueue(worker.HostID,agent.Command{Type:agent.CommandCreate,WorkerID:id,Provider:worker.ProviderID,Spec:&spec});err!=nil{worker.State=core.WorkerFailed;worker.FailureReason=truncate(err.Error());worker.UpdatedAt=time.Now().UTC();_=s.Store.UpsertWorker(r.Context(),worker);delErr:=s.GitHub.DeleteRunner(r.Context(),pool.Scope,jit.RunnerID);detail:=worker.FailureReason;if delErr!=nil{detail+="; github cleanup: "+truncate(delErr.Error())};_=s.Store.AppendAudit(r.Context(),core.AuditEvent{Actor:actor(r.Context()),Action:"request_worker",ResourceType:"worker",ResourceID:id,Result:"error",SafeDetail:truncate(detail)});problem(w,500,err);return};if s.Metrics!=nil{s.Metrics.RunnerRequested()};_=s.Store.AppendAudit(r.Context(),core.AuditEvent{Actor:actor(r.Context()),Action:"request_worker",ResourceType:"worker",ResourceID:id,Result:"ok",SafeDetail:decision.Reason});writeJSON(w,202,worker)}
+type createScaleWorkerRequest struct{RunnerName string `json:"runnerName"`;JITConfig string `json:"jitConfig"`;Repository string `json:"repository,omitempty"`;Workflow string `json:"workflow,omitempty"`}
+func(s *Service)createScaleWorker(w http.ResponseWriter,r *http.Request){pool,err:=s.Store.GetPool(r.Context(),r.PathValue("id"));if err!=nil{problem(w,404,err);return};if _,err:=s.requireSafeSecurity(r.Context(),pool);err!=nil{problem(w,403,err);return};var in createScaleWorkerRequest;if !decode(w,r,&in){return};if strings.TrimSpace(in.RunnerName)==""||strings.TrimSpace(in.JITConfig)==""{problem(w,400,errors.New("runnerName and jitConfig are required"));return};if in.Repository==""&&pool.Scope.Kind==core.ScopeRepository{in.Repository=pool.Scope.Owner+"/"+pool.Scope.Repository};if err:=s.Policy.Evaluate(policy.Request{Pool:pool,Repository:in.Repository,Workflow:in.Workflow});err!=nil{problem(w,403,err);return};worker,err:=s.enqueueWorker(r.Context(),pool,in.RunnerName,0,in.JITConfig,in.Repository,in.Workflow);if err!=nil{problem(w,409,err);return};_=s.Store.AppendAudit(r.Context(),core.AuditEvent{Actor:actor(r.Context()),Action:"scale_request_worker",ResourceType:"worker",ResourceID:worker.ID,Result:"ok"});writeJSON(w,202,worker)}
+type scaleEventRequest struct{PoolID string `json:"poolId"`;RunnerName string `json:"runnerName"`;State string `json:"state"`;Detail string `json:"detail,omitempty"`;Repository string `json:"repository,omitempty"`;WorkflowRef string `json:"workflowRef,omitempty"`;WorkflowRunID int64 `json:"workflowRunId,omitempty"`;JobID string `json:"jobId,omitempty"`;JobName string `json:"jobName,omitempty"`;QueuedAt time.Time `json:"queuedAt,omitempty"`;StartedAt time.Time `json:"startedAt,omitempty"`;CompletedAt time.Time `json:"completedAt,omitempty"`;Result string `json:"result,omitempty"`}
+func(s *Service)scaleEvent(w http.ResponseWriter,r *http.Request){var in scaleEventRequest;if !decode(w,r,&in){return};workers,err:=s.Store.ListWorkers(r.Context());if err!=nil{problem(w,500,err);return};var wk *core.Worker;for i:=range workers{if workers[i].PoolID==in.PoolID&&workers[i].RunnerName==in.RunnerName&&workers[i].State!=core.WorkerDeleted{c:=workers[i];wk=&c;break}};if wk==nil{problem(w,404,errors.New("scale-set worker not found"));return};wk.Repository=firstNonEmpty(in.Repository,wk.Repository);wk.WorkflowRef=firstNonEmpty(in.WorkflowRef,wk.WorkflowRef);if in.WorkflowRunID!=0{wk.WorkflowRunID=in.WorkflowRunID};wk.JobID=firstNonEmpty(in.JobID,wk.JobID);wk.JobName=firstNonEmpty(in.JobName,wk.JobName);if !in.QueuedAt.IsZero(){wk.QueuedAt=in.QueuedAt};if !in.StartedAt.IsZero(){wk.StartedAt=in.StartedAt};if !in.CompletedAt.IsZero(){wk.CompletedAt=in.CompletedAt};wk.JobResult=firstNonEmpty(in.Result,wk.JobResult);state:=strings.ToLower(strings.TrimSpace(in.State));switch state{case"started","busy":if wk.State==core.WorkerRegistering{wk.State=core.WorkerReady};if wk.State!=core.WorkerBusy{if !core.CanTransitionWorker(wk.State,core.WorkerBusy){problem(w,409,fmt.Errorf("invalid worker transition %s -> busy",wk.State));return};wk.State=core.WorkerBusy};if s.Metrics!=nil&&!wk.QueuedAt.IsZero()&&!wk.StartedAt.IsZero()&&wk.StartedAt.After(wk.QueuedAt){s.Metrics.Queue(wk.StartedAt.Sub(wk.QueuedAt))};case"completed","canceled":if wk.State!=core.WorkerCompleted{if !core.CanTransitionWorker(wk.State,core.WorkerCompleted){problem(w,409,fmt.Errorf("invalid worker transition %s -> completed",wk.State));return};wk.State=core.WorkerCompleted};if wk.JobResult==""{wk.JobResult=state};case"failed":wk.State=core.WorkerFailed;wk.FailureReason=truncate(in.Detail);if wk.JobResult==""{wk.JobResult="failed"};default:problem(w,400,errors.New("unsupported scale event state"));return};wk.UpdatedAt=time.Now().UTC();if err:=s.Store.UpsertWorker(r.Context(),*wk);err!=nil{problem(w,500,err);return};_=s.Store.AppendAudit(r.Context(),core.AuditEvent{Actor:actor(r.Context()),Action:"scale_event",ResourceType:"worker",ResourceID:wk.ID,Result:"ok",SafeDetail:truncate(in.State)});writeJSON(w,200,wk)}
+func(s *Service)enqueueWorker(ctx context.Context,pool core.RunnerPool,runnerName string,githubRunnerID int64,jitConfig,repository,workflow string)(core.Worker,error){decision,err:=s.Scheduler.SelectHost(ctx,pool);if err!=nil{return core.Worker{},err};id:="worker-"+randomID();now:=time.Now().UTC();worker:=core.Worker{ID:id,HostID:decision.Host.ID,PoolID:pool.ID,RunnerName:runnerName,GitHubRunnerID:githubRunnerID,State:core.WorkerProvisioning,ProviderID:decision.Host.Provider,Scope:pool.Scope,Labels:pool.Labels,Resources:pool.Resources,Image:pool.Image,Repository:repository,WorkflowRef:workflow,CreatedAt:now,UpdatedAt:now};if err:=s.Store.UpsertWorker(ctx,worker);err!=nil{return core.Worker{},err};spec:=provider.WorkerSpec{WorkerID:id,PoolID:pool.ID,RunnerName:runnerName,JITConfig:jitConfig,Labels:pool.Labels,Isolation:pool.Isolation,Resources:pool.Resources,Image:pool.Image,Metadata:map[string]string{"repository":repository,"workflow":workflow}};if err:=s.Hub.Enqueue(worker.HostID,agent.Command{Type:agent.CommandCreate,WorkerID:id,Provider:worker.ProviderID,Spec:&spec});err!=nil{worker.State=core.WorkerFailed;worker.FailureReason=truncate(err.Error());worker.UpdatedAt=time.Now().UTC();_=s.Store.UpsertWorker(ctx,worker);return core.Worker{},err};if s.Metrics!=nil{s.Metrics.RunnerRequested()};return worker,nil}
+func(s *Service)repositories(w http.ResponseWriter,r *http.Request){if s.Catalog==nil{problem(w,503,errors.New("github catalog is not configured"));return};owner:=r.URL.Query().Get("owner");repo:=r.URL.Query().Get("repo");kind:=core.ScopeOrganization;if repo!=""{kind=core.ScopeRepository};v,err:=s.Catalog.ListRepositories(r.Context(),core.GitHubScope{Kind:kind,Owner:owner,Repository:repo});if err!=nil{problem(w,502,err);return};writeJSON(w,200,v)}
+func(s *Service)runnerGroups(w http.ResponseWriter,r *http.Request){if s.Catalog==nil{problem(w,503,errors.New("github catalog is not configured"));return};v,err:=s.Catalog.ListRunnerGroups(r.Context(),r.URL.Query().Get("org"));if err!=nil{problem(w,502,err);return};writeJSON(w,200,v)}
+func(s *Service)audit(w http.ResponseWriter,r *http.Request){limit,_:=strconv.Atoi(r.URL.Query().Get("limit"));v,err:=s.Store.ListAudit(r.Context(),limit);if err!=nil{problem(w,500,err);return};writeJSON(w,200,v)}
+func(s *Service)metrics(w http.ResponseWriter,_ *http.Request){if s.Metrics==nil{writeJSON(w,200,map[string]int{});return};writeJSON(w,200,s.Metrics.Snapshot())}
+func(s *Service)HandleAgentResult(ctx context.Context,hostID string,res agent.CommandResult)error{wk,err:=s.Store.GetWorker(ctx,res.WorkerID);if err!=nil{return err};wk.UpdatedAt=time.Now().UTC();if !res.OK{wk.State=core.WorkerFailed;wk.FailureReason=truncate(res.SafeError);_=s.Store.AppendAudit(ctx,core.AuditEvent{Actor:"agent:"+hostID,Action:"command_result",ResourceType:"worker",ResourceID:wk.ID,Result:"error",SafeDetail:wk.FailureReason});return s.Store.UpsertWorker(ctx,wk)};if res.Handle!=nil{wk.ProviderHandle=res.Handle.ProviderID;if core.CanTransitionWorker(wk.State,core.WorkerStarting){wk.State=core.WorkerStarting};if core.CanTransitionWorker(wk.State,core.WorkerRegistering){wk.State=core.WorkerRegistering}};if res.State!=nil{switch res.State.State{case core.WorkerCompleted:if core.CanTransitionWorker(wk.State,core.WorkerCompleted){wk.State=core.WorkerCompleted}else if wk.State!=core.WorkerCompleted{wk.State=core.WorkerFailed;wk.FailureReason="provider exited before worker reached a runnable state"};case core.WorkerFailed:wk.State=core.WorkerFailed;wk.FailureReason=truncate(res.State.SafeDetail);case core.WorkerDeleted:if wk.State==core.WorkerCleanupPending||wk.State==core.WorkerDeleting{wk.State=core.WorkerDeleted;wk.ProviderHandle=""}else{wk.State=core.WorkerFailed;wk.FailureReason="provider worker disappeared before cleanup"}}};if res.Handle==nil&&res.State==nil&&wk.State==core.WorkerCleanupPending{wk.State=core.WorkerDeleted;wk.ProviderHandle=""};return s.Store.UpsertWorker(ctx,wk)}
+func(s *Service)inspectSecurity(ctx context.Context,p core.RunnerPool)(githubrunner.PoolSecurityPosture,error){if s.Catalog==nil{return githubrunner.PoolSecurityPosture{},errors.New("github catalog is not configured")};return githubrunner.InspectPoolSecurity(ctx,s.Catalog,p)}
+func(s *Service)requireSafeSecurity(ctx context.Context,p core.RunnerPool)(githubrunner.PoolSecurityPosture,error){posture,err:=s.inspectSecurity(ctx,p);if err!=nil{return posture,err};if !posture.Safe{return posture,errors.New(strings.Join(posture.Reasons,"; "))};return posture,nil}
+func decode(w http.ResponseWriter,r *http.Request,v any)bool{defer r.Body.Close();d:=json.NewDecoder(io.LimitReader(r.Body,1<<20));d.DisallowUnknownFields();if err:=d.Decode(v);err!=nil{problem(w,400,err);return false};var extra any;if err:=d.Decode(&extra);err!=io.EOF{if err==nil{err=errors.New("request body must contain exactly one JSON value")};problem(w,400,err);return false};return true}
+func writeJSON(w http.ResponseWriter,status int,v any){w.Header().Set("Content-Type","application/json");w.WriteHeader(status);_=json.NewEncoder(w).Encode(v)}
+func problem(w http.ResponseWriter,status int,err error){writeJSON(w,status,map[string]any{"error":http.StatusText(status),"detail":truncate(err.Error())})}
+func bearer(r *http.Request)string{v:=r.Header.Get("Authorization");if strings.HasPrefix(v,"Bearer "){return strings.TrimSpace(strings.TrimPrefix(v,"Bearer "))};return ""}
+func randomID()string{b:=make([]byte,8);_,_=rand.Read(b);return base64.RawURLEncoding.EncodeToString(b)}
+func truncate(v string)string{if len(v)>512{return v[:512]};return v}
+func actor(ctx context.Context)string{p:=auth.PrincipalFrom(ctx);if p.Name!=""{return p.Name};return "api"}
+func firstNonEmpty(a,b string)string{if strings.TrimSpace(a)!=""{return a};return b}
+func securityHeaders(next http.Handler)http.Handler{return http.HandlerFunc(func(w http.ResponseWriter,r *http.Request){w.Header().Set("X-Content-Type-Options","nosniff");w.Header().Set("X-Frame-Options","DENY");w.Header().Set("Referrer-Policy","no-referrer");w.Header().Set("Content-Security-Policy","default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'");if r.TLS!=nil{w.Header().Set("Strict-Transport-Security","max-age=31536000")};next.ServeHTTP(w,r)})}
