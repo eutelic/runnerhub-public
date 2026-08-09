@@ -1,0 +1,4 @@
+package scheduler
+
+import("context";"github.com/example-user/runnerhub/internal/core";"github.com/example-user/runnerhub/internal/store";"testing")
+func TestSelectHost(t *testing.T){s,_:=store.OpenSQLite(":memory:");defer s.Close();ctx:=context.Background();_=s.UpsertHost(ctx,core.Host{ID:"a",Name:"a",Provider:"docker",State:core.HostOnline,Tags:map[string]string{"zone":"lab","isolation.container-trusted":"true"},Capacity:core.Resources{CPUMillis:8000,MemoryBytes:16<<30}});_=s.UpsertHost(ctx,core.Host{ID:"b",Name:"b",Provider:"docker",State:core.HostOffline,Capacity:core.Resources{CPUMillis:32000,MemoryBytes:64<<30}});pool:=core.RunnerPool{ID:"p",Name:"linux",HostSelector:map[string]string{"zone":"lab"},Isolation:core.IsolationContainerTrusted,Resources:core.Resources{CPUMillis:1000,MemoryBytes:1<<30},MaxConcurrency:4};d,err:=(Scheduler{Store:s}).SelectHost(ctx,pool);if err!=nil||d.Host.ID!="a"{t.Fatalf("decision=%+v err=%v",d,err)}}

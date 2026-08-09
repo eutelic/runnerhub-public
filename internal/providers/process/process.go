@@ -1,0 +1,27 @@
+package process
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
+	"strconv"
+	"strings"
+	"syscall"
+	"github.com/example-user/runnerhub/internal/core"
+	"github.com/example-user/runnerhub/internal/provider"
+)
+type Config struct{RunnerDir,StateDir,HostID string};type Provider struct{cfg Config}
+func New(c Config)(*Provider,error){if c.RunnerDir==""{return nil,errors.New("runner directory required")};if c.StateDir==""{c.StateDir="/var/lib/runnerhub/process"};return &Provider{cfg:c},nil}
+func(p *Provider)Capabilities(context.Context)(provider.Capabilities,error){return provider.Capabilities{Provider:"process",OS:runtime.GOOS,Architecture:runtime.GOARCH,IsolationModes:[]core.IsolationMode{core.IsolationHostPersistent},Features:map[string]bool{"specialHardware":true},Labels:map[string]string{"os":runtime.GOOS,"arch":runtime.GOARCH}},nil}
+func(p *Provider)Validate(_ context.Context,s provider.WorkerSpec)error{if s.Isolation!=core.IsolationHostPersistent{return errors.New("process provider requires host-persistent isolation")};if s.JITConfig==""{return errors.New("jit config required")};return nil}
+func(p *Provider)Create(ctx context.Context,s provider.WorkerSpec)(provider.WorkerHandle,error){if err:=p.Validate(ctx,s);err!=nil{return provider.WorkerHandle{},err};dir:=filepath.Join(p.cfg.StateDir,safe(s.WorkerID));if err:=os.MkdirAll(dir,0700);err!=nil{return provider.WorkerHandle{},err};jit:=filepath.Join(dir,"jitconfig");if err:=os.WriteFile(jit,[]byte(s.JITConfig),0600);err!=nil{return provider.WorkerHandle{},err};script:="run.sh";if runtime.GOOS=="windows"{script="run.cmd"};cmd:=exec.CommandContext(ctx,filepath.Join(p.cfg.RunnerDir,script));cmd.Dir=p.cfg.RunnerDir;cmd.Env=append(os.Environ(),"ACTIONS_RUNNER_INPUT_JITCONFIG="+s.JITConfig,"RUNNERHUB_WORKER_ID="+s.WorkerID);logf,err:=os.OpenFile(filepath.Join(dir,"runner.log"),os.O_CREATE|os.O_APPEND|os.O_WRONLY,0600);if err!=nil{return provider.WorkerHandle{},err};cmd.Stdout=logf;cmd.Stderr=logf;if err:=cmd.Start();err!=nil{_=logf.Close();return provider.WorkerHandle{},err};if err:=os.WriteFile(filepath.Join(dir,"pid"),[]byte(strconv.Itoa(cmd.Process.Pid)),0600);err!=nil{return provider.WorkerHandle{},err};return provider.WorkerHandle{ProviderID:safe(s.WorkerID),HostID:p.cfg.HostID},nil}
+func(p *Provider)Inspect(_ context.Context,h provider.WorkerHandle)(provider.WorkerState,error){pid,err:=p.pid(h);if err!=nil{if os.IsNotExist(err){return provider.WorkerState{State:core.WorkerDeleted},nil};return provider.WorkerState{},err};proc,err:=os.FindProcess(pid);if err!=nil{return provider.WorkerState{},err};if proc.Signal(syscall.Signal(0))==nil{return provider.WorkerState{State:core.WorkerReady,SafeDetail:"runner process active"},nil};return provider.WorkerState{State:core.WorkerCompleted,SafeDetail:"runner process exited"},nil}
+func(p *Provider)Stop(_ context.Context,h provider.WorkerHandle)error{pid,err:=p.pid(h);if err!=nil{return nil};proc,_:=os.FindProcess(pid);return proc.Signal(os.Interrupt)}
+func(p *Provider)Delete(ctx context.Context,h provider.WorkerHandle)error{_=p.Stop(ctx,h);return os.RemoveAll(filepath.Join(p.cfg.StateDir,safe(h.ProviderID)))}
+func(p *Provider)pid(h provider.WorkerHandle)(int,error){b,err:=os.ReadFile(filepath.Join(p.cfg.StateDir,safe(h.ProviderID),"pid"));if err!=nil{return 0,err};return strconv.Atoi(strings.TrimSpace(string(b)))}
+func safe(v string)string{v=strings.Map(func(r rune)rune{if r>='a'&&r<='z'||r>='A'&&r<='Z'||r>='0'&&r<='9'||r=='-'{return r};return '-'},v);return strings.Trim(v,"-")}
+var _=fmt.Sprintf

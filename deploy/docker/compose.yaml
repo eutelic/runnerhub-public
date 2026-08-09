@@ -1,0 +1,18 @@
+services:
+  control:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile
+      target: control
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      RUNNERHUB_HTTP_ADDR: 127.0.0.1:8080
+      RUNNERHUB_DB: /data/runnerhub.db
+      RUNNERHUB_ENROLLMENT_TOKEN: ${RUNNERHUB_ENROLLMENT_TOKEN:?required}
+      RUNNERHUB_AGENT_SECRET: ${RUNNERHUB_AGENT_SECRET:?required}
+      RUNNERHUB_API_KEYS: ${RUNNERHUB_API_KEYS:-}
+    volumes:
+      - runnerhub-data:/data
+volumes:
+  runnerhub-data: {}

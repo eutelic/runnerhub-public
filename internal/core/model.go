@@ -49,7 +49,6 @@ type GitHubScope struct {
 	Owner      string    `json:"owner"`
 	Repository string    `json:"repository,omitempty"`
 }
-
 type Resources struct {
 	CPUMillis   int64 `json:"cpuMillis,omitempty"`
 	MemoryBytes int64 `json:"memoryBytes,omitempty"`
@@ -71,15 +70,19 @@ type Host struct {
 }
 
 type RunnerPool struct {
-	ID             string            `json:"id"`
-	Name           string            `json:"name"`
-	Scope          GitHubScope       `json:"scope"`
-	Labels         []string          `json:"labels"`
-	HostSelector   map[string]string `json:"hostSelector,omitempty"`
-	Isolation      IsolationMode     `json:"isolation"`
-	Resources      Resources         `json:"resources"`
-	MinIdle        int               `json:"minIdle"`
-	MaxConcurrency int               `json:"maxConcurrency"`
+	ID                  string            `json:"id"`
+	Name                string            `json:"name"`
+	Scope               GitHubScope       `json:"scope"`
+	Labels              []string          `json:"labels"`
+	HostSelector        map[string]string `json:"hostSelector,omitempty"`
+	Isolation           IsolationMode     `json:"isolation"`
+	Resources           Resources         `json:"resources"`
+	MinIdle             int               `json:"minIdle"`
+	MaxConcurrency      int               `json:"maxConcurrency"`
+	RunnerGroupID       int64             `json:"runnerGroupId"`
+	Image               string            `json:"image,omitempty"`
+	AllowedRepositories []string          `json:"allowedRepositories,omitempty"`
+	AllowedWorkflows    []string          `json:"allowedWorkflows,omitempty"`
 }
 
 type Worker struct {
@@ -90,6 +93,23 @@ type Worker struct {
 	GitHubRunnerID int64       `json:"githubRunnerId,omitempty"`
 	State          WorkerState `json:"state"`
 	FailureReason  string      `json:"failureReason,omitempty"`
+	ProviderID     string      `json:"providerId,omitempty"`
+	ProviderHandle string      `json:"providerHandle,omitempty"`
+	Scope          GitHubScope `json:"scope"`
+	Labels         []string    `json:"labels,omitempty"`
+	Resources      Resources   `json:"resources"`
+	Image          string      `json:"image,omitempty"`
 	CreatedAt      time.Time   `json:"createdAt"`
 	UpdatedAt      time.Time   `json:"updatedAt"`
+}
+
+type AuditEvent struct {
+	ID           int64     `json:"id"`
+	Actor        string    `json:"actor"`
+	Action       string    `json:"action"`
+	ResourceType string    `json:"resourceType"`
+	ResourceID   string    `json:"resourceId"`
+	Result       string    `json:"result"`
+	SafeDetail   string    `json:"safeDetail,omitempty"`
+	CreatedAt    time.Time `json:"createdAt"`
 }

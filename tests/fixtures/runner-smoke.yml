@@ -1,0 +1,13 @@
+name: runnerhub-smoke
+on:
+  workflow_dispatch:
+jobs:
+  smoke:
+    runs-on: [self-hosted, runnerhub-smoke]
+    timeout-minutes: 10
+    steps:
+      - run: |
+          set -eu
+          printf 'runner=%s os=%s arch=%s\n' "$RUNNER_NAME" "$RUNNER_OS" "$RUNNER_ARCH"
+          test -n "$RUNNER_NAME"
+          test -d "$RUNNER_TEMP"
