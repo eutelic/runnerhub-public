@@ -64,5 +64,23 @@ jobs:
             -e RUNNERHUB_ENROLLMENT_TOKEN=ci-enrollment-secret \
             -e RUNNERHUB_AGENT_SECRET=ci-agent-secret-that-is-more-than-32-bytes \
             runnerhub-control:test >/dev/null
-          curl --fail --retry 20 --retry-delay 1 --retry-connrefused http://127.0.0.1:18080/healthz
+
+          ready=false
+          for attempt in $(seq 1 30); do
+            if [ "$(docker inspect -f '{{.State.Running}}' "$container" 2>/dev/null || true)" != "true" ]; then
+              echo "RunnerHub control plane exited before becoming healthy" >&2
+              docker logs "$container" >&2 || true
+              exit 1
+            fi
+            if curl --fail --silent --show-error http://127.0.0.1:18080/healthz; then
+              ready=true
+              break
+            fi
+            sleep 1
+          done
+          if [ "$ready" != "true" ]; then
+            echo "RunnerHub control plane did not become healthy" >&2
+            docker logs "$container" >&2 || true
+            exit 1
+          fi
           docker exec "$container" test -f /data/runnerhub.db
