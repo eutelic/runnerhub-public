@@ -47,7 +47,7 @@ From the repository root:
 bash scripts/init-docker-env.sh
 ```
 
-This creates `deploy/docker/.env` with independent random enrollment, agent, and admin secrets and mode `0600` permissions.
+This creates `deploy/docker/.env` with independent random enrollment, agent, admin, and constrained scale-set API credentials and mode `0600` permissions.
 
 Edit the four GitHub values:
 
@@ -70,13 +70,16 @@ bash scripts/start-docker.sh
 
 The bootstrap script:
 
-1. builds and starts the loopback-only control plane;
-2. enrolls the trusted Docker host agent;
-3. waits until the agent is online;
+1. validates the local Docker/GitHub configuration;
+2. builds and starts the loopback-only control plane;
+3. enrolls the trusted Docker host agent and waits until it is online;
 4. creates or updates the repository-scoped RunnerHub pool;
-5. starts the outbound GitHub scale-set listener.
+5. starts the outbound GitHub scale-set listener;
+6. waits until the listener has authenticated, resolved/created its scale set, validated the RunnerHub pool, recovered active workers, and opened its GitHub message session.
 
-The control API remains on `127.0.0.1:8080`. Job containers do not receive the Docker socket. The trusted host agent does receive the Docker socket because it is the component responsible for creating and deleting ephemeral worker containers.
+It reports success only after that listener-ready point. Invalid App credentials, installation IDs, repository URLs, or scale-set setup therefore fail during bootstrap rather than appearing as a successful install with a restarting listener.
+
+The control API remains on `127.0.0.1:8080`. Job containers do not receive the Docker socket. The trusted host agent does receive the Docker socket because it is the component responsible for creating and deleting ephemeral worker containers. The scale-set listener receives a separate constrained RunnerHub API credential rather than the local admin key.
 
 Check the stack:
 
@@ -146,7 +149,17 @@ A successful first acceptance run should show all of the following:
 7. `docker ps -a --filter label=io.runnerhub.worker` shows no stale RunnerHub job containers.
 8. GitHub runner settings show no stale ephemeral runner registration.
 
-## 7. Tuning
+## 7. Runner image freshness
+
+The Docker provider defaults to:
+
+```dotenv
+RUNNERHUB_DOCKER_PULL_POLICY=always
+```
+
+That refreshes the configured ephemeral runner image before each worker starts. If you change it to `missing` or `never`, use an explicit image-rollout process so the runner binary does not become stale.
+
+## 8. Tuning
 
 The default env file exposes the two most useful autoscaling controls:
 
