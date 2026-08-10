@@ -66,6 +66,7 @@ runner_group_id="${RUNNERHUB_RUNNER_GROUP_ID:-1}"
 runner_image="${RUNNERHUB_RUNNER_IMAGE:-ghcr.io/actions/actions-runner:latest}"
 [[ "$max_runners" =~ ^[1-9][0-9]*$ ]] || fail "RUNNERHUB_MAX_RUNNERS must be a positive integer"
 [[ "$runner_group_id" =~ ^[1-9][0-9]*$ ]] || fail "RUNNERHUB_RUNNER_GROUP_ID must be a positive integer"
+[[ "$scale_name" =~ ^[A-Za-z0-9._-]+$ ]] || fail "RUNNERHUB_SCALESET_NAME may contain only letters, numbers, dot, underscore, and hyphen"
 
 compose=(docker compose --env-file "$envfile" -f "$compose_file")
 
@@ -133,6 +134,27 @@ curl --fail-with-body --silent --show-error \
 
 echo "Starting outbound GitHub scale-set listener..."
 "${compose[@]}" --profile autoscale up -d --build scaleset
+
+listener_ready=false
+for _ in $(seq 1 60); do
+  if "${compose[@]}" --profile autoscale logs --no-color scaleset 2>/dev/null | grep -q 'scale-set listener ready'; then
+    listener_ready=true
+    break
+  fi
+  container_id="$("${compose[@]}" --profile autoscale ps -q scaleset 2>/dev/null || true)"
+  if [ -n "$container_id" ]; then
+    running="$(docker inspect -f '{{.State.Running}}' "$container_id" 2>/dev/null || true)"
+    if [ "$running" = "false" ]; then
+      "${compose[@]}" --profile autoscale logs --tail=100 scaleset >&2 || true
+      fail "scale-set listener exited during GitHub setup"
+    fi
+  fi
+  sleep 1
+done
+if [ "$listener_ready" != true ]; then
+  "${compose[@]}" --profile autoscale logs --tail=100 scaleset >&2 || true
+  fail "scale-set listener did not become ready"
+fi
 
 cat <<EOF
 RunnerHub automatic Docker setup is running.
