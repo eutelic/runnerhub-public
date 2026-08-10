@@ -30,7 +30,7 @@ RUNNERHUB_ENROLLMENT_TOKEN=$enrollment
 RUNNERHUB_AGENT_SECRET=$agent_secret
 RUNNERHUB_ADMIN_KEY=$admin_key
 RUNNERHUB_SCALESET_KEY=$scaleset_key
-RUNNERHUB_API_KEYS=$admin_key:admin:local-admin,$scaleset_key:operator:scaleset-listener
+RUNNERHUB_API_KEYS=$admin_key:admin:local-admin,$scaleset_key:scaler:scaleset-listener
 
 RUNNERHUB_GITHUB_APP_ISSUER=REPLACE_WITH_GITHUB_APP_CLIENT_ID
 RUNNERHUB_GITHUB_APP_INSTALLATION_ID=REPLACE_WITH_INSTALLATION_ID
