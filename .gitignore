@@ -1,0 +1,21 @@
+# Local RunnerHub state
+runnerhub.db
+runnerhub.db-shm
+runnerhub.db-wal
+agent-credentials.json
+
+# Docker Compose local configuration
+deploy/docker/.env
+
+# Private keys / certificates generated for local deployments
+*.pem
+*.key
+
+# Local build outputs
+/runnerhubd
+/runnerhub-agent
+/scaleset/runnerhub-scaleset
+
+# Python bytecode and generated caches
+__pycache__/
+*.py[cod]
