@@ -1,13 +1,18 @@
 name: runnerhub-smoke
 on:
   workflow_dispatch:
+
 jobs:
   smoke:
-    runs-on: [self-hosted, runnerhub-smoke]
+    runs-on: runnerhub
     timeout-minutes: 10
     steps:
-      - run: |
+      - name: Verify RunnerHub worker
+        run: |
           set -eu
           printf 'runner=%s os=%s arch=%s\n' "$RUNNER_NAME" "$RUNNER_OS" "$RUNNER_ARCH"
           test -n "$RUNNER_NAME"
+          test -n "$RUNNER_OS"
+          test -n "$RUNNER_ARCH"
           test -d "$RUNNER_TEMP"
+          echo "RunnerHub smoke test passed"
