@@ -19,7 +19,9 @@ Repository-scoped pools may be used for trusted private repositories. RunnerHub 
 
 ## Credentials
 
-Long-lived GitHub App credentials remain in the control plane. Workers receive only JIT configuration.
+Long-lived GitHub App credentials remain in trusted control components; they are never delivered to job workers. In the default automatic Docker deployment, both `runnerhubd` and the scale-set listener need GitHub App authentication. The App PEM is mounted as a read-only Compose secret, copied to an owner-only runtime path, and both processes drop root privileges before normal operation. Workers receive only short-lived JIT configuration.
+
+The scale-set listener uses a separate RunnerHub `scaler` API credential rather than the local admin key. That role is restricted to reading pool/worker state and posting scale-worker requests and scale lifecycle events; it cannot read hosts/audit data, drain hosts, modify pools, access cache mutation endpoints, or request direct-JIT workers.
 
 The global enrollment token is a bootstrap credential. After first enrollment, the agent persists only its rotating per-host token in an owner-only credential file and can restart without the enrollment token. Per-host tokens expire and are refreshed during normal heartbeats.
 
@@ -29,7 +31,9 @@ API keys are hashed in memory before comparison. Trusted identity headers are ac
 
 ## Privilege
 
-The Docker provider does not publish ports or mount `/var/run/docker.sock`. `no-new-privileges` is enabled and workers receive explicit CPU/memory/workdir limits. Privileged capabilities require a future explicit profile/policy. Container isolation is not described as equivalent to a VM security boundary.
+The trusted Docker host agent mounts `/var/run/docker.sock` because it creates and removes ephemeral workers. The worker containers themselves never receive that socket. Workers publish no ports, run with `no-new-privileges`, and receive explicit CPU/memory/workdir limits. Privileged capabilities require a future explicit profile/policy. Container isolation is not described as equivalent to a VM security boundary.
+
+Ephemeral Docker runner images are refreshed before worker startup by default. If an operator changes the pull policy to `missing` or `never`, they become responsible for keeping the runner image current through an explicit image rollout process.
 
 Firecracker and Proxmox remain experimental until their target-host firewall, guest image/template, storage, teardown and privilege assumptions have been validated on real infrastructure.
 
