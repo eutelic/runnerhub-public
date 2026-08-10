@@ -2,23 +2,23 @@
 
 RunnerHub is a control plane for running GitHub Actions on compute you already own: Linux servers, NAS boxes, workstations, VMs and specialized hardware.
 
-The default target is **trusted private-repository CI** with ephemeral workers. RunnerHub keeps long-lived GitHub credentials in the control plane, hands workers only short-lived JIT configuration, schedules pools across hosts, reconciles provider and GitHub state independently, and removes workers by exact identity.
+The default target is **trusted private-repository CI** with ephemeral workers. RunnerHub keeps long-lived GitHub credentials in trusted control components, hands workers only short-lived JIT configuration, schedules pools across hosts, reconciles provider and GitHub state independently, and removes workers by exact identity.
 
-**Start with the [alpha quickstart](docs/QUICKSTART.md)** for the complete GitHub App → Docker host → pool → first-job path.
+**Start with the [alpha quickstart](docs/QUICKSTART.md)** for the complete GitHub App → Docker host → automatic first-job path.
 
 See [ROADMAP](ROADMAP.md), [security model](docs/SECURITY.md), [release guide](docs/RELEASE.md), and [provider guides](docs/providers/).
 
 ## Implemented
 
 - GitHub App + direct JIT runner backend and repository/org discovery
+- outbound GitHub Runner Scale Set listener for automatic demand-driven workers
 - GitHub runner-group security posture checks against actual repository/workflow restrictions
 - SQLite state, audit, reconciliation and a durable leased command queue with encrypted JIT payloads
 - bootstrap enrollment followed by persisted, rotating per-host credentials
 - Docker and TrueNAS providers
 - multi-host resource/capability scheduler, global pool concurrency and draining
 - dashboard/API, API-key roles and trusted reverse-proxy identity-header integration
-- isolated GitHub Runner Scale Set adapter with restart recovery
-- job/repository/workflow timing metadata and queue telemetry from scale-set events
+- scale-set restart recovery and job/repository/workflow timing metadata
 - experimental Firecracker and Proxmox providers
 - trusted process provider for macOS/Windows/special hardware
 - signed atomic update staging, image/version inventory, local CAS cache and cost/capacity telemetry
@@ -27,19 +27,21 @@ See [ROADMAP](ROADMAP.md), [security model](docs/SECURITY.md), [release guide](d
 
 ## Fastest local Docker install
 
-The single-host Compose stack launches both the control plane and a trusted Docker host agent:
+The default single-host setup keeps the control API on loopback and uses an outbound scale-set listener for automatic job demand:
 
 ```bash
 bash scripts/init-docker-env.sh
-# Edit the two GitHub App values in deploy/docker/.env.
-docker compose --env-file deploy/docker/.env -f deploy/docker/compose.yaml up -d --build
+# Fill in the four GitHub values in deploy/docker/.env.
+bash scripts/start-docker.sh
 ```
 
-The initializer generates independent secrets and writes the local `.env` with mode `0600`. The `.env`, private keys, and RunnerHub database are excluded by `.gitignore`. The Compose control API binds only to host loopback by default. See [Docker provider setup](docs/providers/docker.md) and the [alpha quickstart](docs/QUICKSTART.md) before creating the first pool.
+The initializer generates independent secrets and writes the local `.env` with mode `0600`. The start script builds the control plane and Docker agent, waits for enrollment, creates a repository-scoped pool, and starts the scale-set listener. Use the configured scale-set name (default `runnerhub`) directly in `runs-on`.
+
+No inbound GitHub webhook or public RunnerHub listener is required for this default path. The `.env`, private keys, and RunnerHub database are excluded by `.gitignore`. See the [alpha quickstart](docs/QUICKSTART.md) for GitHub App permissions and the first workflow.
 
 ## Development
 
-CI and production container builds use **Go 1.26**, a currently supported Go release. The `scaleset/` module is tested separately against GitHub's standalone scale-set client.
+CI and production container builds use **Go 1.26**. The core module remains compatible with its declared Go version, while the `scaleset/` module is tested separately against GitHub's standalone scale-set client.
 
 ```bash
 go test ./...
