@@ -23,7 +23,19 @@ See [ROADMAP](ROADMAP.md), [security model](docs/SECURITY.md), [release guide](d
 - trusted process provider for macOS/Windows/special hardware
 - signed atomic update staging, image/version inventory, local CAS cache and cost/capacity telemetry
 - 100-job simulated lifecycle soak exercising scheduler/store/agent/reconciler with zero simulated stale registrations
-- CI with tests, race detection, vet, `govulncheck`, macOS/Windows agent cross-builds and container startup smoke testing
+- CI with tests, race detection, vet, `govulncheck`, macOS/Windows agent cross-builds and a full Docker Compose startup/enrollment smoke test
+
+## Fastest local Docker install
+
+The single-host Compose stack launches both the control plane and a trusted Docker host agent:
+
+```bash
+cp deploy/docker/.env.example deploy/docker/.env
+# Edit deploy/docker/.env and replace all placeholders.
+docker compose --env-file deploy/docker/.env -f deploy/docker/compose.yaml up -d --build
+```
+
+The local `.env`, private keys, and RunnerHub database are excluded by `.gitignore`. The Compose control API binds only to host loopback by default. See [Docker provider setup](docs/providers/docker.md) and the [alpha quickstart](docs/QUICKSTART.md) before creating the first pool.
 
 ## Development
 
@@ -38,7 +50,7 @@ go vet ./...
 
 The normal SQLite implementation uses the CGO-free `modernc.org/sqlite` driver. `localtest` exists only to let the lifecycle soak run in restricted/offline development environments.
 
-## Run the control plane
+## Run the control plane from source
 
 ```bash
 export RUNNERHUB_ENROLLMENT_TOKEN='replace-with-a-long-random-value'
@@ -49,7 +61,7 @@ go run ./cmd/runnerhubd
 
 The listener defaults to `127.0.0.1:8080`. For a non-loopback listener, configure `RUNNERHUB_TLS_CERT_FILE` and `RUNNERHUB_TLS_KEY_FILE`, or deliberately set `RUNNERHUB_ALLOW_INSECURE_HTTP=true` only when another private network layer already protects the connection.
 
-## Enroll a Docker host agent
+## Enroll a Docker host agent from source
 
 First launch:
 
