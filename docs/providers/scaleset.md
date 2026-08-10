@@ -16,6 +16,8 @@ bash scripts/start-docker.sh
 
 The default control plane remains loopback-only. The scale-set listener reaches both GitHub and the local RunnerHub API using outbound/local connections, so this path does not require an inbound GitHub webhook or a public RunnerHub port.
 
+The bootstrap does not report success merely because the listener container started. It waits for a `scale-set listener ready` signal emitted only after GitHub authentication, scale-set resolution/creation, RunnerHub pool lookup, active-worker recovery, and GitHub message-session creation have all succeeded.
+
 ## Authentication
 
 The default Docker path uses the same GitHub App private key as the control plane plus the app client ID and installation ID required by the standalone scale-set client. The PEM is mounted as a Compose secret, copied into a mode-0600 runtime path, and the listener drops privileges before starting.
@@ -26,6 +28,8 @@ For repository-scoped scale sets, follow GitHub's current Actions Runner Control
 
 The adapter restores active RunnerHub workers after listener restart and clamps its configured maximum to the RunnerHub pool's `maxConcurrency` value. Completed jobs remove the corresponding in-memory scale-set worker entry, while RunnerHub independently reconciles provider cleanup.
 
-A remaining alpha acceptance case is a worker that fails before GitHub assigns a job. The RunnerHub worker itself is reconciled and cleaned up, but the scale-set adapter still needs real burst/failure testing to prove that desired-count redelivery always replaces that lost pre-assignment capacity without operator intervention. Keep this gate open until it is exercised against a real scale set.
+Before every desired-runner-count decision, the adapter re-reads active workers from RunnerHub. This drops locally cached runners that have already failed or been cleaned up and recovers active workers that were not present in the listener's local map. A provider failure before GitHub assigns a job therefore cannot permanently consume the listener's local capacity count.
+
+Real burst, cancellation, listener-restart, and host-loss testing against GitHub remains an acceptance gate. The repository tests prove local state recovery behavior but cannot prove GitHub message redelivery and assignment behavior under every failure ordering.
 
 The `actions/scaleset` client is still public preview, so the adapter remains isolated from the core lifecycle module and direct JIT registration remains available for diagnostics and explicit provisioning.
