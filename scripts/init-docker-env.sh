@@ -41,6 +41,9 @@ RUNNERHUB_SCALESET_NAME=runnerhub
 RUNNERHUB_MIN_RUNNERS=0
 RUNNERHUB_MAX_RUNNERS=2
 
+# Refresh the official ephemeral runner image before each worker starts.
+RUNNERHUB_DOCKER_PULL_POLICY=always
+
 # Optional overrides.
 # RUNNERHUB_GITHUB_API_URL=https://api.github.com
 # RUNNERHUB_HOST_NAME=my-runner-host
