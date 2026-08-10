@@ -61,25 +61,31 @@ jobs:
           project="runnerhub-ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
 
           cleanup() {
-            docker compose --env-file "$envfile" -f deploy/docker/compose.yaml -p "$project" down -v >/dev/null 2>&1 || true
+            docker compose --env-file "$envfile" -f deploy/docker/compose.yaml -p "$project" --profile autoscale down -v >/dev/null 2>&1 || true
             sudo rm -rf /var/lib/runnerhub >/dev/null 2>&1 || true
             rm -rf "$tmp"
           }
           trap cleanup EXIT
 
           bash -n scripts/init-docker-env.sh
+          bash -n scripts/start-docker.sh
+          bash -n deploy/docker/control-entrypoint.sh
+          bash -n deploy/docker/scaleset-entrypoint.sh
           bash scripts/init-docker-env.sh "$envfile"
           [ "$(stat -c '%a' "$envfile")" = "600" ]
 
           openssl genrsa -out "$keyfile" 2048 >/dev/null 2>&1
           sed -i 's|REPLACE_WITH_GITHUB_APP_CLIENT_ID|Iv1.ci|' "$envfile"
+          sed -i 's|REPLACE_WITH_INSTALLATION_ID|12345678|' "$envfile"
+          sed -i 's|https://github.com/OWNER/REPOSITORY|https://github.com/acme/app|' "$envfile"
           sed -i "s|/absolute/path/to/runnerhub-github-app.pem|$keyfile|" "$envfile"
           printf '\nRUNNERHUB_HOST_NAME=ci-docker-host\n' >> "$envfile"
-          admin_key="$(sed -n 's/^RUNNERHUB_API_KEYS=\([^:]*\):.*/\1/p' "$envfile")"
+          admin_key="$(sed -n 's/^RUNNERHUB_ADMIN_KEY=//p' "$envfile")"
           test -n "$admin_key"
 
-          docker compose --env-file "$envfile" -f deploy/docker/compose.yaml -p "$project" config >/dev/null
-          docker compose --env-file "$envfile" -f deploy/docker/compose.yaml -p "$project" up -d --build
+          docker compose --env-file "$envfile" -f deploy/docker/compose.yaml -p "$project" --profile autoscale config >/dev/null
+          docker compose --env-file "$envfile" -f deploy/docker/compose.yaml -p "$project" --profile autoscale build scaleset
+          docker compose --env-file "$envfile" -f deploy/docker/compose.yaml -p "$project" up -d --build control agent
 
           ready=false
           for attempt in $(seq 1 45); do
@@ -103,7 +109,7 @@ jobs:
           enrolled=false
           for attempt in $(seq 1 45); do
             hosts="$(curl --fail --silent --show-error -H "Authorization: Bearer ${admin_key}" http://127.0.0.1:8080/api/v1/hosts || true)"
-            if printf '%s' "$hosts" | grep -q '"provider":"docker"'; then
+            if printf '%s' "$hosts" | grep -q '"provider":"docker"' && printf '%s' "$hosts" | grep -q '"state":"online"'; then
               enrolled=true
               break
             fi
