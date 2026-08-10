@@ -30,12 +30,12 @@ See [ROADMAP](ROADMAP.md), [security model](docs/SECURITY.md), [release guide](d
 The single-host Compose stack launches both the control plane and a trusted Docker host agent:
 
 ```bash
-cp deploy/docker/.env.example deploy/docker/.env
-# Edit deploy/docker/.env and replace all placeholders.
+bash scripts/init-docker-env.sh
+# Edit the two GitHub App values in deploy/docker/.env.
 docker compose --env-file deploy/docker/.env -f deploy/docker/compose.yaml up -d --build
 ```
 
-The local `.env`, private keys, and RunnerHub database are excluded by `.gitignore`. The Compose control API binds only to host loopback by default. See [Docker provider setup](docs/providers/docker.md) and the [alpha quickstart](docs/QUICKSTART.md) before creating the first pool.
+The initializer generates independent secrets and writes the local `.env` with mode `0600`. The `.env`, private keys, and RunnerHub database are excluded by `.gitignore`. The Compose control API binds only to host loopback by default. See [Docker provider setup](docs/providers/docker.md) and the [alpha quickstart](docs/QUICKSTART.md) before creating the first pool.
 
 ## Development
 
