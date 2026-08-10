@@ -36,6 +36,7 @@ func main() {
 			HostID:        name,
 			StateDir:      stateDir,
 			AllowedImages: []string{env("RUNNERHUB_RUNNER_IMAGE", "ghcr.io/actions/actions-runner:latest")},
+			PullPolicy:    env("RUNNERHUB_DOCKER_PULL_POLICY", "always"),
 		})
 		must(err)
 		providers[kind] = p
