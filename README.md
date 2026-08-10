@@ -17,13 +17,13 @@ See [ROADMAP](ROADMAP.md), [security model](docs/SECURITY.md), [release guide](d
 - bootstrap enrollment followed by persisted, rotating per-host credentials
 - Docker and TrueNAS providers
 - multi-host resource/capability scheduler, global pool concurrency and draining
-- dashboard/API, API-key roles and trusted reverse-proxy identity-header integration
-- scale-set restart recovery and job/repository/workflow timing metadata
+- dashboard/API, API-key roles, a constrained scale-set API role, and trusted reverse-proxy identity-header integration
+- scale-set restart recovery, per-demand active-worker resync and job/repository/workflow timing metadata
 - experimental Firecracker and Proxmox providers
 - trusted process provider for macOS/Windows/special hardware
 - signed atomic update staging, image/version inventory, local CAS cache and cost/capacity telemetry
 - 100-job simulated lifecycle soak exercising scheduler/store/agent/reconciler with zero simulated stale registrations
-- CI with tests, race detection, vet, `govulncheck`, macOS/Windows agent cross-builds and a full Docker Compose startup/enrollment smoke test
+- CI with tests, race detection, vet, `govulncheck`, macOS/Windows agent cross-builds and a full Docker Compose startup/enrollment/security smoke test
 
 ## Fastest local Docker install
 
@@ -35,9 +35,9 @@ bash scripts/init-docker-env.sh
 bash scripts/start-docker.sh
 ```
 
-The initializer generates independent secrets and writes the local `.env` with mode `0600`. The start script builds the control plane and Docker agent, waits for enrollment, creates a repository-scoped pool, and starts the scale-set listener. Use the configured scale-set name (default `runnerhub`) directly in `runs-on`.
+The initializer generates independent enrollment, agent, admin and constrained scale-set credentials and writes the local `.env` with mode `0600`. The start script builds the control plane and Docker agent, waits for enrollment, creates a repository-scoped pool, starts the scale-set listener, and does not report success until GitHub authentication/message-session setup completes. Use the configured scale-set name (default `runnerhub`) directly in `runs-on`.
 
-No inbound GitHub webhook or public RunnerHub listener is required for this default path. The `.env`, private keys, and RunnerHub database are excluded by `.gitignore`. See the [alpha quickstart](docs/QUICKSTART.md) for GitHub App permissions and the first workflow.
+No inbound GitHub webhook or public RunnerHub listener is required for this default path. Ephemeral Docker workers refresh the configured runner image by default so a locally cached moving tag does not silently age out. The `.env`, private keys, and RunnerHub database are excluded by `.gitignore`. See the [alpha quickstart](docs/QUICKSTART.md) for GitHub App permissions and the first workflow.
 
 ## Development
 
