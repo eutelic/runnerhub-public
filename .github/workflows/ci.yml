@@ -67,15 +67,16 @@ jobs:
           }
           trap cleanup EXIT
 
+          bash -n scripts/init-docker-env.sh
+          bash scripts/init-docker-env.sh "$envfile"
+          [ "$(stat -c '%a' "$envfile")" = "600" ]
+
           openssl genrsa -out "$keyfile" 2048 >/dev/null 2>&1
-          cat >"$envfile" <<EOF
-          RUNNERHUB_ENROLLMENT_TOKEN=ci-enrollment-secret
-          RUNNERHUB_AGENT_SECRET=ci-agent-secret-that-is-more-than-32-bytes
-          RUNNERHUB_API_KEYS=ci-admin-key:admin:ci
-          RUNNERHUB_GITHUB_APP_ISSUER=Iv1.ci
-          RUNNERHUB_GITHUB_APP_PRIVATE_KEY_FILE=$keyfile
-          RUNNERHUB_HOST_NAME=ci-docker-host
-          EOF
+          sed -i 's|REPLACE_WITH_GITHUB_APP_CLIENT_ID|Iv1.ci|' "$envfile"
+          sed -i "s|/absolute/path/to/runnerhub-github-app.pem|$keyfile|" "$envfile"
+          printf '\nRUNNERHUB_HOST_NAME=ci-docker-host\n' >> "$envfile"
+          admin_key="$(sed -n 's/^RUNNERHUB_API_KEYS=\([^:]*\):.*/\1/p' "$envfile")"
+          test -n "$admin_key"
 
           docker compose --env-file "$envfile" -f deploy/docker/compose.yaml -p "$project" config >/dev/null
           docker compose --env-file "$envfile" -f deploy/docker/compose.yaml -p "$project" up -d --build
@@ -101,7 +102,7 @@ jobs:
 
           enrolled=false
           for attempt in $(seq 1 45); do
-            hosts="$(curl --fail --silent --show-error -H 'Authorization: Bearer ci-admin-key' http://127.0.0.1:8080/api/v1/hosts || true)"
+            hosts="$(curl --fail --silent --show-error -H "Authorization: Bearer ${admin_key}" http://127.0.0.1:8080/api/v1/hosts || true)"
             if printf '%s' "$hosts" | grep -q '"provider":"docker"'; then
               enrolled=true
               break
