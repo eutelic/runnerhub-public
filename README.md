@@ -4,6 +4,8 @@ RunnerHub is a control plane for running GitHub Actions on compute you already o
 
 The default target is **trusted private-repository CI** with ephemeral workers. RunnerHub keeps long-lived GitHub credentials in the control plane, hands workers only short-lived JIT configuration, schedules pools across hosts, reconciles provider and GitHub state independently, and removes workers by exact identity.
 
+**Start with the [alpha quickstart](docs/QUICKSTART.md)** for the complete GitHub App → Docker host → pool → first-job path.
+
 See [ROADMAP](ROADMAP.md), [security model](docs/SECURITY.md), [release guide](docs/RELEASE.md), and [provider guides](docs/providers/).
 
 ## Implemented
