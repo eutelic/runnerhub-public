@@ -8,8 +8,8 @@ jobs:
   core:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v7
         with:
           go-version: '1.26.x'
           cache: true
@@ -24,8 +24,8 @@ jobs:
       run:
         working-directory: scaleset
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v7
         with:
           go-version: '1.26.x'
           cache-dependency-path: scaleset/go.sum
@@ -38,8 +38,8 @@ jobs:
       matrix:
         goos: [darwin, windows]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v7
         with:
           go-version: '1.26.x'
           cache: true
@@ -47,7 +47,7 @@ jobs:
   container-smoke:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - run: docker build --target control -f deploy/docker/Dockerfile -t runnerhub-control:test .
       - name: Boot control plane with fresh persistent volume
         run: |
