@@ -1,15 +1,17 @@
 # RunnerHub alpha quickstart
 
-This guide gets one Linux Docker host executing ephemeral GitHub Actions jobs for a **trusted private repository**.
+This guide gets one Linux Docker host executing ephemeral GitHub Actions jobs for a **trusted private repository** using the single-host Docker Compose stack.
 
 RunnerHub is still alpha software. Start with a disposable or dedicated CI host, not a machine that contains unrelated secrets or irreplaceable workloads.
 
 ## 1. Prerequisites
 
-- Linux host with Docker installed and usable by the account running `runnerhub-agent`.
-- Go 1.26 if running RunnerHub from source.
+- Linux host with Docker Engine and the `docker compose` plugin.
+- `openssl` for local secret generation.
 - A private GitHub repository or organization you administer.
 - A GitHub App installed only on the repositories RunnerHub should manage.
+
+Go 1.26 is only required if you choose to run RunnerHub from source instead of Compose.
 
 GitHub recommends self-hosted runners for private repositories because pull requests from forks of public repositories can execute untrusted code on runner machines.
 
@@ -32,62 +34,91 @@ Official references:
 - https://docs.github.com/en/rest/authentication/permissions-required-for-github-apps
 - https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-a-json-web-token-jwt-for-a-github-app
 
-## 3. Generate RunnerHub secrets
-
-Generate separate values; do not reuse one secret for multiple roles.
-
-```bash
-export RUNNERHUB_ENROLLMENT_TOKEN="$(openssl rand -hex 32)"
-export RUNNERHUB_AGENT_SECRET="$(openssl rand -hex 32)"
-export RUNNERHUB_ADMIN_KEY="$(openssl rand -hex 32)"
-```
-
-The enrollment token is bootstrap-only on an agent. After first enrollment, the agent stores a rotating per-host credential and the bootstrap token can be removed from that host.
-
-## 4. Start the control plane
+## 3. Generate the local Docker configuration
 
 From the repository root:
 
 ```bash
-export RUNNERHUB_GITHUB_APP_ISSUER='YOUR_GITHUB_APP_CLIENT_ID'
-export RUNNERHUB_GITHUB_APP_PRIVATE_KEY_FILE='/absolute/path/to/github-app.pem'
-export RUNNERHUB_API_KEYS="${RUNNERHUB_ADMIN_KEY}:admin:local-admin"
-export RUNNERHUB_DB='./runnerhub.db'
-
-go run ./cmd/runnerhubd
+bash scripts/init-docker-env.sh
 ```
 
-The default listener is `127.0.0.1:8080`. Keep it loopback-only for this single-host quickstart.
+This creates `deploy/docker/.env` with mode `0600` and independent random values for:
 
-Check it:
+- the bootstrap enrollment token;
+- the agent credential-signing secret;
+- the local admin API key.
+
+The generated `.env` is excluded by `.gitignore`.
+
+Edit only these two required GitHub App values:
+
+```text
+RUNNERHUB_GITHUB_APP_ISSUER=YOUR_GITHUB_APP_CLIENT_ID
+RUNNERHUB_GITHUB_APP_PRIVATE_KEY_FILE=/absolute/path/to/runnerhub-github-app.pem
+```
+
+The private key file remains on the host and is mounted read-only into the control-plane container.
+
+## 4. Start RunnerHub
+
+```bash
+docker compose \
+  --env-file deploy/docker/.env \
+  -f deploy/docker/compose.yaml \
+  up -d --build
+```
+
+The stack starts:
+
+- `control`: RunnerHub's control plane on host loopback only (`127.0.0.1:8080`);
+- `agent`: the trusted Docker host agent, also using host networking so it can reach the loopback-only control plane.
+
+The agent container has access to `/var/run/docker.sock` because it is trusted infrastructure responsible for creating and deleting workers. **The ephemeral job containers do not receive the Docker socket.**
+
+Check startup:
+
+```bash
+docker compose \
+  --env-file deploy/docker/.env \
+  -f deploy/docker/compose.yaml \
+  ps
+```
+
+If either service is unhealthy or restarting:
+
+```bash
+docker compose \
+  --env-file deploy/docker/.env \
+  -f deploy/docker/compose.yaml \
+  logs -f control agent
+```
+
+## 5. Confirm the host enrolled
+
+Load the generated configuration into your current shell and extract the admin key:
+
+```bash
+set -a
+. deploy/docker/.env
+set +a
+export RUNNERHUB_ADMIN_KEY="${RUNNERHUB_API_KEYS%%:*}"
+```
+
+Check the control plane:
 
 ```bash
 curl --fail http://127.0.0.1:8080/healthz
 ```
 
-## 5. Enroll the Docker host
-
-In a second shell on the same machine:
-
-```bash
-export RUNNERHUB_CONTROL_PLANE_URL='http://127.0.0.1:8080'
-export RUNNERHUB_ALLOW_INSECURE_HTTP=true
-export RUNNERHUB_ENROLLMENT_TOKEN='<same bootstrap token used by the control plane>'
-export RUNNERHUB_PROVIDER='docker'
-export RUNNERHUB_STATE_DIR="$HOME/.local/share/runnerhub"
-
-go run ./cmd/runnerhub-agent
-```
-
-`RUNNERHUB_ALLOW_INSECURE_HTTP=true` is acceptable here only because traffic stays on loopback. For a remote host, use HTTPS or another explicitly trusted private transport layer.
-
-Confirm enrollment:
+Check enrollment:
 
 ```bash
 curl --fail \
   -H "Authorization: Bearer ${RUNNERHUB_ADMIN_KEY}" \
   http://127.0.0.1:8080/api/v1/hosts
 ```
+
+You should see one `docker` provider host in the `online` state. The agent persists a rotating per-host credential under `/var/lib/runnerhub` so restarts do not require creating a new host identity.
 
 ## 6. Create an organization runner group
 
@@ -147,7 +178,7 @@ jobs:
   runnerhub-smoke:
     runs-on: [self-hosted, runnerhub]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - run: |
           uname -a
           echo "RunnerHub smoke test passed"
@@ -194,3 +225,18 @@ Before treating an installation as usable, verify all of these:
 7. GitHub Actions runner settings show no stale ephemeral registration.
 
 If one of those fails, preserve the RunnerHub audit output and the agent/control-plane logs before retrying. Those are the acceptance signals the repository's simulated lifecycle tests cannot replace.
+
+## Stop RunnerHub
+
+Keep control-plane data:
+
+```bash
+docker compose \
+  --env-file deploy/docker/.env \
+  -f deploy/docker/compose.yaml \
+  down
+```
+
+To intentionally remove the Compose-managed control-plane volume as well, add `-v`. The agent credential/state bind mount under `/var/lib/runnerhub` is separate and is not deleted by `docker compose down -v`.
+
+For source-based or multi-host installs, see the main README and provider documentation.
