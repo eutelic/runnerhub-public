@@ -1,6 +1,10 @@
 package main
 
 import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
@@ -84,6 +88,49 @@ func TestValidateExistingScaleSet(t *testing.T) {
 	}
 	if err := validateExistingScaleSet(set, 1, []scaleset.Label{{Name: "other"}}); err == nil {
 		t.Fatal("label mismatch accepted")
+	}
+}
+
+func TestSyncActiveWorkersDropsFailedAndRecoversLiveWorkers(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/workers" {
+			http.NotFound(w, r)
+			return
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer admin" {
+			t.Fatalf("authorization=%q", got)
+		}
+		_ = json.NewEncoder(w).Encode([]workerResponse{
+			{ID: "live-id", PoolID: "pool-docker", RunnerName: "live", State: "registering"},
+			{ID: "failed-id", PoolID: "pool-docker", RunnerName: "failed", State: "failed"},
+			{ID: "other-id", PoolID: "other", RunnerName: "other", State: "busy"},
+		})
+	}))
+	defer srv.Close()
+
+	s := &scaler{
+		names: map[string]string{"stale": "stale-id"},
+		hub: runnerHubClient{
+			base:   srv.URL,
+			token:  "admin",
+			poolID: "pool-docker",
+			http:   srv.Client(),
+		},
+	}
+	if err := s.syncActiveWorkers(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if s.count() != 1 {
+		t.Fatalf("active count=%d names=%v", s.count(), s.names)
+	}
+	if got := s.names["live"]; got != "live-id" {
+		t.Fatalf("live worker not recovered: %v", s.names)
+	}
+	if _, ok := s.names["stale"]; ok {
+		t.Fatalf("stale local worker was retained: %v", s.names)
+	}
+	if _, ok := s.names["failed"]; ok {
+		t.Fatalf("failed RunnerHub worker was counted as active: %v", s.names)
 	}
 }
 
