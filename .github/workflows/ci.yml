@@ -81,7 +81,11 @@ jobs:
           sed -i "s|/absolute/path/to/runnerhub-github-app.pem|$keyfile|" "$envfile"
           printf '\nRUNNERHUB_HOST_NAME=ci-docker-host\n' >> "$envfile"
           admin_key="$(sed -n 's/^RUNNERHUB_ADMIN_KEY=//p' "$envfile")"
+          scaleset_key="$(sed -n 's/^RUNNERHUB_SCALESET_KEY=//p' "$envfile")"
           test -n "$admin_key"
+          test -n "$scaleset_key"
+          test "$admin_key" != "$scaleset_key"
+          grep -q "${scaleset_key}:scaler:scaleset-listener" "$envfile"
 
           docker compose --env-file "$envfile" -f deploy/docker/compose.yaml -p "$project" --profile autoscale config >/dev/null
           docker compose --env-file "$envfile" -f deploy/docker/compose.yaml -p "$project" --profile autoscale build scaleset
@@ -105,6 +109,15 @@ jobs:
             docker compose --env-file "$envfile" -f deploy/docker/compose.yaml -p "$project" logs control >&2 || true
             exit 1
           fi
+
+          # The generated scale-set key can read only the state its listener needs.
+          curl --fail --silent --show-error \
+            -H "Authorization: Bearer ${scaleset_key}" \
+            http://127.0.0.1:8080/api/v1/workers >/dev/null
+          status="$(curl --silent --output /dev/null --write-out '%{http_code}' \
+            -H "Authorization: Bearer ${scaleset_key}" \
+            http://127.0.0.1:8080/api/v1/hosts)"
+          test "$status" = "403"
 
           enrolled=false
           for attempt in $(seq 1 45); do
