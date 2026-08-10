@@ -45,6 +45,33 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
       - /var/lib/runnerhub:/var/lib/runnerhub
 
+  scaleset:
+    profiles: ["autoscale"]
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile
+      target: scaleset
+    restart: unless-stopped
+    network_mode: host
+    depends_on:
+      - control
+      - agent
+    environment:
+      RUNNERHUB_GITHUB_URL: ${RUNNERHUB_GITHUB_URL:?required}
+      RUNNERHUB_SCALESET_NAME: ${RUNNERHUB_SCALESET_NAME:-runnerhub}
+      RUNNERHUB_POOL_ID: ${RUNNERHUB_POOL_ID:-pool-docker}
+      RUNNERHUB_CONTROL_URL: http://127.0.0.1:8080
+      RUNNERHUB_CONTROL_TOKEN: ${RUNNERHUB_ADMIN_KEY:?required}
+      RUNNERHUB_MIN_RUNNERS: ${RUNNERHUB_MIN_RUNNERS:-0}
+      RUNNERHUB_MAX_RUNNERS: ${RUNNERHUB_MAX_RUNNERS:-2}
+      RUNNERHUB_RUNNER_GROUP: ${RUNNERHUB_RUNNER_GROUP:-}
+      RUNNERHUB_GITHUB_APP_CLIENT_ID: ${RUNNERHUB_GITHUB_APP_ISSUER:?required}
+      RUNNERHUB_GITHUB_APP_INSTALLATION_ID: ${RUNNERHUB_GITHUB_APP_INSTALLATION_ID:?required}
+      RUNNERHUB_GITHUB_APP_PRIVATE_KEY_FILE: /run/secrets/github_app_private_key
+      RUNNERHUB_ALLOW_INSECURE_HTTP: "true"
+    secrets:
+      - github_app_private_key
+
 volumes:
   runnerhub-data: {}
 
