@@ -37,6 +37,7 @@ services:
       RUNNERHUB_STATE_DIR: /var/lib/runnerhub
       RUNNERHUB_HOST_NAME: ${RUNNERHUB_HOST_NAME:-docker-host}
       RUNNERHUB_RUNNER_IMAGE: ${RUNNERHUB_RUNNER_IMAGE:-ghcr.io/actions/actions-runner:latest}
+      RUNNERHUB_DOCKER_PULL_POLICY: ${RUNNERHUB_DOCKER_PULL_POLICY:-always}
     volumes:
       # The agent is trusted infrastructure and needs the host Docker API to
       # create ephemeral workers. Worker containers themselves never receive
