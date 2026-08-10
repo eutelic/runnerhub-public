@@ -44,43 +44,70 @@ jobs:
           go-version: '1.26.x'
           cache: true
       - run: GOOS=${{ matrix.goos }} GOARCH=amd64 CGO_ENABLED=0 go build ./cmd/runnerhub-agent
-  container-smoke:
+  docker-stack-smoke:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - run: docker build --target control -f deploy/docker/Dockerfile -t runnerhub-control:test .
-      - name: Boot control plane with fresh persistent volume
+      - name: Boot Compose stack and enroll Docker agent
         run: |
           set -euo pipefail
-          volume="runnerhub-ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          container="runnerhub-ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          cleanup() { docker rm -f "$container" >/dev/null 2>&1 || true; docker volume rm "$volume" >/dev/null 2>&1 || true; }
+          tmp="$(mktemp -d)"
+          envfile="$tmp/runnerhub.env"
+          keyfile="$tmp/github-app.pem"
+          project="runnerhub-ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+
+          cleanup() {
+            docker compose --env-file "$envfile" -f deploy/docker/compose.yaml -p "$project" down -v >/dev/null 2>&1 || true
+            sudo rm -rf /var/lib/runnerhub >/dev/null 2>&1 || true
+            rm -rf "$tmp"
+          }
           trap cleanup EXIT
-          docker volume create "$volume" >/dev/null
-          docker run -d --name "$container" -p 18080:8080 -v "$volume:/data" \
-            -e RUNNERHUB_HTTP_ADDR=0.0.0.0:8080 \
-            -e RUNNERHUB_ALLOW_INSECURE_HTTP=true \
-            -e RUNNERHUB_DB=/data/runnerhub.db \
-            -e RUNNERHUB_ENROLLMENT_TOKEN=ci-enrollment-secret \
-            -e RUNNERHUB_AGENT_SECRET=ci-agent-secret-that-is-more-than-32-bytes \
-            runnerhub-control:test >/dev/null
+
+          openssl genrsa -out "$keyfile" 2048 >/dev/null 2>&1
+          cat >"$envfile" <<EOF
+          RUNNERHUB_ENROLLMENT_TOKEN=ci-enrollment-secret
+          RUNNERHUB_AGENT_SECRET=ci-agent-secret-that-is-more-than-32-bytes
+          RUNNERHUB_API_KEYS=ci-admin-key:admin:ci
+          RUNNERHUB_GITHUB_APP_ISSUER=Iv1.ci
+          RUNNERHUB_GITHUB_APP_PRIVATE_KEY_FILE=$keyfile
+          RUNNERHUB_HOST_NAME=ci-docker-host
+          EOF
+
+          docker compose --env-file "$envfile" -f deploy/docker/compose.yaml -p "$project" config >/dev/null
+          docker compose --env-file "$envfile" -f deploy/docker/compose.yaml -p "$project" up -d --build
 
           ready=false
-          for attempt in $(seq 1 30); do
-            if [ "$(docker inspect -f '{{.State.Running}}' "$container" 2>/dev/null || true)" != "true" ]; then
-              echo "RunnerHub control plane exited before becoming healthy" >&2
-              docker logs "$container" >&2 || true
-              exit 1
-            fi
-            if curl --fail --silent --show-error http://127.0.0.1:18080/healthz; then
+          for attempt in $(seq 1 45); do
+            if curl --fail --silent --show-error http://127.0.0.1:8080/healthz >/dev/null 2>&1; then
               ready=true
               break
+            fi
+            if [ "$(docker compose --env-file "$envfile" -f deploy/docker/compose.yaml -p "$project" ps --status exited -q control | wc -l)" -gt 0 ]; then
+              echo "RunnerHub control plane exited before becoming healthy" >&2
+              docker compose --env-file "$envfile" -f deploy/docker/compose.yaml -p "$project" logs control >&2 || true
+              exit 1
             fi
             sleep 1
           done
           if [ "$ready" != "true" ]; then
             echo "RunnerHub control plane did not become healthy" >&2
-            docker logs "$container" >&2 || true
+            docker compose --env-file "$envfile" -f deploy/docker/compose.yaml -p "$project" logs control >&2 || true
             exit 1
           fi
-          docker exec "$container" test -f /data/runnerhub.db
+
+          enrolled=false
+          for attempt in $(seq 1 45); do
+            hosts="$(curl --fail --silent --show-error -H 'Authorization: Bearer ci-admin-key' http://127.0.0.1:8080/api/v1/hosts || true)"
+            if printf '%s' "$hosts" | grep -q '"provider":"docker"'; then
+              enrolled=true
+              break
+            fi
+            sleep 1
+          done
+          if [ "$enrolled" != "true" ]; then
+            echo "Docker agent did not enroll" >&2
+            docker compose --env-file "$envfile" -f deploy/docker/compose.yaml -p "$project" logs control agent >&2 || true
+            exit 1
+          fi
+
+          docker compose --env-file "$envfile" -f deploy/docker/compose.yaml -p "$project" exec -T control test -f /data/runnerhub.db
