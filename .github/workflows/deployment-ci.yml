@@ -78,6 +78,30 @@ jobs:
           after="$(sha256sum "$secret_dir/enrollment-token" "$secret_dir/agent-secret" "$secret_dir/admin-key" "$secret_dir/scaleset-key")"
           test "$before" = "$after"
 
+          probe="$tmp/secret-probe"
+          printf 'from-file\n' > "$probe"
+          RUNNERHUB_TEST_FILE="$probe" sh -c '
+            set -eu
+            . deploy/docker/secret-file.sh
+            runnerhub_load_secret RUNNERHUB_TEST RUNNERHUB_TEST_FILE
+            test "$RUNNERHUB_TEST" = "from-file"
+          '
+          RUNNERHUB_TEST='from-env' RUNNERHUB_TEST_FILE="$probe" sh -c '
+            set -eu
+            . deploy/docker/secret-file.sh
+            runnerhub_load_secret RUNNERHUB_TEST RUNNERHUB_TEST_FILE
+            test "$RUNNERHUB_TEST" = "from-env"
+          '
+          : > "$probe"
+          if RUNNERHUB_TEST_FILE="$probe" sh -c '
+            set -eu
+            . deploy/docker/secret-file.sh
+            runnerhub_load_secret RUNNERHUB_TEST RUNNERHUB_TEST_FILE
+          '; then
+            echo 'empty secret file unexpectedly succeeded' >&2
+            exit 1
+          fi
+
           docker compose --env-file "$envfile" -f deploy/docker/compose.yaml --profile autoscale config >/dev/null
           docker compose --env-file "$envfile" -f deploy/docker/compose.release.yaml config >/dev/null
           docker compose -f deploy/truenas/compose.yaml config >/dev/null
