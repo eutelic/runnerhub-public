@@ -1,6 +1,9 @@
 #!/bin/sh
 set -eu
 
+. /usr/local/lib/runnerhub/secret-file.sh
+runnerhub_load_secret RUNNERHUB_ADMIN_KEY RUNNERHUB_ADMIN_KEY_FILE
+
 fail() {
   echo "RunnerHub bootstrap: $*" >&2
   exit 1
@@ -20,7 +23,7 @@ pool_disk="${RUNNERHUB_POOL_DISK_BYTES:-21474836480}"
 timeout="${RUNNERHUB_BOOTSTRAP_TIMEOUT_SECONDS:-180}"
 provider="${RUNNERHUB_BOOTSTRAP_PROVIDER:-docker}"
 
-[ -n "$admin_key" ] || fail "RUNNERHUB_ADMIN_KEY is required"
+[ -n "$admin_key" ] || fail "RUNNERHUB_ADMIN_KEY or RUNNERHUB_ADMIN_KEY_FILE is required"
 [ -n "$github_url" ] || fail "RUNNERHUB_GITHUB_URL is required"
 
 case "$github_url" in

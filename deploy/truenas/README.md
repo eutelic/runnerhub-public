@@ -1,6 +1,6 @@
 # Deploy RunnerHub on TrueNAS SCALE
 
-This is the supported **image-based** deployment path for TrueNAS SCALE 24.10 or newer, where Apps are backed by Docker and Custom Apps can be installed from Docker Compose YAML.
+This is the supported **image-based** deployment path for TrueNAS SCALE 24.10 or newer, where Custom Apps can be installed from Docker Compose YAML.
 
 It does not build RunnerHub on the NAS. TrueNAS pulls the prebuilt RunnerHub control, agent, bootstrap, and scale-set images from GHCR.
 
@@ -49,43 +49,35 @@ Record:
 
 The current quickstart permission set is repository **Administration: read/write** plus **Metadata: read-only**.
 
-## 3. Generate RunnerHub secrets
+## 3. Edit the TrueNAS Compose template
 
-Generate four independent values:
+Open `deploy/truenas/compose.yaml` and change only the installation-specific values in `x-runnerhub-config`:
 
-```bash
-openssl rand -hex 32  # enrollment token
-openssl rand -hex 32  # agent secret
-openssl rand -hex 32  # admin key
-openssl rand -hex 32  # scale-set key
+- `/mnt/POOL/runnerhub/...` to your real dataset paths
+- `Iv1.CHANGE_ME` to the GitHub App client ID
+- `CHANGE_ME_INSTALLATION_ID` to the installation ID
+- `https://github.com/OWNER/REPOSITORY` to the target private repository
+
+You do **not** need to generate or paste RunnerHub enrollment/API secrets into the YAML.
+
+On first boot, the `init-secrets` service validates `github-app.pem` and creates four random 256-bit credentials in the secrets dataset:
+
+```text
+enrollment-token
+agent-secret
+admin-key
+scaleset-key
 ```
 
-Keep the admin key. The dashboard asks for it when making API requests.
-
-## 4. Edit the TrueNAS Compose template
-
-Open `deploy/truenas/compose.yaml` and replace the values in the `x-runnerhub-config` block:
-
-- `/mnt/POOL/runnerhub/...` with your real dataset paths
-- `CHANGE_ME_ENROLLMENT_TOKEN`
-- `CHANGE_ME_AGENT_SECRET`
-- `CHANGE_ME_ADMIN_KEY`
-- `CHANGE_ME_SCALESET_KEY`
-- `Iv1.CHANGE_ME`
-- `CHANGE_ME_INSTALLATION_ID`
-- `https://github.com/OWNER/REPOSITORY`
-
-The YAML anchors intentionally define each secret once and reuse it across the services.
+Existing non-empty secret files are preserved, so restarting or updating the app does not rotate credentials unexpectedly. An empty secret file causes startup to fail instead of silently replacing it.
 
 Port `8787` is the default dashboard/API port on the NAS. Change the `published` value if that port is already used.
 
-## 5. If the GHCR packages are private
+## 4. If the GHCR packages are private
 
-RunnerHub currently lives in a private GitHub repository, so GHCR package visibility may require authentication unless the packages are explicitly made public.
+If the RunnerHub GHCR packages are private, TrueNAS must authenticate to `ghcr.io` with credentials that can read the packages. Configure this under the Apps Docker registry settings before installing. If the packages are public, no registry credential is needed.
 
-In TrueNAS go to **Apps > Configuration > Sign-in to a Docker registry**, add `ghcr.io`, and provide GitHub credentials that can read the RunnerHub packages. Alternatively, make the published RunnerHub container packages public before installing.
-
-## 6. Install in TrueNAS
+## 5. Install in TrueNAS
 
 In TrueNAS:
 
@@ -98,12 +90,23 @@ In TrueNAS:
 
 The stack starts in this order:
 
-1. `control` starts and opens its internal API.
-2. `agent` connects through the Compose network and enrolls as a Docker host.
-3. one-shot `bootstrap` waits for the agent, creates/updates the repository pool, then exits successfully.
-4. `scaleset` starts only after bootstrap succeeds and opens the outbound GitHub message session.
+1. `init-secrets` validates the GitHub App key and prepares persistent RunnerHub credentials.
+2. `control` starts and opens its internal API.
+3. `agent` connects through the Compose network and enrolls as a Docker host.
+4. one-shot `bootstrap` waits for the agent and creates/updates the repository pool.
+5. `scaleset` starts only after bootstrap succeeds and opens the outbound GitHub message session.
 
 No inbound GitHub webhook or public RunnerHub endpoint is required.
+
+## 6. Retrieve the admin key
+
+After the first successful start, read the generated admin key from the TrueNAS shell:
+
+```bash
+sudo cat /mnt/POOL/runnerhub/secrets/admin-key
+```
+
+Use your actual dataset path. Store this value in your password manager; it authorizes administrative RunnerHub API operations.
 
 ## 7. Verify
 
@@ -128,14 +131,42 @@ jobs:
 
 After the job completes, verify that the worker reaches `deleted` in RunnerHub and that no stale `runnerhub-*` worker container remains.
 
-## Updating
+## Persistence and backup
 
-The template uses `:latest` plus `pull_policy: always`. After new images are published, use the TrueNAS app update/redeploy flow to pull them. The SQLite control-plane database and agent credentials are stored in the dedicated dataset and survive container replacement.
+Back up all three RunnerHub paths together:
 
-For safer rollback during alpha testing, replace `:latest` in all four service images with the same immutable `sha-<commit>` tag published by the image workflow. Returning all four services to the previous SHA rolls the application binaries back while preserving state.
+```text
+data/
+agent/
+secrets/
+```
+
+The control database, per-host agent credential, generated service credentials, and GitHub App key are all required to restore the same installation cleanly.
+
+Do not delete or regenerate individual secret files while the stack is running.
+
+## Updating and rollback
+
+The template uses `:latest` plus `pull_policy: always`. After new images are published, use the TrueNAS app update/redeploy flow to pull them. Persistent state stays in the dedicated dataset and survives container replacement.
+
+For safer rollback during alpha testing, replace `:latest` in all four RunnerHub service images with the same immutable `sha-<commit>` tag published by the image workflow. Returning all four services to the previous SHA rolls application binaries back while preserving state.
+
+The `init-secrets` service also uses the bootstrap image; pin it to the same SHA as the bootstrap service when pinning a deployment.
+
+## Troubleshooting first boot
+
+Check services in dependency order:
+
+1. `init-secrets`: invalid/missing PEM or unwritable secrets dataset.
+2. `control`: database/dataset permissions or invalid generated credential files.
+3. `agent`: Docker socket access, state path, or enrollment failure.
+4. `bootstrap`: no online Docker host or repository pool validation failure.
+5. `scaleset`: GitHub App permissions/installation ID or GitHub message-session failure.
+
+Because initialization is fail-closed, a lower service should not start successfully after a prerequisite has failed.
 
 ## TrueNAS provider vs running on TrueNAS
 
 The separate `RUNNERHUB_PROVIDER=truenas` adapter uses host-side `midclt` to create TrueNAS Custom Apps. It is an experimental provider for a host-side agent and is **not** required to run RunnerHub on modern TrueNAS SCALE.
 
-For a RunnerHub appliance installed as a TrueNAS Custom App, use `RUNNERHUB_PROVIDER=docker` as this template does. That matches the Docker-based Apps runtime introduced in TrueNAS SCALE 24.10.
+For a RunnerHub appliance installed as a TrueNAS Custom App, use `RUNNERHUB_PROVIDER=docker` as this template does.

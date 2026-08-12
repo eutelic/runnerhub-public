@@ -1,6 +1,12 @@
 #!/bin/sh
 set -eu
 
+. /usr/local/lib/runnerhub/secret-file.sh
+runnerhub_load_secret RUNNERHUB_ENROLLMENT_TOKEN RUNNERHUB_ENROLLMENT_TOKEN_FILE
+runnerhub_load_secret RUNNERHUB_AGENT_SECRET RUNNERHUB_AGENT_SECRET_FILE
+runnerhub_load_secret RUNNERHUB_ADMIN_KEY RUNNERHUB_ADMIN_KEY_FILE
+runnerhub_load_secret RUNNERHUB_SCALESET_KEY RUNNERHUB_SCALESET_KEY_FILE
+
 runtime_dir=/run/runnerhub
 install -d -m 0700 -o runnerhub -g runnerhub "$runtime_dir"
 

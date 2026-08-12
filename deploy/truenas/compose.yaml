@@ -1,15 +1,12 @@
 # RunnerHub TrueNAS SCALE 24.10+ Custom App template.
 # Replace the CHANGE_ME values and /mnt/POOL paths before installing.
-# The image packages are published by .github/workflows/publish-images.yml.
+# RunnerHub's internal credentials are generated automatically and persisted
+# beneath the configured secrets path.
 
 x-runnerhub-config:
   data-path: &data-path /mnt/POOL/runnerhub/data
   state-path: &state-path /mnt/POOL/runnerhub/agent
-  github-key-path: &github-key-path /mnt/POOL/runnerhub/secrets/github-app.pem
-  enrollment-token: &enrollment-token CHANGE_ME_ENROLLMENT_TOKEN
-  agent-secret: &agent-secret CHANGE_ME_AGENT_SECRET
-  admin-key: &admin-key CHANGE_ME_ADMIN_KEY
-  scaleset-key: &scaleset-key CHANGE_ME_SCALESET_KEY
+  secrets-path: &secrets-path /mnt/POOL/runnerhub/secrets
   github-client-id: &github-client-id Iv1.CHANGE_ME
   github-installation-id: &github-installation-id CHANGE_ME_INSTALLATION_ID
   github-url: &github-url https://github.com/OWNER/REPOSITORY
@@ -19,10 +16,26 @@ x-runnerhub-config:
   runner-image: &runner-image ghcr.io/actions/actions-runner:latest
 
 services:
+  init-secrets:
+    image: ghcr.io/example-user/runnerhub-bootstrap:latest
+    pull_policy: always
+    restart: "no"
+    entrypoint: ["/usr/local/bin/runnerhub-init-secrets"]
+    environment:
+      RUNNERHUB_SECRETS_DIR: /secrets
+      RUNNERHUB_GITHUB_APP_PRIVATE_KEY_FILE: /secrets/github-app.pem
+    volumes:
+      - type: bind
+        source: *secrets-path
+        target: /secrets
+
   control:
     image: ghcr.io/example-user/runnerhub-control:latest
     pull_policy: always
     restart: unless-stopped
+    depends_on:
+      init-secrets:
+        condition: service_completed_successfully
     ports:
       - target: 8080
         published: "8787"
@@ -31,12 +44,12 @@ services:
       RUNNERHUB_HTTP_ADDR: 0.0.0.0:8080
       RUNNERHUB_ALLOW_INSECURE_HTTP: "true"
       RUNNERHUB_DB: /data/runnerhub.db
-      RUNNERHUB_ENROLLMENT_TOKEN: *enrollment-token
-      RUNNERHUB_AGENT_SECRET: *agent-secret
-      RUNNERHUB_ADMIN_KEY: *admin-key
-      RUNNERHUB_SCALESET_KEY: *scaleset-key
+      RUNNERHUB_ENROLLMENT_TOKEN_FILE: /run/runnerhub-secrets/enrollment-token
+      RUNNERHUB_AGENT_SECRET_FILE: /run/runnerhub-secrets/agent-secret
+      RUNNERHUB_ADMIN_KEY_FILE: /run/runnerhub-secrets/admin-key
+      RUNNERHUB_SCALESET_KEY_FILE: /run/runnerhub-secrets/scaleset-key
       RUNNERHUB_GITHUB_APP_ISSUER: *github-client-id
-      RUNNERHUB_GITHUB_APP_PRIVATE_KEY_FILE: /run/secrets/github-app.pem
+      RUNNERHUB_GITHUB_APP_PRIVATE_KEY_FILE: /run/runnerhub-secrets/github-app.pem
       RUNNERHUB_GITHUB_API_URL: https://api.github.com
       RUNNERHUB_ALLOWED_IMAGES: *runner-image
     volumes:
@@ -44,8 +57,8 @@ services:
         source: *data-path
         target: /data
       - type: bind
-        source: *github-key-path
-        target: /run/secrets/github-app.pem
+        source: *secrets-path
+        target: /run/runnerhub-secrets
         read_only: true
     healthcheck:
       test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:8080/healthz"]
@@ -59,12 +72,14 @@ services:
     pull_policy: always
     restart: unless-stopped
     depends_on:
+      init-secrets:
+        condition: service_completed_successfully
       control:
         condition: service_healthy
     environment:
       RUNNERHUB_CONTROL_PLANE_URL: http://control:8080
       RUNNERHUB_ALLOW_INSECURE_HTTP: "true"
-      RUNNERHUB_ENROLLMENT_TOKEN: *enrollment-token
+      RUNNERHUB_ENROLLMENT_TOKEN_FILE: /run/runnerhub-secrets/enrollment-token
       RUNNERHUB_PROVIDER: docker
       # This must be the same absolute path inside the agent and on TrueNAS.
       # The host Docker daemon uses it when mounting per-job JIT files.
@@ -80,19 +95,25 @@ services:
       - type: bind
         source: *state-path
         target: *state-path
+      - type: bind
+        source: *secrets-path
+        target: /run/runnerhub-secrets
+        read_only: true
 
   bootstrap:
     image: ghcr.io/example-user/runnerhub-bootstrap:latest
     pull_policy: always
     restart: "no"
     depends_on:
+      init-secrets:
+        condition: service_completed_successfully
       control:
         condition: service_healthy
       agent:
         condition: service_started
     environment:
       RUNNERHUB_CONTROL_URL: http://control:8080
-      RUNNERHUB_ADMIN_KEY: *admin-key
+      RUNNERHUB_ADMIN_KEY_FILE: /run/runnerhub-secrets/admin-key
       RUNNERHUB_GITHUB_URL: *github-url
       RUNNERHUB_POOL_ID: *pool-id
       RUNNERHUB_SCALESET_NAME: *scaleset-name
@@ -103,6 +124,11 @@ services:
       RUNNERHUB_POOL_MEMORY_BYTES: "8589934592"
       RUNNERHUB_POOL_DISK_BYTES: "21474836480"
       RUNNERHUB_BOOTSTRAP_TIMEOUT_SECONDS: "180"
+    volumes:
+      - type: bind
+        source: *secrets-path
+        target: /run/runnerhub-secrets
+        read_only: true
 
   scaleset:
     image: ghcr.io/example-user/runnerhub-scaleset:latest
@@ -116,16 +142,16 @@ services:
       RUNNERHUB_SCALESET_NAME: *scaleset-name
       RUNNERHUB_POOL_ID: *pool-id
       RUNNERHUB_CONTROL_URL: http://control:8080
-      RUNNERHUB_CONTROL_TOKEN: *scaleset-key
+      RUNNERHUB_CONTROL_TOKEN_FILE: /run/runnerhub-secrets/scaleset-key
       RUNNERHUB_MIN_RUNNERS: "0"
       RUNNERHUB_MAX_RUNNERS: *max-runners
       RUNNERHUB_RUNNER_GROUP: ""
       RUNNERHUB_GITHUB_APP_CLIENT_ID: *github-client-id
       RUNNERHUB_GITHUB_APP_INSTALLATION_ID: *github-installation-id
-      RUNNERHUB_GITHUB_APP_PRIVATE_KEY_FILE: /run/secrets/github-app.pem
+      RUNNERHUB_GITHUB_APP_PRIVATE_KEY_FILE: /run/runnerhub-secrets/github-app.pem
       RUNNERHUB_ALLOW_INSECURE_HTTP: "true"
     volumes:
       - type: bind
-        source: *github-key-path
-        target: /run/secrets/github-app.pem
+        source: *secrets-path
+        target: /run/runnerhub-secrets
         read_only: true
