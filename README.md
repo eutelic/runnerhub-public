@@ -15,7 +15,8 @@ See [ROADMAP](ROADMAP.md), [security model](docs/SECURITY.md), [release guide](d
 - GitHub runner-group security posture checks against actual repository/workflow restrictions
 - SQLite state, audit, reconciliation and a durable leased command queue with encrypted JIT payloads
 - bootstrap enrollment followed by persisted, rotating per-host credentials
-- Docker and TrueNAS providers
+- Docker provider with default `container-trusted` workers and administrator-gated per-worker Docker-in-Docker compatibility
+- separate experimental TrueNAS `midclt` provider for host-managed Custom Apps
 - multi-host resource/capability scheduler, global pool concurrency and draining
 - dashboard/API, API-key roles, a constrained scale-set API role, and trusted reverse-proxy identity-header integration
 - scale-set restart recovery, per-demand active-worker resync and job/repository/workflow timing metadata
@@ -23,9 +24,9 @@ See [ROADMAP](ROADMAP.md), [security model](docs/SECURITY.md), [release guide](d
 - trusted process provider for macOS/Windows/special hardware
 - signed atomic update staging, image/version inventory, local CAS cache and cost/capacity telemetry
 - 100-job simulated lifecycle soak exercising scheduler/store/agent/reconciler with zero simulated stale registrations
-- CI with tests, race detection, vet, `govulncheck`, macOS/Windows agent cross-builds and a full Docker Compose startup/enrollment/security smoke test
+- CI with tests, race detection, vet, `govulncheck`, macOS/Windows agent cross-builds and Docker/TrueNAS-shaped runtime smokes
 - source-free release Compose packaging plus multi-architecture GHCR images for control, agent, bootstrap and scale-set services
-- TrueNAS SCALE 24.10+ Custom App Compose deployment with persistent dataset storage and automatic pool bootstrap
+- TrueNAS SCALE 24.10+ Custom App Compose deployment with persistent datasets, automatic internal-secret generation, automatic pool bootstrap and a post-install verifier
 
 ## Fastest local Docker install
 
@@ -43,11 +44,13 @@ No inbound GitHub webhook or public RunnerHub listener is required for this defa
 
 ## Image-based Docker / TrueNAS install
 
-RunnerHub publishes four runtime images to GHCR: `runnerhub-control`, `runnerhub-agent`, `runnerhub-bootstrap`, and `runnerhub-scaleset`. The one-shot bootstrap container replaces the host-side setup step by waiting for the Docker agent and creating/updating the repository pool before the scale-set listener starts.
+RunnerHub publishes four runtime images to GHCR: `runnerhub-control`, `runnerhub-agent`, `runnerhub-bootstrap`, and `runnerhub-scaleset`. Immutable same-commit tags are published first; the moving `latest` tags advance only after all four images have built successfully. The one-shot bootstrap container waits for the Docker agent and creates/updates the repository pool before the scale-set listener starts.
 
-For a normal Docker host, use `deploy/docker/compose.release.yaml` with the generated `.env`; it pulls prebuilt images and does not need a source checkout to build RunnerHub. For TrueNAS SCALE 24.10+, use `deploy/truenas/compose.yaml` through **Install via YAML** and follow [deploy/truenas/README.md](deploy/truenas/README.md).
+For a normal Docker host, use `deploy/docker/compose.release.yaml` with the generated `.env`; it pulls prebuilt images and does not need a source checkout to build RunnerHub.
 
-The Docker agent intentionally mounts the host Docker socket and must be treated as trusted/root-equivalent infrastructure. Ephemeral workflow containers created by the agent do not receive that socket.
+For TrueNAS SCALE 24.10+, use `deploy/truenas/compose.yaml` through **Install via YAML** and follow [deploy/truenas/README.md](deploy/truenas/README.md). The TrueNAS stack stores control, agent and secret state in explicit datasets and generates RunnerHub's internal enrollment/API credentials on first boot instead of requiring them in the YAML. After installation, `deploy/truenas/verify.sh` can verify control health/authentication, Docker-host registration, pool state, persistence, stale workers and orphan DinD sidecars.
+
+The Docker agent intentionally mounts the host Docker socket and must be treated as trusted/root-equivalent infrastructure. Workflow containers never receive that host socket. The default `container-trusted` pool therefore does not support Docker container actions/service containers. Repositories that need those GitHub features can explicitly opt into `container-dind`, which gives each worker a private Docker daemon but uses a privileged sidecar and remains trusted-workload-only. See [docs/providers/docker.md](docs/providers/docker.md) and [docs/SECURITY.md](docs/SECURITY.md).
 
 ## Development
 
@@ -86,4 +89,4 @@ go run ./cmd/runnerhub-agent
 
 After successful enrollment, the agent writes only its rotating per-host credential to `RUNNERHUB_CREDENTIAL_FILE` (default under `RUNNERHUB_STATE_DIR`). The bootstrap enrollment token can then be removed from that host's environment. If the stored credential is later rejected after a long offline period, supply the enrollment token again to re-enroll deliberately.
 
-No production runner ports are published by default and the Docker socket is not mounted into job containers.
+No production runner ports are published by default and the host Docker socket is not mounted into workflow job containers.
