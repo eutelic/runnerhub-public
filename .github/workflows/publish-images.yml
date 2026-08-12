@@ -7,6 +7,17 @@ on:
       - agent/core-foundation
     tags:
       - 'v*'
+    paths:
+      - '.dockerignore'
+      - '.github/workflows/publish-images.yml'
+      - 'deploy/docker/**'
+      - 'cmd/**'
+      - 'internal/**'
+      - 'migrations/**'
+      - 'web/**'
+      - 'go.mod'
+      - 'go.sum'
+      - 'scaleset/**'
   workflow_dispatch:
 
 permissions:
