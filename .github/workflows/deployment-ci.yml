@@ -1,0 +1,69 @@
+name: deployment-ci
+
+on:
+  pull_request:
+    paths:
+      - '.dockerignore'
+      - '.github/workflows/deployment-ci.yml'
+      - '.github/workflows/publish-images.yml'
+      - 'deploy/docker/**'
+      - 'deploy/truenas/**'
+      - 'go.mod'
+      - 'go.sum'
+      - 'scaleset/**'
+  push:
+    branches: [main]
+    paths:
+      - '.dockerignore'
+      - '.github/workflows/deployment-ci.yml'
+      - '.github/workflows/publish-images.yml'
+      - 'deploy/docker/**'
+      - 'deploy/truenas/**'
+      - 'go.mod'
+      - 'go.sum'
+      - 'scaleset/**'
+
+permissions:
+  contents: read
+
+jobs:
+  packaging:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Validate scripts and Compose files
+        run: |
+          set -euo pipefail
+          sh -n deploy/docker/control-entrypoint.sh
+          sh -n deploy/docker/scaleset-entrypoint.sh
+          sh -n deploy/docker/bootstrap-entrypoint.sh
+
+          tmp="$(mktemp -d)"
+          trap 'rm -rf "$tmp"' EXIT
+          envfile="$tmp/runnerhub.env"
+          keyfile="$tmp/github-app.pem"
+          openssl genrsa -out "$keyfile" 2048 >/dev/null 2>&1
+
+          printf '%s\n' \
+            'RUNNERHUB_ENROLLMENT_TOKEN=ci-enrollment' \
+            'RUNNERHUB_AGENT_SECRET=ci-agent-secret-012345678901234567890123456789' \
+            'RUNNERHUB_ADMIN_KEY=ci-admin' \
+            'RUNNERHUB_SCALESET_KEY=ci-scaler' \
+            'RUNNERHUB_API_KEYS=ci-admin:admin:local-admin,ci-scaler:scaler:scaleset-listener' \
+            'RUNNERHUB_GITHUB_APP_ISSUER=Iv1.ci' \
+            'RUNNERHUB_GITHUB_APP_INSTALLATION_ID=12345678' \
+            "RUNNERHUB_GITHUB_APP_PRIVATE_KEY_FILE=$keyfile" \
+            'RUNNERHUB_GITHUB_URL=https://github.com/acme/app' > "$envfile"
+
+          docker compose --env-file "$envfile" -f deploy/docker/compose.yaml --profile autoscale config >/dev/null
+          docker compose --env-file "$envfile" -f deploy/docker/compose.release.yaml config >/dev/null
+          docker compose -f deploy/truenas/compose.yaml config >/dev/null
+
+      - name: Build published image targets
+        run: |
+          set -euo pipefail
+          docker build --target control -f deploy/docker/Dockerfile -t runnerhub-ci-control .
+          docker build --target agent -f deploy/docker/Dockerfile -t runnerhub-ci-agent .
+          docker build --target bootstrap -f deploy/docker/Dockerfile -t runnerhub-ci-bootstrap .
+          docker build --target scaleset -f deploy/docker/Dockerfile -t runnerhub-ci-scaleset .

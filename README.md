@@ -4,7 +4,7 @@ RunnerHub is a control plane for running GitHub Actions on compute you already o
 
 The default target is **trusted private-repository CI** with ephemeral workers. RunnerHub keeps long-lived GitHub credentials in trusted control components, hands workers only short-lived JIT configuration, schedules pools across hosts, reconciles provider and GitHub state independently, and removes workers by exact identity.
 
-**Start with the [alpha quickstart](docs/QUICKSTART.md)** for the complete GitHub App → Docker host → automatic first-job path.
+**Start with the [alpha quickstart](docs/QUICKSTART.md)** for the complete GitHub App → Docker host → automatic first-job path. For TrueNAS SCALE, use the dedicated [TrueNAS Custom App guide](deploy/truenas/README.md).
 
 See [ROADMAP](ROADMAP.md), [security model](docs/SECURITY.md), [release guide](docs/RELEASE.md), and [provider guides](docs/providers/).
 
@@ -24,6 +24,8 @@ See [ROADMAP](ROADMAP.md), [security model](docs/SECURITY.md), [release guide](d
 - signed atomic update staging, image/version inventory, local CAS cache and cost/capacity telemetry
 - 100-job simulated lifecycle soak exercising scheduler/store/agent/reconciler with zero simulated stale registrations
 - CI with tests, race detection, vet, `govulncheck`, macOS/Windows agent cross-builds and a full Docker Compose startup/enrollment/security smoke test
+- source-free release Compose packaging plus multi-architecture GHCR images for control, agent, bootstrap and scale-set services
+- TrueNAS SCALE 24.10+ Custom App Compose deployment with persistent dataset storage and automatic pool bootstrap
 
 ## Fastest local Docker install
 
@@ -38,6 +40,14 @@ bash scripts/start-docker.sh
 The initializer generates independent enrollment, agent, admin and constrained scale-set credentials and writes the local `.env` with mode `0600`. The start script builds the control plane and Docker agent, waits for enrollment, creates a repository-scoped pool, starts the scale-set listener, and does not report success until GitHub authentication/message-session setup completes. Use the configured scale-set name (default `runnerhub`) directly in `runs-on`.
 
 No inbound GitHub webhook or public RunnerHub listener is required for this default path. Ephemeral Docker workers refresh the configured runner image by default so a locally cached moving tag does not silently age out. The `.env`, private keys, and RunnerHub database are excluded by `.gitignore`. See the [alpha quickstart](docs/QUICKSTART.md) for GitHub App permissions and the first workflow.
+
+## Image-based Docker / TrueNAS install
+
+RunnerHub publishes four runtime images to GHCR: `runnerhub-control`, `runnerhub-agent`, `runnerhub-bootstrap`, and `runnerhub-scaleset`. The one-shot bootstrap container replaces the host-side setup step by waiting for the Docker agent and creating/updating the repository pool before the scale-set listener starts.
+
+For a normal Docker host, use `deploy/docker/compose.release.yaml` with the generated `.env`; it pulls prebuilt images and does not need a source checkout to build RunnerHub. For TrueNAS SCALE 24.10+, use `deploy/truenas/compose.yaml` through **Install via YAML** and follow [deploy/truenas/README.md](deploy/truenas/README.md).
+
+The Docker agent intentionally mounts the host Docker socket and must be treated as trusted/root-equivalent infrastructure. Ephemeral workflow containers created by the agent do not receive that socket.
 
 ## Development
 

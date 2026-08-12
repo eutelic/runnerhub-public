@@ -16,9 +16,15 @@ if [ -n "${RUNNERHUB_GITHUB_APP_PRIVATE_KEY_FILE:-}" ]; then
   export RUNNERHUB_GITHUB_APP_PRIVATE_KEY_FILE="$runtime_key"
 fi
 
-# A newly-created named volume may not retain the ownership baked into the
-# image. Repair only RunnerHub's dedicated data directory before dropping
-# privileges; the daemon itself never runs as root.
+# Release/TrueNAS Compose can provide the two credentials separately so the
+# scaler key does not need to be repeated inside a hand-built API key string.
+if [ -z "${RUNNERHUB_API_KEYS:-}" ] && [ -n "${RUNNERHUB_ADMIN_KEY:-}" ] && [ -n "${RUNNERHUB_SCALESET_KEY:-}" ]; then
+  export RUNNERHUB_API_KEYS="${RUNNERHUB_ADMIN_KEY}:admin:local-admin,${RUNNERHUB_SCALESET_KEY}:scaler:scaleset-listener"
+fi
+
+# A newly-created named volume or dedicated bind mount may not retain the
+# ownership baked into the image. Repair only RunnerHub's dedicated data
+# directory before dropping privileges; the daemon itself never runs as root.
 chown runnerhub:runnerhub /data
 
 exec setpriv \
