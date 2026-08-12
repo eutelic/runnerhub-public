@@ -1,0 +1,31 @@
+name: runnerhub-dind-smoke
+
+on:
+  workflow_dispatch:
+
+jobs:
+  dind-smoke:
+    runs-on: runnerhub
+    timeout-minutes: 10
+    services:
+      redis:
+        image: redis:7-alpine
+    steps:
+      - name: Verify private Docker daemon
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "${DOCKER_HOST:-}" = "unix:///var/run/docker.sock"
+          docker version
+          docker info
+
+      - name: Verify service container exists
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker ps --format '{{.Image}}' | grep -Eq '^redis:7-alpine$'
+
+      - name: Verify Docker container action
+        uses: docker://alpine:3.20
+        with:
+          args: /bin/sh -c "echo RunnerHub DinD container action passed"
