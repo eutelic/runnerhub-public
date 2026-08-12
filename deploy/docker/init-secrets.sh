@@ -17,12 +17,28 @@ openssl pkey -in "$github_key" -noout >/dev/null 2>&1 || fail "GitHub App privat
 
 umask 077
 
-generate_secret() {
+validate_secret() {
+  path="$1"
+  name="$2"
+
+  [ ! -L "$path" ] || fail "$name must not be a symbolic link: $path"
+  [ -f "$path" ] || fail "$name must be a regular file: $path"
+
+  value="$(cat "$path")"
+  [ "${#value}" -eq 64 ] || fail "$name must contain exactly 64 hexadecimal characters: $path"
+  case "$value" in
+    *[!0-9a-fA-F]*) fail "$name contains non-hexadecimal characters: $path" ;;
+  esac
+
+  chmod 0600 "$path"
+}
+
+ensure_secret() {
   name="$1"
   destination="$secrets_dir/$name"
 
-  if [ -e "$destination" ]; then
-    [ -s "$destination" ] || fail "existing secret file is empty: $destination"
+  if [ -e "$destination" ] || [ -L "$destination" ]; then
+    validate_secret "$destination" "$name"
     return 0
   fi
 
@@ -32,11 +48,13 @@ generate_secret() {
   chmod 0600 "$temporary"
   mv "$temporary" "$destination"
   trap - EXIT INT TERM
+
+  validate_secret "$destination" "$name"
 }
 
-generate_secret enrollment-token
-generate_secret agent-secret
-generate_secret admin-key
-generate_secret scaleset-key
+ensure_secret enrollment-token
+ensure_secret agent-secret
+ensure_secret admin-key
+ensure_secret scaleset-key
 
 echo "RunnerHub persistent secrets are ready in $secrets_dir."
