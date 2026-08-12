@@ -182,3 +182,33 @@ func TestDinDSidecarFailureMarksWorkerFailed(t *testing.T) {
 		t.Fatalf("state=%+v", st)
 	}
 }
+
+func TestDeleteRecoversDinDSidecarByParentWithoutLocalWorkerState(t *testing.T) {
+	f := &fakeRunner{fn: func(_ string, a ...string) (string, error) {
+		joined := strings.Join(a, " ")
+		if len(a) > 0 && a[0] == "inspect" {
+			return "", errors.New("No such object")
+		}
+		if len(a) > 0 && a[0] == "ps" && strings.Contains(joined, "label=io.runnerhub.parent=runner123") {
+			return "dind123\n", nil
+		}
+		return "", nil
+	}}
+	p, err := newWithRunner(Config{StateDir: t.TempDir(), AllowedImages: []string{"img"}}, f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Delete(context.Background(), provider.WorkerHandle{ProviderID: "runner123"}); err != nil {
+		t.Fatal(err)
+	}
+	joined := ""
+	for _, call := range f.calls {
+		joined += strings.Join(call, " ") + "\n"
+	}
+	if !strings.Contains(joined, "label=io.runnerhub.parent=runner123") {
+		t.Fatalf("sidecar parent lookup was not attempted: %s", joined)
+	}
+	if !strings.Contains(joined, "rm -f dind123") {
+		t.Fatalf("recovered sidecar was not removed: %s", joined)
+	}
+}
