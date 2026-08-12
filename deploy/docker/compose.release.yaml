@@ -51,6 +51,12 @@ services:
       - type: bind
         source: ${RUNNERHUB_STATE_DIR:-/var/lib/runnerhub}
         target: ${RUNNERHUB_STATE_DIR:-/var/lib/runnerhub}
+    healthcheck:
+      test: ["CMD", "docker", "version"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 5s
 
   bootstrap:
     image: ghcr.io/example-user/runnerhub-bootstrap:${RUNNERHUB_IMAGE_TAG:-latest}
@@ -60,7 +66,7 @@ services:
       control:
         condition: service_healthy
       agent:
-        condition: service_started
+        condition: service_healthy
     environment:
       RUNNERHUB_CONTROL_URL: http://control:8080
       RUNNERHUB_ADMIN_KEY: ${RUNNERHUB_ADMIN_KEY:?required}

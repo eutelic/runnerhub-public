@@ -12,19 +12,16 @@ Use this deployment only for trusted private repositories. Do not expose port `8
 
 ## 1. Prepare storage
 
-Create a dedicated dataset, for example:
+Create dedicated RunnerHub application storage. TrueNAS recommends separate datasets for application data and the **Apps** dataset preset for application storage, so the preferred layout is:
 
 ```text
 /mnt/POOL/runnerhub
-```
-
-Create these paths inside it:
-
-```text
 /mnt/POOL/runnerhub/data
 /mnt/POOL/runnerhub/agent
 /mnt/POOL/runnerhub/secrets
 ```
+
+Create `runnerhub` and the three child datasets with the **Apps** preset where practical. If you use ordinary directories instead, ensure the Docker app can read/write them and preserve execute/traverse permission on the parent path.
 
 Copy the GitHub App private key to:
 
@@ -92,8 +89,8 @@ The stack starts in this order:
 
 1. `init-secrets` validates the GitHub App key and prepares persistent RunnerHub credentials.
 2. `control` starts and opens its internal API.
-3. `agent` connects through the Compose network and enrolls as a Docker host.
-4. one-shot `bootstrap` waits for the agent and creates/updates the repository pool.
+3. `agent` verifies access to the host Docker daemon, connects through the Compose network, and enrolls as a Docker host.
+4. one-shot `bootstrap` starts only after the control plane and Docker daemon checks are healthy, then creates/updates the repository pool.
 5. `scaleset` starts only after bootstrap succeeds and opens the outbound GitHub message session.
 
 No inbound GitHub webhook or public RunnerHub endpoint is required.
@@ -147,9 +144,9 @@ Do not delete or regenerate individual secret files while the stack is running.
 
 ## Updating and rollback
 
-The template uses `:latest` plus `pull_policy: always`. After new images are published, use the TrueNAS app update/redeploy flow to pull them. Persistent state stays in the dedicated dataset and survives container replacement.
+The template uses `:latest` plus `pull_policy: always`. Image publishing first creates immutable tags for the same source commit across every RunnerHub service, then advances the `latest` tags only after all four builds succeed. This reduces the chance of an update pulling a mixed-version RunnerHub stack.
 
-For safer rollback during alpha testing, replace `:latest` in all four RunnerHub service images with the same immutable `sha-<commit>` tag published by the image workflow. Returning all four services to the previous SHA rolls application binaries back while preserving state.
+For the safest alpha rollback, replace `:latest` in all four RunnerHub service images with the same immutable `sha-<full-commit>` tag published by the image workflow. Returning all four services to the previous SHA rolls application binaries back while preserving state.
 
 The `init-secrets` service also uses the bootstrap image; pin it to the same SHA as the bootstrap service when pinning a deployment.
 
@@ -159,7 +156,7 @@ Check services in dependency order:
 
 1. `init-secrets`: invalid/missing PEM or unwritable secrets dataset.
 2. `control`: database/dataset permissions or invalid generated credential files.
-3. `agent`: Docker socket access, state path, or enrollment failure.
+3. `agent`: its Docker healthcheck fails when `/var/run/docker.sock` is unavailable or the Docker daemon cannot be reached; enrollment/state-path problems then appear in agent logs.
 4. `bootstrap`: no online Docker host or repository pool validation failure.
 5. `scaleset`: GitHub App permissions/installation ID or GitHub message-session failure.
 
