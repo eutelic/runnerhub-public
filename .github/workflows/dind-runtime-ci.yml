@@ -1,0 +1,127 @@
+name: dind-runtime-ci
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/dind-runtime-ci.yml'
+      - 'cmd/runnerhub-agent/**'
+      - 'internal/core/**'
+      - 'internal/policy/**'
+      - 'internal/provider/**'
+      - 'internal/providers/docker/**'
+      - 'deploy/docker/**'
+      - 'deploy/truenas/**'
+      - 'tests/fixtures/runner-dind-smoke.yml'
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/dind-runtime-ci.yml'
+      - 'cmd/runnerhub-agent/**'
+      - 'internal/core/**'
+      - 'internal/policy/**'
+      - 'internal/provider/**'
+      - 'internal/providers/docker/**'
+      - 'deploy/docker/**'
+      - 'deploy/truenas/**'
+      - 'tests/fixtures/runner-dind-smoke.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  dind-network:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Verify Docker provider unit tests
+        run: go test ./internal/providers/docker ./internal/policy ./internal/core
+
+      - name: Exercise private DinD socket and shared runner network
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          tmp="$(mktemp -d)"
+          run_dir="$tmp/run"
+          mkdir -p "$run_dir"
+          runner="runnerhub-dind-ci-runner"
+          sidecar="runnerhub-dind-ci-sidecar"
+
+          cleanup() {
+            # The DinD sidecar joins the runner network namespace, so it must
+            # be removed before the runner that owns that namespace.
+            docker rm -f "$sidecar" >/dev/null 2>&1 || true
+            docker rm -f "$runner" >/dev/null 2>&1 || true
+            rm -rf "$tmp"
+          }
+          trap cleanup EXIT
+
+          docker run -d \
+            --name "$runner" \
+            --mount "type=bind,src=$run_dir,dst=/var/run" \
+            -e DOCKER_HOST=unix:///var/run/docker.sock \
+            docker:27-cli \
+            sh -c 'sleep 300' >/dev/null
+
+          runner_id="$(docker inspect "$runner" --format '{{.Id}}')"
+
+          docker run -d \
+            --name "$sidecar" \
+            --privileged \
+            --network "container:$runner_id" \
+            --mount "type=bind,src=$run_dir,dst=/var/run" \
+            docker:27-dind \
+            dockerd --host=unix:///var/run/docker.sock >/dev/null
+
+          for _ in $(seq 1 60); do
+            if docker exec \
+              -e DOCKER_HOST=unix:///var/run/docker.sock \
+              "$runner" docker info >/dev/null 2>&1; then
+              break
+            fi
+            sleep 1
+          done
+
+          docker exec \
+            -e DOCKER_HOST=unix:///var/run/docker.sock \
+            "$runner" docker info >/dev/null
+
+          # The runner receives only the private socket. The host Docker socket
+          # is never mounted into the runner container.
+          mounts="$(docker inspect "$runner" --format '{{json .Mounts}}')"
+          if grep -q '"Source":"/var/run/docker.sock"' <<<"$mounts"; then
+            echo 'host Docker socket leaked into DinD runner' >&2
+            exit 1
+          fi
+
+          docker exec \
+            -e DOCKER_HOST=unix:///var/run/docker.sock \
+            "$runner" docker run -d \
+              --name runnerhub-dind-ci-redis \
+              -p 6379:6379 \
+              redis:7-alpine >/dev/null
+
+          # Because the DinD daemon shares the runner network namespace, a port
+          # published by the inner Docker daemon must be reachable from the
+          # outer runner on localhost, matching host-style Actions services.
+          docker exec "$runner" sh -c '
+            for i in $(seq 1 30); do
+              if nc -z 127.0.0.1 6379 >/dev/null 2>&1; then
+                exit 0
+              fi
+              sleep 1
+            done
+            exit 1
+          '
+
+          docker exec \
+            -e DOCKER_HOST=unix:///var/run/docker.sock \
+            "$runner" docker run --rm alpine:3.20 \
+              sh -c 'echo RunnerHub nested container passed'
+
+          # Verify the cleanup dependency explicitly before the trap repeats it.
+          docker rm -f "$sidecar" >/dev/null
+          docker rm -f "$runner" >/dev/null
