@@ -4,12 +4,13 @@ RunnerHub treats workflow code as arbitrary code with the privileges of its work
 
 ## Supported trust tiers
 
-- `container-trusted`: disposable Docker/TrueNAS worker for trusted private repositories. No published ports and no host Docker socket by default.
+- `container-trusted`: disposable Docker/TrueNAS worker for trusted private repositories. No published ports, no host Docker socket, `no-new-privileges`, and no privileged sidecar. Docker container actions, service containers, and `container:` jobs are not supported in this mode.
+- `container-dind`: compatibility mode for trusted private repositories that require Docker container actions, service containers, or `container:` jobs. Each worker gets a private Docker-in-Docker daemon instead of the host Docker socket. The DinD sidecar is privileged, so this mode is a weaker host-isolation boundary and is disabled unless `RUNNERHUB_ALLOW_PRIVILEGED_WORKERS=true` is explicitly configured.
 - `host-persistent`: compatibility mode for trusted special hardware, macOS, or Windows using the process provider.
 - `microvm`: Firecracker/KVM worker. The provider creates a fresh writable rootfs, per-worker TAP interface, and separate read-only seed disk containing only the short-lived JIT configuration.
 - `vm-provider`: provider-created VM, currently Proxmox, bootstrapped with a generated cloud-init snippet containing only the JIT configuration.
 
-Public/untrusted workflows are denied by default and should remain disabled until the microVM/VM path has received a dedicated live security review.
+Public/untrusted workflows are denied by default and should remain disabled until the microVM/VM path has received a dedicated live security review. `container-dind` is not an untrusted-code sandbox merely because its Docker daemon is per-worker.
 
 ## GitHub assignment boundary
 
@@ -19,7 +20,9 @@ Repository-scoped pools may be used for trusted private repositories. RunnerHub 
 
 ## Credentials
 
-Long-lived GitHub App credentials remain in trusted control components; they are never delivered to job workers. In the default automatic Docker deployment, both `runnerhubd` and the scale-set listener need GitHub App authentication. The App PEM is mounted as a read-only Compose secret, copied to an owner-only runtime path, and both processes drop root privileges before normal operation. Workers receive only short-lived JIT configuration.
+Long-lived GitHub App credentials remain in trusted control components; they are never delivered to job workers. In the default automatic Docker deployment, both `runnerhubd` and the scale-set listener need GitHub App authentication. The App PEM is mounted read-only, copied to an owner-only runtime path, and both processes drop root privileges before normal operation. Workers receive only short-lived JIT configuration.
+
+On the TrueNAS appliance path, RunnerHub's enrollment token, agent secret, admin API key, and scale-set API key are generated once into the dedicated secrets dataset. Services consume them through file-backed `*_FILE` inputs, so those values do not need to be embedded in Custom App Compose YAML. Existing non-empty secret files are preserved across restart/update; empty secret files fail closed rather than silently rotating credentials.
 
 The scale-set listener uses a separate RunnerHub `scaler` API credential rather than the local admin key. That role is restricted to reading pool/worker state and posting scale-worker requests and scale lifecycle events; it cannot read hosts/audit data, drain hosts, modify pools, access cache mutation endpoints, or request direct-JIT workers.
 
@@ -29,11 +32,17 @@ Durable create commands must briefly retain JIT material while an agent is offli
 
 API keys are hashed in memory before comparison. Trusted identity headers are accepted only from a loopback reverse proxy. A control plane bound beyond loopback requires native TLS unless the operator deliberately enables the insecure-HTTP override for a separately protected network.
 
-## Privilege
+## Docker privilege boundary
 
-The trusted Docker host agent mounts `/var/run/docker.sock` because it creates and removes ephemeral workers. The worker containers themselves never receive that socket. Workers publish no ports, run with `no-new-privileges`, and receive explicit CPU/memory/workdir limits. Privileged capabilities require a future explicit profile/policy. Container isolation is not described as equivalent to a VM security boundary.
+The trusted Docker host agent mounts `/var/run/docker.sock` because it creates and removes ephemeral workers. The agent is therefore root-equivalent trusted infrastructure. The host socket is never mounted directly into workflow runner containers.
 
-Ephemeral Docker runner images are refreshed before worker startup by default. If an operator changes the pull policy to `missing` or `never`, they become responsible for keeping the runner image current through an explicit image rollout process.
+`container-trusted` is the safer Docker mode. Workers publish no ports, run with `no-new-privileges`, receive explicit CPU/memory/workdir limits, and have no Docker daemon available.
+
+`container-dind` exists only for GitHub workflow features that require Docker. RunnerHub creates a dedicated Docker daemon sidecar for that worker and shares only a private Unix-socket directory, work directory, and runner externals with the workflow runner. The sidecar uses Docker `--privileged`; Docker documents privileged containers as highly elevated, so this is not equivalent to a VM or microVM boundary. The control-plane policy rejects a DinD pool unless privileged workers have been explicitly enabled by the administrator.
+
+DinD work/daemon storage is currently bind-backed and does not have the same tmpfs byte-limit enforcement as `container-trusted`. Pool concurrency and host capacity provide coarse resource bounds, but strict per-DinD-worker disk quota enforcement remains a hardening item.
+
+Ephemeral Docker runner images are refreshed before worker startup by default. If an operator changes the pull policy to `missing` or `never`, they become responsible for keeping the runner image current through an explicit image rollout process. The DinD infrastructure image is independently configurable and should also be pinned/managed deliberately in production.
 
 Firecracker and Proxmox remain experimental until their target-host firewall, guest image/template, storage, teardown and privilege assumptions have been validated on real infrastructure.
 
