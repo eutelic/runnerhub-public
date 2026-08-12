@@ -40,6 +40,7 @@ services:
       RUNNERHUB_RUNNER_IMAGE: ${RUNNERHUB_RUNNER_IMAGE:-ghcr.io/actions/actions-runner:latest}
       RUNNERHUB_DOCKER_PULL_POLICY: ${RUNNERHUB_DOCKER_PULL_POLICY:-always}
       RUNNERHUB_DIND_IMAGE: ${RUNNERHUB_DIND_IMAGE:-docker:dind}
+      RUNNERHUB_ALLOW_PRIVILEGED_WORKERS: ${RUNNERHUB_ALLOW_PRIVILEGED_WORKERS:-false}
     volumes:
       # The agent is trusted infrastructure and needs the host Docker API to
       # create ephemeral workers. Worker containers themselves never receive
