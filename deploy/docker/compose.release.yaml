@@ -48,6 +48,7 @@ services:
       RUNNERHUB_RUNNER_IMAGE: ${RUNNERHUB_RUNNER_IMAGE:-ghcr.io/actions/actions-runner:latest}
       RUNNERHUB_DOCKER_PULL_POLICY: ${RUNNERHUB_DOCKER_PULL_POLICY:-always}
       RUNNERHUB_DIND_IMAGE: ${RUNNERHUB_DIND_IMAGE:-docker:dind}
+      RUNNERHUB_ALLOW_PRIVILEGED_WORKERS: ${RUNNERHUB_ALLOW_PRIVILEGED_WORKERS:-false}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - type: bind
