@@ -155,7 +155,13 @@ jobs:
 
           wait_for_agent() {
             for _ in $(seq 1 60); do
-              if curl --fail --silent "http://127.0.0.1:$port/healthz" >/dev/null 2>&1 && \
+              agent_id="$(docker compose -p "$project" -f "$compose_file" ps -q agent 2>/dev/null || true)"
+              agent_health=""
+              if [ -n "$agent_id" ]; then
+                agent_health="$(docker inspect "$agent_id" --format '{{.State.Health.Status}}' 2>/dev/null || true)"
+              fi
+              if [ "$agent_health" = "healthy" ] && \
+                 curl --fail --silent "http://127.0.0.1:$port/healthz" >/dev/null 2>&1 && \
                  [ -s "$root/secrets/admin-key" ] && \
                  [ -s "$root/agent/agent-credentials.json" ]; then
                 admin_key="$(sudo cat "$root/secrets/admin-key")"
@@ -181,8 +187,6 @@ jobs:
           docker compose -p "$project" -f "$compose_file" up -d init-secrets control agent
           wait_for_agent
 
-          docker inspect "$(docker compose -p "$project" -f "$compose_file" ps -q agent)" \
-            --format '{{.State.Health.Status}}' | grep -qx healthy
           admin_before="$(sudo cat "$root/secrets/admin-key")"
           secrets_before="$(sudo sha256sum \
             "$root/secrets/enrollment-token" \
