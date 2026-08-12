@@ -14,6 +14,12 @@ x-runnerhub-config:
   scaleset-name: &scaleset-name runnerhub
   max-runners: &max-runners "2"
   runner-image: &runner-image ghcr.io/actions/actions-runner:latest
+  # Keep container-trusted unless workflows require Docker container actions,
+  # service containers, or job containers. container-dind starts a privileged
+  # per-worker Docker daemon and therefore also requires the next flag = "true".
+  pool-isolation: &pool-isolation container-trusted
+  allow-privileged-workers: &allow-privileged-workers "false"
+  dind-image: &dind-image docker:dind
 
 services:
   init-secrets:
@@ -48,6 +54,7 @@ services:
       RUNNERHUB_AGENT_SECRET_FILE: /run/runnerhub-secrets/agent-secret
       RUNNERHUB_ADMIN_KEY_FILE: /run/runnerhub-secrets/admin-key
       RUNNERHUB_SCALESET_KEY_FILE: /run/runnerhub-secrets/scaleset-key
+      RUNNERHUB_ALLOW_PRIVILEGED_WORKERS: *allow-privileged-workers
       RUNNERHUB_GITHUB_APP_ISSUER: *github-client-id
       RUNNERHUB_GITHUB_APP_PRIVATE_KEY_FILE: /run/runnerhub-secrets/github-app.pem
       RUNNERHUB_GITHUB_API_URL: https://api.github.com
@@ -82,11 +89,12 @@ services:
       RUNNERHUB_ENROLLMENT_TOKEN_FILE: /run/runnerhub-secrets/enrollment-token
       RUNNERHUB_PROVIDER: docker
       # This must be the same absolute path inside the agent and on TrueNAS.
-      # The host Docker daemon uses it when mounting per-job JIT files.
+      # The host Docker daemon uses it when mounting per-job JIT/DinD state.
       RUNNERHUB_STATE_DIR: *state-path
       RUNNERHUB_HOST_NAME: truenas-host
       RUNNERHUB_RUNNER_IMAGE: *runner-image
       RUNNERHUB_DOCKER_PULL_POLICY: always
+      RUNNERHUB_DIND_IMAGE: *dind-image
     volumes:
       # The agent is trusted infrastructure. Job containers never receive this socket.
       - type: bind
@@ -126,6 +134,7 @@ services:
       RUNNERHUB_MAX_RUNNERS: *max-runners
       RUNNERHUB_RUNNER_GROUP_ID: "1"
       RUNNERHUB_RUNNER_IMAGE: *runner-image
+      RUNNERHUB_POOL_ISOLATION: *pool-isolation
       RUNNERHUB_POOL_CPU_MILLIS: "4000"
       RUNNERHUB_POOL_MEMORY_BYTES: "8589934592"
       RUNNERHUB_POOL_DISK_BYTES: "21474836480"

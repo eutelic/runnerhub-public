@@ -6,7 +6,7 @@ const(HostEnrolling HostState="enrolling";HostOnline HostState="online";HostDrai
 type WorkerState string
 const(WorkerRequested WorkerState="requested";WorkerProvisioning WorkerState="provisioning";WorkerStarting WorkerState="starting";WorkerRegistering WorkerState="registering";WorkerReady WorkerState="ready";WorkerBusy WorkerState="busy";WorkerCompleted WorkerState="completed";WorkerDeleting WorkerState="deleting";WorkerDeleted WorkerState="deleted";WorkerFailed WorkerState="failed";WorkerCleanupPending WorkerState="cleanup_pending")
 type IsolationMode string
-const(IsolationContainerTrusted IsolationMode="container-trusted";IsolationHostPersistent IsolationMode="host-persistent";IsolationMicroVM IsolationMode="microvm";IsolationVMProvider IsolationMode="vm-provider")
+const(IsolationContainerTrusted IsolationMode="container-trusted";IsolationContainerDinD IsolationMode="container-dind";IsolationHostPersistent IsolationMode="host-persistent";IsolationMicroVM IsolationMode="microvm";IsolationVMProvider IsolationMode="vm-provider")
 type ScopeKind string
 const(ScopeRepository ScopeKind="repository";ScopeOrganization ScopeKind="organization")
 type GitHubScope struct{Kind ScopeKind `json:"kind"`;Owner string `json:"owner"`;Repository string `json:"repository,omitempty"`}

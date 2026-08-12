@@ -42,9 +42,17 @@ RUNNERHUB_POOL_ID=pool-docker
 RUNNERHUB_SCALESET_NAME=runnerhub
 RUNNERHUB_MIN_RUNNERS=0
 RUNNERHUB_MAX_RUNNERS=2
+RUNNERHUB_POOL_ISOLATION=container-trusted
+RUNNERHUB_ALLOW_PRIVILEGED_WORKERS=false
 
 # Refresh the official ephemeral runner image before each worker starts.
 RUNNERHUB_DOCKER_PULL_POLICY=always
+RUNNERHUB_DIND_IMAGE=docker:dind
+
+# container-dind supports Docker container actions/service containers but uses
+# a privileged per-worker Docker daemon. To opt in, set BOTH:
+# RUNNERHUB_POOL_ISOLATION=container-dind
+# RUNNERHUB_ALLOW_PRIVILEGED_WORKERS=true
 
 # Optional overrides.
 # RUNNERHUB_GITHUB_API_URL=https://api.github.com

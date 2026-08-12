@@ -37,6 +37,7 @@ func main() {
 			StateDir:      stateDir,
 			AllowedImages: []string{env("RUNNERHUB_RUNNER_IMAGE", "ghcr.io/actions/actions-runner:latest")},
 			PullPolicy:    env("RUNNERHUB_DOCKER_PULL_POLICY", "always"),
+			DinDImage:     env("RUNNERHUB_DIND_IMAGE", "docker:dind"),
 		})
 		must(err)
 		providers[kind] = p
@@ -90,12 +91,12 @@ func main() {
 
 	credentialFile := env("RUNNERHUB_CREDENTIAL_FILE", filepath.Join(stateDir, "agent-credentials.json"))
 	client, err := agent.NewClient(agent.ClientConfig{
-		ControlPlaneURL:  mustEnv("RUNNERHUB_CONTROL_PLANE_URL"),
-		EnrollmentToken:  os.Getenv("RUNNERHUB_ENROLLMENT_TOKEN"),
-		CredentialFile:   credentialFile,
-		Name:             name,
-		Provider:         kind,
-		AgentVersion:     version,
+		ControlPlaneURL:   mustEnv("RUNNERHUB_CONTROL_PLANE_URL"),
+		EnrollmentToken:   os.Getenv("RUNNERHUB_ENROLLMENT_TOKEN"),
+		CredentialFile:    credentialFile,
+		Name:              name,
+		Provider:          kind,
+		AgentVersion:      version,
 		AllowInsecureHTTP: boolEnv("RUNNERHUB_ALLOW_INSECURE_HTTP", false),
 	}, providers)
 	must(err)

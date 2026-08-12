@@ -23,6 +23,13 @@ func TestValidateRunnerPool(t *testing.T) {
 		t.Fatalf("expected valid pool, got %v", err)
 	}
 }
+func TestValidateRunnerPoolAllowsContainerDinDShape(t *testing.T) {
+	p := validPool()
+	p.Isolation = IsolationContainerDinD
+	if err := ValidateRunnerPool(p); err != nil {
+		t.Fatalf("expected container-dind to be a valid core isolation mode, got %v", err)
+	}
+}
 func TestValidateRunnerPoolRejectsUnsafeShape(t *testing.T) {
 	p := validPool()
 	p.Name = "Linux Small"

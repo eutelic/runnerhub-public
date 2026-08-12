@@ -17,6 +17,7 @@ scale_name="${RUNNERHUB_SCALESET_NAME:-runnerhub}"
 max_runners="${RUNNERHUB_MAX_RUNNERS:-2}"
 runner_group_id="${RUNNERHUB_RUNNER_GROUP_ID:-1}"
 runner_image="${RUNNERHUB_RUNNER_IMAGE:-ghcr.io/actions/actions-runner:latest}"
+isolation="${RUNNERHUB_POOL_ISOLATION:-container-trusted}"
 pool_cpu="${RUNNERHUB_POOL_CPU_MILLIS:-4000}"
 pool_memory="${RUNNERHUB_POOL_MEMORY_BYTES:-8589934592}"
 pool_disk="${RUNNERHUB_POOL_DISK_BYTES:-21474836480}"
@@ -25,6 +26,11 @@ provider="${RUNNERHUB_BOOTSTRAP_PROVIDER:-docker}"
 
 [ -n "$admin_key" ] || fail "RUNNERHUB_ADMIN_KEY or RUNNERHUB_ADMIN_KEY_FILE is required"
 [ -n "$github_url" ] || fail "RUNNERHUB_GITHUB_URL is required"
+
+case "$isolation" in
+  container-trusted|container-dind) ;;
+  *) fail "RUNNERHUB_POOL_ISOLATION must be container-trusted or container-dind" ;;
+esac
 
 case "$github_url" in
   http://*|https://*) ;;
@@ -76,6 +82,7 @@ payload="$(jq -n \
   --arg repository "$repo" \
   --arg label "$scale_name" \
   --arg image "$runner_image" \
+  --arg isolation "$isolation" \
   --argjson maxConcurrency "$max_runners" \
   --argjson runnerGroupId "$runner_group_id" \
   --argjson cpuMillis "$pool_cpu" \
@@ -86,7 +93,7 @@ payload="$(jq -n \
     name: "runnerhub",
     scope: {kind: "repository", owner: $owner, repository: $repository},
     labels: [$label],
-    isolation: "container-trusted",
+    isolation: $isolation,
     resources: {cpuMillis: $cpuMillis, memoryBytes: $memoryBytes, diskBytes: $diskBytes},
     minIdle: 0,
     maxConcurrency: $maxConcurrency,
@@ -94,7 +101,7 @@ payload="$(jq -n \
     image: $image
   }')"
 
-echo "Configuring RunnerHub pool $pool_id for $owner/$repo..."
+echo "Configuring RunnerHub pool $pool_id for $owner/$repo with isolation $isolation..."
 curl --fail-with-body --silent --show-error \
   -X POST \
   -H "Authorization: Bearer ${admin_key}" \

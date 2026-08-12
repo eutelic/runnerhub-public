@@ -65,9 +65,17 @@ scale_name="${RUNNERHUB_SCALESET_NAME:-runnerhub}"
 max_runners="${RUNNERHUB_MAX_RUNNERS:-2}"
 runner_group_id="${RUNNERHUB_RUNNER_GROUP_ID:-1}"
 runner_image="${RUNNERHUB_RUNNER_IMAGE:-ghcr.io/actions/actions-runner:latest}"
+pool_isolation="${RUNNERHUB_POOL_ISOLATION:-container-trusted}"
 [[ "$max_runners" =~ ^[1-9][0-9]*$ ]] || fail "RUNNERHUB_MAX_RUNNERS must be a positive integer"
 [[ "$runner_group_id" =~ ^[1-9][0-9]*$ ]] || fail "RUNNERHUB_RUNNER_GROUP_ID must be a positive integer"
 [[ "$scale_name" =~ ^[A-Za-z0-9._-]+$ ]] || fail "RUNNERHUB_SCALESET_NAME may contain only letters, numbers, dot, underscore, and hyphen"
+case "$pool_isolation" in
+  container-trusted) ;;
+  container-dind)
+    [ "${RUNNERHUB_ALLOW_PRIVILEGED_WORKERS:-false}" = "true" ] || fail "container-dind requires RUNNERHUB_ALLOW_PRIVILEGED_WORKERS=true"
+    ;;
+  *) fail "RUNNERHUB_POOL_ISOLATION must be container-trusted or container-dind" ;;
+esac
 
 compose=(docker compose --env-file "$envfile" -f "$compose_file")
 
@@ -111,7 +119,7 @@ pool_payload=$(cat <<EOF
     "repository": "$repo"
   },
   "labels": ["$scale_name"],
-  "isolation": "container-trusted",
+  "isolation": "$pool_isolation",
   "resources": {
     "cpuMillis": 4000,
     "memoryBytes": 8589934592,
@@ -125,7 +133,7 @@ pool_payload=$(cat <<EOF
 EOF
 )
 
-echo "Configuring repository pool $pool_id for $owner/$repo..."
+echo "Configuring repository pool $pool_id for $owner/$repo with isolation $pool_isolation..."
 curl --fail-with-body --silent --show-error \
   -X POST \
   -H "Authorization: Bearer ${RUNNERHUB_ADMIN_KEY}" \
@@ -163,6 +171,7 @@ RunnerHub automatic Docker setup is running.
 Repository: $owner/$repo
 Pool:       $pool_id
 Runs-on:    $scale_name
+Isolation:  $pool_isolation
 
 Use this in the repository workflow:
 

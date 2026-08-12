@@ -12,6 +12,7 @@ services:
       RUNNERHUB_ENROLLMENT_TOKEN: ${RUNNERHUB_ENROLLMENT_TOKEN:?required}
       RUNNERHUB_AGENT_SECRET: ${RUNNERHUB_AGENT_SECRET:?required}
       RUNNERHUB_API_KEYS: ${RUNNERHUB_API_KEYS:?required}
+      RUNNERHUB_ALLOW_PRIVILEGED_WORKERS: ${RUNNERHUB_ALLOW_PRIVILEGED_WORKERS:-false}
       RUNNERHUB_GITHUB_APP_ISSUER: ${RUNNERHUB_GITHUB_APP_ISSUER:?required}
       RUNNERHUB_GITHUB_APP_PRIVATE_KEY_FILE: /run/secrets/github_app_private_key
       RUNNERHUB_GITHUB_API_URL: ${RUNNERHUB_GITHUB_API_URL:-https://api.github.com}
@@ -38,11 +39,12 @@ services:
       RUNNERHUB_HOST_NAME: ${RUNNERHUB_HOST_NAME:-docker-host}
       RUNNERHUB_RUNNER_IMAGE: ${RUNNERHUB_RUNNER_IMAGE:-ghcr.io/actions/actions-runner:latest}
       RUNNERHUB_DOCKER_PULL_POLICY: ${RUNNERHUB_DOCKER_PULL_POLICY:-always}
+      RUNNERHUB_DIND_IMAGE: ${RUNNERHUB_DIND_IMAGE:-docker:dind}
     volumes:
       # The agent is trusted infrastructure and needs the host Docker API to
       # create ephemeral workers. Worker containers themselves never receive
       # this socket. Keep the state path identical inside/outside the agent so
-      # bind-mounted JIT files are resolvable by the host Docker daemon.
+      # bind-mounted JIT/DinD files are resolvable by the host Docker daemon.
       - /var/run/docker.sock:/var/run/docker.sock
       - /var/lib/runnerhub:/var/lib/runnerhub
 
