@@ -326,11 +326,11 @@ func (p *Provider) Inspect(ctx context.Context, h provider.WorkerHandle) (provid
 		return provider.WorkerState{}, err
 	}
 	if state.Running {
-		if p.handleUsesDinD(h.ProviderID) {
-			sidecar, err := p.findSidecarByParent(ctx, h.ProviderID)
-			if err != nil {
-				return provider.WorkerState{}, err
-			}
+		sidecar, err := p.findSidecarByParent(ctx, h.ProviderID)
+		if err != nil {
+			return provider.WorkerState{}, err
+		}
+		if p.handleUsesDinD(h.ProviderID) || sidecar != "" {
 			if sidecar == "" {
 				return provider.WorkerState{State: core.WorkerFailed, SafeDetail: "Docker-in-Docker sidecar absent"}, nil
 			}
@@ -400,16 +400,23 @@ func (p *Provider) Stop(ctx context.Context, h provider.WorkerHandle) error {
 		return nil
 	}
 	workerID := p.workerIDForHandle(ctx, h.ProviderID)
+	sidecarID, err := p.findSidecarByParent(ctx, h.ProviderID)
+	if err != nil {
+		return fmt.Errorf("find Docker-in-Docker sidecar before stop: %w", err)
+	}
 	_, runnerErr := p.run.Run(ctx, p.cfg.DockerBinary, "stop", "--time", "10", h.ProviderID)
 	if runnerErr != nil && strings.Contains(strings.ToLower(runnerErr.Error()), "no such") {
 		runnerErr = nil
 	}
-	if workerID != "" {
+	if sidecarID != "" {
+		_, sidecarErr := p.run.Run(ctx, p.cfg.DockerBinary, "stop", "--time", "10", sidecarID)
+		if sidecarErr != nil && !strings.Contains(strings.ToLower(sidecarErr.Error()), "no such") && runnerErr == nil {
+			return sidecarErr
+		}
+	} else if workerID != "" {
 		_, sidecarErr := p.run.Run(ctx, p.cfg.DockerBinary, "stop", "--time", "10", workerContainerName(workerID)+"-dind")
-		if sidecarErr != nil && !strings.Contains(strings.ToLower(sidecarErr.Error()), "no such") {
-			if runnerErr == nil {
-				return sidecarErr
-			}
+		if sidecarErr != nil && !strings.Contains(strings.ToLower(sidecarErr.Error()), "no such") && runnerErr == nil {
+			return sidecarErr
 		}
 	}
 	return runnerErr
@@ -417,17 +424,30 @@ func (p *Provider) Stop(ctx context.Context, h provider.WorkerHandle) error {
 
 func (p *Provider) Delete(ctx context.Context, h provider.WorkerHandle) error {
 	workerID := p.workerIDForHandle(ctx, h.ProviderID)
+	sidecarID := ""
 	if h.ProviderID != "" {
-		_, err := p.run.Run(ctx, p.cfg.DockerBinary, "rm", "-f", h.ProviderID)
+		var err error
+		sidecarID, err = p.findSidecarByParent(ctx, h.ProviderID)
+		if err != nil {
+			return fmt.Errorf("find Docker-in-Docker sidecar before delete: %w", err)
+		}
+		_, err = p.run.Run(ctx, p.cfg.DockerBinary, "rm", "-f", h.ProviderID)
+		if err != nil && !strings.Contains(strings.ToLower(err.Error()), "no such") {
+			return err
+		}
+	}
+	if sidecarID != "" {
+		_, err := p.run.Run(ctx, p.cfg.DockerBinary, "rm", "-f", sidecarID)
+		if err != nil && !strings.Contains(strings.ToLower(err.Error()), "no such") {
+			return err
+		}
+	} else if workerID != "" {
+		_, err := p.run.Run(ctx, p.cfg.DockerBinary, "rm", "-f", workerContainerName(workerID)+"-dind")
 		if err != nil && !strings.Contains(strings.ToLower(err.Error()), "no such") {
 			return err
 		}
 	}
 	if workerID != "" {
-		_, err := p.run.Run(ctx, p.cfg.DockerBinary, "rm", "-f", workerContainerName(workerID)+"-dind")
-		if err != nil && !strings.Contains(strings.ToLower(err.Error()), "no such") {
-			return err
-		}
 		_ = os.RemoveAll(filepath.Join(p.cfg.StateDir, "workers", safeID(workerID)))
 	}
 	return nil
