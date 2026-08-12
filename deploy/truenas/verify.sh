@@ -52,11 +52,14 @@ ok "control plane is healthy"
 
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
+chmod 0700 "$tmp"
+printf 'header = "Authorization: Bearer %s"\n' "$admin_key" > "$tmp/curl-auth.conf"
+chmod 0600 "$tmp/curl-auth.conf"
+unset admin_key value
 
-auth_header="Authorization: Bearer $admin_key"
-curl --fail --silent --show-error -H "$auth_header" "$control_url/api/v1/hosts" > "$tmp/hosts.json" || fail "authenticated hosts API failed"
-curl --fail --silent --show-error -H "$auth_header" "$control_url/api/v1/pools" > "$tmp/pools.json" || fail "authenticated pools API failed"
-curl --fail --silent --show-error -H "$auth_header" "$control_url/api/v1/workers" > "$tmp/workers.json" || fail "authenticated workers API failed"
+curl --config "$tmp/curl-auth.conf" --fail --silent --show-error "$control_url/api/v1/hosts" > "$tmp/hosts.json" || fail "authenticated hosts API failed"
+curl --config "$tmp/curl-auth.conf" --fail --silent --show-error "$control_url/api/v1/pools" > "$tmp/pools.json" || fail "authenticated pools API failed"
+curl --config "$tmp/curl-auth.conf" --fail --silent --show-error "$control_url/api/v1/workers" > "$tmp/workers.json" || fail "authenticated workers API failed"
 
 python3 - "$tmp/hosts.json" "$tmp/pools.json" "$tmp/workers.json" <<'PY'
 import json
@@ -81,7 +84,9 @@ for pool in pools:
 PY
 
 credential_file="$root/agent/agent-credentials.json"
-[ -s "$credential_file" ] || fail "agent credential file is missing: $credential_file"
+credential_json="$(read_protected "$credential_file" 2>/dev/null || true)"
+[ -n "$credential_json" ] || fail "agent credential file is missing or unreadable: $credential_file"
+unset credential_json
 ok "Docker agent credential persisted"
 
 if command -v docker >/dev/null 2>&1 && docker version >/dev/null 2>&1; then
