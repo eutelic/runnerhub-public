@@ -90,9 +90,9 @@ unset credential_json
 ok "Docker agent credential persisted"
 
 if command -v docker >/dev/null 2>&1 && docker version >/dev/null 2>&1; then
-  docker ps -a --filter label=io.runnerhub.worker --format '{{.Label "io.runnerhub.worker"}}\t{{.ID}}\t{{.Status}}' > "$tmp/containers.tsv"
+  docker ps -a --filter label=io.runnerhub.worker --format '{{.Label "io.runnerhub.worker"}}|||{{.ID}}|||{{.Status}}' > "$tmp/containers.txt"
 
-  python3 - "$tmp/workers.json" "$tmp/containers.tsv" <<'PY'
+  python3 - "$tmp/workers.json" "$tmp/containers.txt" <<'PY'
 import json
 import sys
 
@@ -103,7 +103,10 @@ for raw in open(sys.argv[2]):
     raw = raw.rstrip("\n")
     if not raw:
         continue
-    parts = raw.split("\t", 2)
+    parts = raw.split("|||", 2)
+    if len(parts) != 3:
+        stale.append(f"unparseable RunnerHub container record: {raw}")
+        continue
     worker_id = parts[0]
     containers.append(raw)
     worker = workers.get(worker_id)
@@ -121,11 +124,11 @@ if stale:
 print(f"[ ok ] no stale RunnerHub worker containers ({len(containers)} current container records)")
 PY
 
-  while IFS=$'\t' read -r sidecar parent; do
+  while IFS='|' read -r sidecar _ _ parent; do
     [ -n "$sidecar" ] || continue
     [ -n "$parent" ] || fail "DinD sidecar $sidecar is missing its parent label"
     docker inspect "$parent" >/dev/null 2>&1 || fail "orphan DinD sidecar $sidecar references missing runner $parent"
-  done < <(docker ps -a --filter label=io.runnerhub.role=dind --format '{{.ID}}\t{{.Label "io.runnerhub.parent"}}')
+  done < <(docker ps -a --filter label=io.runnerhub.role=dind --format '{{.ID}}|||{{.Label "io.runnerhub.parent"}}')
   ok "no orphan Docker-in-Docker sidecars"
 else
   note "host Docker CLI is unavailable; skipped direct stale-container checks"
