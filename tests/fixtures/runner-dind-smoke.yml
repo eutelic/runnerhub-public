@@ -10,6 +10,8 @@ jobs:
     services:
       redis:
         image: redis:7-alpine
+        ports:
+          - 6379:6379
     steps:
       - name: Verify private Docker daemon
         shell: bash
@@ -19,11 +21,12 @@ jobs:
           docker version
           docker info
 
-      - name: Verify service container exists
+      - name: Verify service container is reachable from runner namespace
         shell: bash
         run: |
           set -euo pipefail
           docker ps --format '{{.Image}}' | grep -Eq '^redis:7-alpine$'
+          timeout 15 bash -c 'until (echo > /dev/tcp/127.0.0.1/6379) >/dev/null 2>&1; do sleep 1; done'
 
       - name: Verify Docker container action
         uses: docker://alpine:3.20
