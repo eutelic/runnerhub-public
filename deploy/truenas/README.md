@@ -149,6 +149,14 @@ jobs:
 
 After the job completes, verify that the worker reaches `deleted` in RunnerHub and that no stale `runnerhub-*` worker container remains.
 
+If you have this repository checkout available in the TrueNAS shell, run the included verifier after the app and pool are up:
+
+```bash
+sudo bash deploy/truenas/verify.sh /mnt/POOL/runnerhub http://127.0.0.1:8787
+```
+
+Change the dataset path and port if you customized them. The verifier checks persistent secret/agent state, control health and authenticated API access, an online Docker host, pool presence, stale worker containers, and orphan DinD sidecars. If the host Docker CLI is unavailable it reports that direct container checks were skipped rather than treating the whole installation as failed.
+
 ## Docker workflow compatibility
 
 GitHub self-hosted runners require Docker for Docker container actions, service containers, and `container:` jobs. RunnerHub deliberately does **not** solve this by mounting TrueNAS `/var/run/docker.sock` into the workflow runner.
@@ -172,7 +180,7 @@ dind-image: &dind-image docker:dind
 
 For a production deployment, pin the DinD image to a tested version/digest as part of the same upgrade discipline as RunnerHub itself.
 
-DinD work/daemon state is currently bind-backed and does not enforce the same per-worker tmpfs byte ceiling as `container-trusted`; strict DinD disk quota enforcement remains a hardening item.
+DinD currently has coarser resource accounting than `container-trusted`: pool CPU/memory limits apply to the runner container, but the privileged DinD sidecar and its nested containers do not yet share one scheduler-accounted CPU/memory envelope, and DinD work/daemon state is bind-backed rather than using the default worker's bounded tmpfs. Strict per-worker DinD CPU, memory, and disk accounting remains a hardening item.
 
 ## Persistence and backup
 
