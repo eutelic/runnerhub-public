@@ -70,9 +70,21 @@ Existing non-empty secret files are preserved, so restarting or updating the app
 
 Port `8787` is the default dashboard/API port on the NAS. Change the `published` value if that port is already used.
 
-## 4. If the GHCR packages are private
+## 4. Configure GHCR access
 
-If the RunnerHub GHCR packages are private, TrueNAS must authenticate to `ghcr.io` with credentials that can read the packages. Configure this under the Apps Docker registry settings before installing. If the packages are public, no registry credential is needed.
+GitHub Container Registry packages are private when first published unless their visibility is changed. If the four RunnerHub packages are still private, TrueNAS must authenticate before the app can pull them.
+
+Create a **personal access token (classic)** with only `read:packages` for this pull-only use. In TrueNAS go to **Apps > Configuration > Sign-in to a Docker registry** and add an **Other Registry** entry for GHCR using:
+
+```text
+Registry: https://ghcr.io
+Username: your GitHub username
+Password: the PAT classic with read:packages
+```
+
+Do not put this registry token in the RunnerHub Compose YAML.
+
+Alternatively, the four RunnerHub container packages can be changed to **Public** in GitHub package settings. Public GHCR containers support anonymous pulls and therefore remove the registry credential from the TrueNAS setup. GitHub treats changing a package to public as irreversible, so RunnerHub does not automate that decision.
 
 ## 5. Install in TrueNAS
 
