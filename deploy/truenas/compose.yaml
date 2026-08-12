@@ -3,6 +3,14 @@
 # RunnerHub's internal credentials are generated automatically and persisted
 # beneath the configured secrets path.
 
+# Keep these four RunnerHub images on the same release/commit when pinning or
+# rolling back. init-secrets intentionally reuses the bootstrap image.
+x-runnerhub-images:
+  control: &control-image ghcr.io/example-user/runnerhub-control:latest
+  agent: &agent-image ghcr.io/example-user/runnerhub-agent:latest
+  bootstrap: &bootstrap-image ghcr.io/example-user/runnerhub-bootstrap:latest
+  scaleset: &scaleset-image ghcr.io/example-user/runnerhub-scaleset:latest
+
 x-runnerhub-config:
   data-path: &data-path /mnt/POOL/runnerhub/data
   state-path: &state-path /mnt/POOL/runnerhub/agent
@@ -23,7 +31,7 @@ x-runnerhub-config:
 
 services:
   init-secrets:
-    image: ghcr.io/example-user/runnerhub-bootstrap:latest
+    image: *bootstrap-image
     pull_policy: always
     restart: "no"
     entrypoint: ["/usr/local/bin/runnerhub-init-secrets"]
@@ -36,7 +44,7 @@ services:
         target: /secrets
 
   control:
-    image: ghcr.io/example-user/runnerhub-control:latest
+    image: *control-image
     pull_policy: always
     restart: unless-stopped
     depends_on:
@@ -75,7 +83,7 @@ services:
       start_period: 5s
 
   agent:
-    image: ghcr.io/example-user/runnerhub-agent:latest
+    image: *agent-image
     pull_policy: always
     restart: unless-stopped
     depends_on:
@@ -115,7 +123,7 @@ services:
       start_period: 5s
 
   bootstrap:
-    image: ghcr.io/example-user/runnerhub-bootstrap:latest
+    image: *bootstrap-image
     pull_policy: always
     restart: "no"
     depends_on:
@@ -146,7 +154,7 @@ services:
         read_only: true
 
   scaleset:
-    image: ghcr.io/example-user/runnerhub-scaleset:latest
+    image: *scaleset-image
     pull_policy: always
     restart: unless-stopped
     depends_on:
