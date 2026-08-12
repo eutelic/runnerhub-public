@@ -6,9 +6,11 @@ It does not build RunnerHub on the NAS. TrueNAS pulls the prebuilt RunnerHub con
 
 ## Security model
 
-RunnerHub's `agent` service mounts `/var/run/docker.sock` because it creates and deletes ephemeral GitHub Actions worker containers on the TrueNAS Docker host. Treat the agent as root-equivalent trusted infrastructure. Workflow job containers do **not** receive the Docker socket.
+RunnerHub's `agent` service mounts `/var/run/docker.sock` because it creates and deletes ephemeral GitHub Actions worker containers on the TrueNAS Docker host. Treat the agent as root-equivalent trusted infrastructure. Workflow job containers do **not** receive the host Docker socket.
 
 Use this deployment only for trusted private repositories. Do not expose port `8787` directly to the public Internet. The default YAML serves HTTP on the LAN so the dashboard can be opened from another machine; the API still requires a RunnerHub credential.
+
+The default pool uses `container-trusted`, which does not give workflows a Docker daemon. If a workflow needs Docker container actions, service containers, or a `container:` job, see **Docker workflow compatibility** below rather than mounting the TrueNAS Docker socket into the job.
 
 ## 1. Prepare storage
 
@@ -31,7 +33,7 @@ Copy the GitHub App private key to:
 
 Keep the PEM file private (mode `0600` is recommended).
 
-Do not place RunnerHub state in an unrelated database/media dataset. The agent path is intentionally bind-mounted at the **same absolute path** inside the agent container and on TrueNAS because the host Docker daemon later mounts short-lived JIT files from that path into worker containers.
+Do not place RunnerHub state in an unrelated database/media dataset. The agent path is intentionally bind-mounted at the **same absolute path** inside the agent container and on TrueNAS because the host Docker daemon later mounts short-lived JIT and optional DinD state from that path into worker infrastructure.
 
 ## 2. Create the GitHub App
 
@@ -48,12 +50,19 @@ The current quickstart permission set is repository **Administration: read/write
 
 ## 3. Edit the TrueNAS Compose template
 
-Open `deploy/truenas/compose.yaml` and change only the installation-specific values in `x-runnerhub-config`:
+Open `deploy/truenas/compose.yaml` and change the installation-specific values in `x-runnerhub-config`:
 
 - `/mnt/POOL/runnerhub/...` to your real dataset paths
 - `Iv1.CHANGE_ME` to the GitHub App client ID
 - `CHANGE_ME_INSTALLATION_ID` to the installation ID
 - `https://github.com/OWNER/REPOSITORY` to the target private repository
+
+Keep these safe defaults unless you specifically need Docker-based workflow features:
+
+```yaml
+pool-isolation: &pool-isolation container-trusted
+allow-privileged-workers: &allow-privileged-workers "false"
+```
 
 You do **not** need to generate or paste RunnerHub enrollment/API secrets into the YAML.
 
@@ -140,6 +149,31 @@ jobs:
 
 After the job completes, verify that the worker reaches `deleted` in RunnerHub and that no stale `runnerhub-*` worker container remains.
 
+## Docker workflow compatibility
+
+GitHub self-hosted runners require Docker for Docker container actions, service containers, and `container:` jobs. RunnerHub deliberately does **not** solve this by mounting TrueNAS `/var/run/docker.sock` into the workflow runner.
+
+If the configured repository requires those features, change both TrueNAS template values:
+
+```yaml
+pool-isolation: &pool-isolation container-dind
+allow-privileged-workers: &allow-privileged-workers "true"
+```
+
+`container-dind` creates a private Docker-in-Docker daemon for each ephemeral RunnerHub worker. The runner sees only that private daemon socket; it never receives the TrueNAS host Docker socket.
+
+The tradeoff is that the DinD sidecar itself runs with Docker `--privileged`, which is a materially weaker host-isolation boundary than the default mode. Use it only for trusted private-repository CI. It is **not** equivalent to a VM/microVM sandbox.
+
+The infrastructure image can also be pinned in the template:
+
+```yaml
+dind-image: &dind-image docker:dind
+```
+
+For a production deployment, pin the DinD image to a tested version/digest as part of the same upgrade discipline as RunnerHub itself.
+
+DinD work/daemon state is currently bind-backed and does not enforce the same per-worker tmpfs byte ceiling as `container-trusted`; strict DinD disk quota enforcement remains a hardening item.
+
 ## Persistence and backup
 
 Back up all three RunnerHub paths together:
@@ -167,10 +201,12 @@ The `init-secrets` service also uses the bootstrap image; pin it to the same SHA
 Check services in dependency order:
 
 1. `init-secrets`: invalid/missing PEM or unwritable secrets dataset.
-2. `control`: database/dataset permissions or invalid generated credential files.
+2. `control`: database/dataset permissions, invalid generated credential files, or a rejected privileged-worker configuration.
 3. `agent`: its Docker healthcheck fails when `/var/run/docker.sock` is unavailable or the Docker daemon cannot be reached; enrollment/state-path problems then appear in agent logs.
-4. `bootstrap`: no online Docker host or repository pool validation failure.
+4. `bootstrap`: no online Docker host or repository pool validation failure. A `container-dind` pool is rejected unless privileged workers are explicitly enabled.
 5. `scaleset`: GitHub App permissions/installation ID or GitHub message-session failure.
+
+For DinD job failures, also inspect the per-worker `runnerhub-*-dind` sidecar. RunnerHub treats a missing/exited DinD sidecar as a worker failure and removes it with the worker during cleanup.
 
 Because initialization is fail-closed, a lower service should not start successfully after a prerequisite has failed.
 
