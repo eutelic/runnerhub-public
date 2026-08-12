@@ -158,7 +158,7 @@ jobs:
               if curl --fail --silent "http://127.0.0.1:$port/healthz" >/dev/null 2>&1 && \
                  [ -s "$root/secrets/admin-key" ] && \
                  [ -s "$root/agent/agent-credentials.json" ]; then
-                admin_key="$(cat "$root/secrets/admin-key")"
+                admin_key="$(sudo cat "$root/secrets/admin-key")"
                 hosts="$(curl --fail --silent \
                   -H "Authorization: Bearer $admin_key" \
                   "http://127.0.0.1:$port/api/v1/hosts" 2>/dev/null || true)"
@@ -183,24 +183,24 @@ jobs:
 
           docker inspect "$(docker compose -p "$project" -f "$compose_file" ps -q agent)" \
             --format '{{.State.Health.Status}}' | grep -qx healthy
-          admin_before="$(cat "$root/secrets/admin-key")"
-          secrets_before="$(sha256sum \
+          admin_before="$(sudo cat "$root/secrets/admin-key")"
+          secrets_before="$(sudo sha256sum \
             "$root/secrets/enrollment-token" \
             "$root/secrets/agent-secret" \
             "$root/secrets/admin-key" \
             "$root/secrets/scaleset-key" | sha256sum | cut -d' ' -f1)"
-          host_before="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["hostId"])' "$root/agent/agent-credentials.json")"
+          host_before="$(sudo cat "$root/agent/agent-credentials.json" | python3 -c 'import json,sys; print(json.load(sys.stdin)["hostId"])')"
 
           docker compose -p "$project" -f "$compose_file" down --remove-orphans
           docker compose -p "$project" -f "$compose_file" up -d init-secrets control agent
           wait_for_agent
 
-          test "$(cat "$root/secrets/admin-key")" = "$admin_before"
-          secrets_after="$(sha256sum \
+          test "$(sudo cat "$root/secrets/admin-key")" = "$admin_before"
+          secrets_after="$(sudo sha256sum \
             "$root/secrets/enrollment-token" \
             "$root/secrets/agent-secret" \
             "$root/secrets/admin-key" \
             "$root/secrets/scaleset-key" | sha256sum | cut -d' ' -f1)"
           test "$secrets_after" = "$secrets_before"
-          host_after="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["hostId"])' "$root/agent/agent-credentials.json")"
+          host_after="$(sudo cat "$root/agent/agent-credentials.json" | python3 -c 'import json,sys; print(json.load(sys.stdin)["hostId"])')"
           test "$host_after" = "$host_before"
