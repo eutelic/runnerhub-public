@@ -41,6 +41,7 @@ jobs:
           sh -n deploy/docker/scaleset-entrypoint.sh
           sh -n deploy/docker/bootstrap-entrypoint.sh
           sh -n deploy/docker/init-secrets.sh
+          bash -n deploy/truenas/verify.sh
 
           tmp="$(mktemp -d)"
           trap 'rm -rf "$tmp"' EXIT
