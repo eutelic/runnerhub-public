@@ -72,7 +72,7 @@ func TestCreateDinDUsesPrivateSidecarSocketNotHostSocket(t *testing.T) {
 		}
 		return "", nil
 	}}
-	p, err := newWithRunner(Config{StateDir: t.TempDir(), AllowedImages: []string{"img"}, DinDImage: "docker:dind"}, f)
+	p, err := newWithRunner(Config{StateDir: t.TempDir(), AllowedImages: []string{"img"}, DinDImage: "docker:dind", AllowPrivilegedWorkers: true}, f)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -96,6 +96,33 @@ func TestCreateDinDUsesPrivateSidecarSocketNotHostSocket(t *testing.T) {
 	}
 	if !strings.Contains(joined, "--name runnerhub-w1-dind") || !strings.Contains(joined, "--privileged") || !strings.Contains(joined, "docker:dind dockerd") || !strings.Contains(joined, "--group=123") {
 		t.Fatalf("Docker-in-Docker sidecar missing required configuration: %s", joined)
+	}
+}
+
+func TestDinDRequiresHostPrivilegedGate(t *testing.T) {
+	p, err := newWithRunner(Config{StateDir: t.TempDir(), AllowedImages: []string{"img"}}, &fakeRunner{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	caps, err := p.Capabilities(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, mode := range caps.IsolationModes {
+		if mode == core.IsolationContainerDinD {
+			t.Fatal("Docker host advertised container-dind without privileged-worker opt-in")
+		}
+	}
+	if caps.Features["dockerInDocker"] || caps.Features["containerActions"] {
+		t.Fatalf("privileged Docker features advertised without host opt-in: %+v", caps.Features)
+	}
+	if caps.Labels["isolation.container-dind"] == "true" {
+		t.Fatalf("container-dind label advertised without host opt-in: %+v", caps.Labels)
+	}
+
+	err = p.Validate(context.Background(), provider.WorkerSpec{WorkerID: "w1", PoolID: "p1", RunnerName: "r1", JITConfig: "jit", Image: "img", Isolation: core.IsolationContainerDinD})
+	if err == nil || !strings.Contains(err.Error(), "RUNNERHUB_ALLOW_PRIVILEGED_WORKERS=true") {
+		t.Fatalf("container-dind host gate err=%v", err)
 	}
 }
 
