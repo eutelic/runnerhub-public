@@ -103,6 +103,7 @@ services:
       RUNNERHUB_RUNNER_IMAGE: *runner-image
       RUNNERHUB_DOCKER_PULL_POLICY: always
       RUNNERHUB_DIND_IMAGE: *dind-image
+      RUNNERHUB_ALLOW_PRIVILEGED_WORKERS: *allow-privileged-workers
     volumes:
       # The agent is trusted infrastructure. Job containers never receive this socket.
       - type: bind
