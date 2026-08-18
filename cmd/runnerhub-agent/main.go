@@ -33,11 +33,12 @@ func main() {
 	switch kind {
 	case "docker":
 		p, err := dockerprovider.New(dockerprovider.Config{
-			HostID:        name,
-			StateDir:      stateDir,
-			AllowedImages: []string{env("RUNNERHUB_RUNNER_IMAGE", "ghcr.io/actions/actions-runner:latest")},
-			PullPolicy:    env("RUNNERHUB_DOCKER_PULL_POLICY", "always"),
-			DinDImage:     env("RUNNERHUB_DIND_IMAGE", "docker:dind"),
+			HostID:                 name,
+			StateDir:               stateDir,
+			AllowedImages:          []string{env("RUNNERHUB_RUNNER_IMAGE", "ghcr.io/actions/actions-runner:latest")},
+			PullPolicy:             env("RUNNERHUB_DOCKER_PULL_POLICY", "always"),
+			DinDImage:              env("RUNNERHUB_DIND_IMAGE", "docker:dind"),
+			AllowPrivilegedWorkers: boolEnv("RUNNERHUB_ALLOW_PRIVILEGED_WORKERS", false),
 		})
 		must(err)
 		providers[kind] = p
