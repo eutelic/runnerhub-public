@@ -32,13 +32,14 @@ func (execRunner) Run(ctx context.Context, name string, args ...string) (string,
 }
 
 type Config struct {
-	DockerBinary        string
-	StateDir            string
-	AllowedImages       []string
-	HostID              string
-	DefaultWorkdirBytes int64
-	PullPolicy          string
-	DinDImage           string
+	DockerBinary           string
+	StateDir               string
+	AllowedImages          []string
+	HostID                 string
+	DefaultWorkdirBytes    int64
+	PullPolicy             string
+	DinDImage              string
+	AllowPrivilegedWorkers bool
 }
 
 type Provider struct {
@@ -84,23 +85,31 @@ func (p *Provider) Capabilities(ctx context.Context) (provider.Capabilities, err
 	if _, err := p.run.Run(ctx, p.cfg.DockerBinary, "version", "--format", "{{.Server.Version}}"); err != nil {
 		return provider.Capabilities{}, err
 	}
+	isolationModes := []core.IsolationMode{core.IsolationContainerTrusted}
+	features := map[string]bool{
+		"ephemeral":        true,
+		"publishedPorts":   false,
+		"dockerSocket":     false,
+		"dockerInDocker":   false,
+		"containerActions": false,
+	}
+	labels := map[string]string{
+		"isolation.container-trusted": "true",
+	}
+	if p.cfg.AllowPrivilegedWorkers {
+		isolationModes = append(isolationModes, core.IsolationContainerDinD)
+		features["dockerInDocker"] = true
+		features["containerActions"] = true
+		labels["isolation.container-dind"] = "true"
+	}
 	return provider.Capabilities{
 		Provider:       "docker",
 		OS:             runtime.GOOS,
 		Architecture:   runtime.GOARCH,
 		Capacity:       hostinfo.Capacity(p.cfg.StateDir),
-		IsolationModes: []core.IsolationMode{core.IsolationContainerTrusted, core.IsolationContainerDinD},
-		Features: map[string]bool{
-			"ephemeral":        true,
-			"publishedPorts":   false,
-			"dockerSocket":     false,
-			"dockerInDocker":   true,
-			"containerActions": true,
-		},
-		Labels: map[string]string{
-			"isolation.container-trusted": "true",
-			"isolation.container-dind":    "true",
-		},
+		IsolationModes: isolationModes,
+		Features:       features,
+		Labels:         labels,
 	}, nil
 }
 
@@ -109,7 +118,11 @@ func (p *Provider) Validate(_ context.Context, s provider.WorkerSpec) error {
 		return errors.New("worker id, pool id, runner name and jit config are required")
 	}
 	switch s.Isolation {
-	case core.IsolationContainerTrusted, core.IsolationContainerDinD:
+	case core.IsolationContainerTrusted:
+	case core.IsolationContainerDinD:
+		if !p.cfg.AllowPrivilegedWorkers {
+			return errors.New("container-dind requires host RUNNERHUB_ALLOW_PRIVILEGED_WORKERS=true")
+		}
 	default:
 		return fmt.Errorf("docker provider supports %s and %s", core.IsolationContainerTrusted, core.IsolationContainerDinD)
 	}
