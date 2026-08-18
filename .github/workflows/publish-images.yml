@@ -87,7 +87,9 @@ jobs:
   promote-latest:
     name: Promote coherent latest set
     needs: publish
-    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/agent/core-foundation'
+    # Development branches publish immutable SHA tags for validation, but only
+    # the default branch is allowed to advance the deployment-facing :latest set.
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
       - uses: docker/setup-buildx-action@v3
