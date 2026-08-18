@@ -1,24 +1,16 @@
 ARG VERSION=dev
 
-# Bootstrap from the broadly-available 1.26.5 image, then force the Go command
-# to download and verify the patched 1.26.6 toolchain. The explicit version
-# check keeps production images from silently compiling with the vulnerable
-# bundled 1.26.5 standard library while Docker Hub catches up with the release.
-FROM golang:1.26.5-bookworm AS build
+FROM golang:1.26.6-bookworm AS build
 ARG VERSION
-ENV GOTOOLCHAIN=go1.26.6+auto
 WORKDIR /src
-RUN go version | grep -q 'go1.26.6'
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
 RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" -o /out/runnerhubd ./cmd/runnerhubd && \
     CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" -o /out/runnerhub-agent ./cmd/runnerhub-agent
 
-FROM golang:1.26.5-bookworm AS scaleset-build
-ENV GOTOOLCHAIN=go1.26.6+auto
+FROM golang:1.26.6-bookworm AS scaleset-build
 WORKDIR /src
-RUN go version | grep -q 'go1.26.6'
 COPY scaleset/go.mod scaleset/go.sum ./
 RUN go mod download
 COPY scaleset/ .
