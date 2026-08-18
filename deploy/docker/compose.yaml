@@ -1,0 +1,84 @@
+services:
+  control:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile
+      target: control
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      RUNNERHUB_HTTP_ADDR: 127.0.0.1:8080
+      RUNNERHUB_DB: /data/runnerhub.db
+      RUNNERHUB_ENROLLMENT_TOKEN: ${RUNNERHUB_ENROLLMENT_TOKEN:?required}
+      RUNNERHUB_AGENT_SECRET: ${RUNNERHUB_AGENT_SECRET:?required}
+      RUNNERHUB_API_KEYS: ${RUNNERHUB_API_KEYS:?required}
+      RUNNERHUB_ALLOW_PRIVILEGED_WORKERS: ${RUNNERHUB_ALLOW_PRIVILEGED_WORKERS:-false}
+      RUNNERHUB_GITHUB_APP_ISSUER: ${RUNNERHUB_GITHUB_APP_ISSUER:?required}
+      RUNNERHUB_GITHUB_APP_PRIVATE_KEY_FILE: /run/secrets/github_app_private_key
+      RUNNERHUB_GITHUB_API_URL: ${RUNNERHUB_GITHUB_API_URL:-https://api.github.com}
+      RUNNERHUB_ALLOWED_IMAGES: ${RUNNERHUB_ALLOWED_IMAGES:-ghcr.io/actions/actions-runner:latest}
+    secrets:
+      - github_app_private_key
+    volumes:
+      - runnerhub-data:/data
+
+  agent:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile
+      target: agent
+    restart: unless-stopped
+    network_mode: host
+    depends_on:
+      - control
+    environment:
+      RUNNERHUB_CONTROL_PLANE_URL: http://127.0.0.1:8080
+      RUNNERHUB_ENROLLMENT_TOKEN: ${RUNNERHUB_ENROLLMENT_TOKEN:?required}
+      RUNNERHUB_PROVIDER: docker
+      RUNNERHUB_STATE_DIR: /var/lib/runnerhub
+      RUNNERHUB_HOST_NAME: ${RUNNERHUB_HOST_NAME:-docker-host}
+      RUNNERHUB_RUNNER_IMAGE: ${RUNNERHUB_RUNNER_IMAGE:-ghcr.io/actions/actions-runner:latest}
+      RUNNERHUB_DOCKER_PULL_POLICY: ${RUNNERHUB_DOCKER_PULL_POLICY:-always}
+      RUNNERHUB_DIND_IMAGE: ${RUNNERHUB_DIND_IMAGE:-docker:dind}
+      RUNNERHUB_ALLOW_PRIVILEGED_WORKERS: ${RUNNERHUB_ALLOW_PRIVILEGED_WORKERS:-false}
+    volumes:
+      # The agent is trusted infrastructure and needs the host Docker API to
+      # create ephemeral workers. Worker containers themselves never receive
+      # this socket. Keep the state path identical inside/outside the agent so
+      # bind-mounted JIT/DinD files are resolvable by the host Docker daemon.
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /var/lib/runnerhub:/var/lib/runnerhub
+
+  scaleset:
+    profiles: ["autoscale"]
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile
+      target: scaleset
+    restart: unless-stopped
+    network_mode: host
+    depends_on:
+      - control
+      - agent
+    environment:
+      RUNNERHUB_GITHUB_URL: ${RUNNERHUB_GITHUB_URL:?required}
+      RUNNERHUB_SCALESET_NAME: ${RUNNERHUB_SCALESET_NAME:-runnerhub}
+      RUNNERHUB_POOL_ID: ${RUNNERHUB_POOL_ID:-pool-docker}
+      RUNNERHUB_CONTROL_URL: http://127.0.0.1:8080
+      RUNNERHUB_CONTROL_TOKEN: ${RUNNERHUB_SCALESET_KEY:?required}
+      RUNNERHUB_MIN_RUNNERS: ${RUNNERHUB_MIN_RUNNERS:-0}
+      RUNNERHUB_MAX_RUNNERS: ${RUNNERHUB_MAX_RUNNERS:-2}
+      RUNNERHUB_RUNNER_GROUP: ${RUNNERHUB_RUNNER_GROUP:-}
+      RUNNERHUB_GITHUB_APP_CLIENT_ID: ${RUNNERHUB_GITHUB_APP_ISSUER:?required}
+      RUNNERHUB_GITHUB_APP_INSTALLATION_ID: ${RUNNERHUB_GITHUB_APP_INSTALLATION_ID:?required}
+      RUNNERHUB_GITHUB_APP_PRIVATE_KEY_FILE: /run/secrets/github_app_private_key
+      RUNNERHUB_ALLOW_INSECURE_HTTP: "true"
+    secrets:
+      - github_app_private_key
+
+volumes:
+  runnerhub-data: {}
+
+secrets:
+  github_app_private_key:
+    file: ${RUNNERHUB_GITHUB_APP_PRIVATE_KEY_FILE:?required}

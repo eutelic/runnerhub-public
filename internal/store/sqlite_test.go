@@ -1,0 +1,4 @@
+package store
+
+import("context";"github.com/example-user/runnerhub/internal/core";"testing")
+func TestSQLiteRoundTrip(t *testing.T){s,err:=OpenSQLite(":memory:");if err!=nil{t.Fatal(err)};defer s.Close();ctx:=context.Background();h:=core.Host{ID:"h1",Name:"host",Provider:"docker",State:core.HostOnline,Tags:map[string]string{"zone":"lab"}};if err:=s.UpsertHost(ctx,h);err!=nil{t.Fatal(err)};got,err:=s.GetHost(ctx,"h1");if err!=nil||got.Name!="host"{t.Fatalf("got=%+v err=%v",got,err)};p:=core.RunnerPool{ID:"p1",Name:"linux",Scope:core.GitHubScope{Kind:core.ScopeRepository,Owner:"o",Repository:"r"},Labels:[]string{"linux"},Isolation:core.IsolationContainerTrusted,MaxConcurrency:2,RunnerGroupID:1};if err:=s.UpsertPool(ctx,p);err!=nil{t.Fatal(err)};if pools,err:=s.ListPools(ctx);err!=nil||len(pools)!=1{t.Fatalf("pools=%v err=%v",pools,err)}}

@@ -1,0 +1,137 @@
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+permissions:
+  contents: read
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  core:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v7
+        with:
+          go-version: '1.26.6'
+          cache: true
+      - run: go test ./...
+      - run: go test -race ./internal/...
+      - run: go test -tags localtest ./tests/soak -count=1
+      - run: go vet ./...
+      - run: go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...
+  scaleset:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: scaleset
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v7
+        with:
+          go-version: '1.26.6'
+          cache-dependency-path: scaleset/go.sum
+      - run: go test ./...
+      - run: go vet ./...
+      - run: go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...
+  agent-crossbuild:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        goos: [darwin, windows]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v7
+        with:
+          go-version: '1.26.6'
+          cache: true
+      - run: GOOS=${{ matrix.goos }} GOARCH=amd64 CGO_ENABLED=0 go build ./cmd/runnerhub-agent
+  docker-stack-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Boot Compose stack and enroll Docker agent
+        run: |
+          set -euo pipefail
+          tmp="$(mktemp -d)"
+          envfile="$tmp/runnerhub.env"
+          keyfile="$tmp/github-app.pem"
+          project="runnerhub-ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+
+          cleanup() {
+            docker compose --env-file "$envfile" -f deploy/docker/compose.yaml -p "$project" --profile autoscale down -v >/dev/null 2>&1 || true
+            sudo rm -rf /var/lib/runnerhub >/dev/null 2>&1 || true
+            rm -rf "$tmp"
+          }
+          trap cleanup EXIT
+
+          bash -n scripts/init-docker-env.sh
+          bash -n scripts/start-docker.sh
+          bash -n deploy/docker/control-entrypoint.sh
+          bash -n deploy/docker/scaleset-entrypoint.sh
+          bash scripts/init-docker-env.sh "$envfile"
+          [ "$(stat -c '%a' "$envfile")" = "600" ]
+
+          openssl genrsa -out "$keyfile" 2048 >/dev/null 2>&1
+          sed -i 's|REPLACE_WITH_GITHUB_APP_CLIENT_ID|Iv1.ci|' "$envfile"
+          sed -i 's|REPLACE_WITH_INSTALLATION_ID|12345678|' "$envfile"
+          sed -i 's|https://github.com/OWNER/REPOSITORY|https://github.com/acme/app|' "$envfile"
+          sed -i "s|/absolute/path/to/runnerhub-github-app.pem|$keyfile|" "$envfile"
+          printf '\nRUNNERHUB_HOST_NAME=ci-docker-host\n' >> "$envfile"
+          admin_key="$(sed -n 's/^RUNNERHUB_ADMIN_KEY=//p' "$envfile")"
+          scaleset_key="$(sed -n 's/^RUNNERHUB_SCALESET_KEY=//p' "$envfile")"
+          test -n "$admin_key"
+          test -n "$scaleset_key"
+          test "$admin_key" != "$scaleset_key"
+          grep -q "${scaleset_key}:scaler:scaleset-listener" "$envfile"
+
+          docker compose --env-file "$envfile" -f deploy/docker/compose.yaml -p "$project" --profile autoscale config >/dev/null
+          docker compose --env-file "$envfile" -f deploy/docker/compose.yaml -p "$project" --profile autoscale build scaleset
+          docker compose --env-file "$envfile" -f deploy/docker/compose.yaml -p "$project" up -d --build control agent
+
+          ready=false
+          for attempt in $(seq 1 45); do
+            if curl --fail --silent --show-error http://127.0.0.1:8080/healthz >/dev/null 2>&1; then
+              ready=true
+              break
+            fi
+            if [ "$(docker compose --env-file "$envfile" -f deploy/docker/compose.yaml -p "$project" ps --status exited -q control | wc -l)" -gt 0 ]; then
+              echo "RunnerHub control plane exited before becoming healthy" >&2
+              docker compose --env-file "$envfile" -f deploy/docker/compose.yaml -p "$project" logs control >&2 || true
+              exit 1
+            fi
+            sleep 1
+          done
+          if [ "$ready" != "true" ]; then
+            echo "RunnerHub control plane did not become healthy" >&2
+            docker compose --env-file "$envfile" -f deploy/docker/compose.yaml -p "$project" logs control >&2 || true
+            exit 1
+          fi
+
+          # The generated scale-set key can read only the state its listener needs.
+          curl --fail --silent --show-error \
+            -H "Authorization: Bearer ${scaleset_key}" \
+            http://127.0.0.1:8080/api/v1/workers >/dev/null
+          status="$(curl --silent --output /dev/null --write-out '%{http_code}' \
+            -H "Authorization: Bearer ${scaleset_key}" \
+            http://127.0.0.1:8080/api/v1/hosts)"
+          test "$status" = "403"
+
+          enrolled=false
+          for attempt in $(seq 1 45); do
+            hosts="$(curl --fail --silent --show-error -H "Authorization: Bearer ${admin_key}" http://127.0.0.1:8080/api/v1/hosts || true)"
+            if printf '%s' "$hosts" | grep -q '"provider":"docker"' && printf '%s' "$hosts" | grep -q '"state":"online"'; then
+              enrolled=true
+              break
+            fi
+            sleep 1
+          done
+          if [ "$enrolled" != "true" ]; then
+            echo "Docker agent did not enroll" >&2
+            docker compose --env-file "$envfile" -f deploy/docker/compose.yaml -p "$project" logs control agent >&2 || true
+            exit 1
+          fi
+
+          docker compose --env-file "$envfile" -f deploy/docker/compose.yaml -p "$project" exec -T control test -f /data/runnerhub.db

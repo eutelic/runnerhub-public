@@ -1,0 +1,211 @@
+name: deployment-ci
+
+on:
+  pull_request:
+    paths:
+      - '.dockerignore'
+      - '.github/workflows/deployment-ci.yml'
+      - '.github/workflows/publish-images.yml'
+      - 'deploy/docker/**'
+      - 'deploy/truenas/**'
+      - 'go.mod'
+      - 'go.sum'
+      - 'scaleset/**'
+  push:
+    branches: [main]
+    paths:
+      - '.dockerignore'
+      - '.github/workflows/deployment-ci.yml'
+      - '.github/workflows/publish-images.yml'
+      - 'deploy/docker/**'
+      - 'deploy/truenas/**'
+      - 'go.mod'
+      - 'go.sum'
+      - 'scaleset/**'
+
+permissions:
+  contents: read
+
+jobs:
+  packaging:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Validate scripts, persisted secrets, and Compose files
+        run: |
+          set -euo pipefail
+          sh -n deploy/docker/secret-file.sh
+          sh -n deploy/docker/control-entrypoint.sh
+          sh -n deploy/docker/agent-entrypoint.sh
+          sh -n deploy/docker/scaleset-entrypoint.sh
+          sh -n deploy/docker/bootstrap-entrypoint.sh
+          sh -n deploy/docker/init-secrets.sh
+          bash -n deploy/truenas/verify.sh
+
+          tmp="$(mktemp -d)"
+          trap 'rm -rf "$tmp"' EXIT
+          envfile="$tmp/runnerhub.env"
+          keyfile="$tmp/github-app.pem"
+          openssl genrsa -out "$keyfile" 2048 >/dev/null 2>&1
+
+          printf '%s\n' \
+            'RUNNERHUB_ENROLLMENT_TOKEN=ci-enrollment' \
+            'RUNNERHUB_AGENT_SECRET=ci-agent-secret-012345678901234567890123456789' \
+            'RUNNERHUB_ADMIN_KEY=ci-admin' \
+            'RUNNERHUB_SCALESET_KEY=ci-scaler' \
+            'RUNNERHUB_API_KEYS=ci-admin:admin:local-admin,ci-scaler:scaler:scaleset-listener' \
+            'RUNNERHUB_GITHUB_APP_ISSUER=Iv1.ci' \
+            'RUNNERHUB_GITHUB_APP_INSTALLATION_ID=12345678' \
+            "RUNNERHUB_GITHUB_APP_PRIVATE_KEY_FILE=$keyfile" \
+            'RUNNERHUB_GITHUB_URL=https://github.com/acme/app' > "$envfile"
+
+          secret_dir="$tmp/secrets"
+          mkdir -p "$secret_dir"
+          cp "$keyfile" "$secret_dir/github-app.pem"
+          RUNNERHUB_SECRETS_DIR="$secret_dir" \
+            RUNNERHUB_GITHUB_APP_PRIVATE_KEY_FILE="$secret_dir/github-app.pem" \
+            sh deploy/docker/init-secrets.sh
+
+          for secret in enrollment-token agent-secret admin-key scaleset-key; do
+            test -s "$secret_dir/$secret"
+            test "$(wc -c < "$secret_dir/$secret")" -eq 65
+          done
+
+          before="$(sha256sum "$secret_dir/enrollment-token" "$secret_dir/agent-secret" "$secret_dir/admin-key" "$secret_dir/scaleset-key")"
+          RUNNERHUB_SECRETS_DIR="$secret_dir" \
+            RUNNERHUB_GITHUB_APP_PRIVATE_KEY_FILE="$secret_dir/github-app.pem" \
+            sh deploy/docker/init-secrets.sh
+          after="$(sha256sum "$secret_dir/enrollment-token" "$secret_dir/agent-secret" "$secret_dir/admin-key" "$secret_dir/scaleset-key")"
+          test "$before" = "$after"
+
+          probe="$tmp/secret-probe"
+          printf 'from-file\n' > "$probe"
+          RUNNERHUB_TEST_FILE="$probe" sh -c '
+            set -eu
+            . deploy/docker/secret-file.sh
+            runnerhub_load_secret RUNNERHUB_TEST RUNNERHUB_TEST_FILE
+            test "$RUNNERHUB_TEST" = "from-file"
+          '
+          RUNNERHUB_TEST='from-env' RUNNERHUB_TEST_FILE="$probe" sh -c '
+            set -eu
+            . deploy/docker/secret-file.sh
+            runnerhub_load_secret RUNNERHUB_TEST RUNNERHUB_TEST_FILE
+            test "$RUNNERHUB_TEST" = "from-env"
+          '
+          : > "$probe"
+          if RUNNERHUB_TEST_FILE="$probe" sh -c '
+            set -eu
+            . deploy/docker/secret-file.sh
+            runnerhub_load_secret RUNNERHUB_TEST RUNNERHUB_TEST_FILE
+          '; then
+            echo 'empty secret file unexpectedly succeeded' >&2
+            exit 1
+          fi
+
+          docker compose --env-file "$envfile" -f deploy/docker/compose.yaml --profile autoscale config >/dev/null
+          docker compose --env-file "$envfile" -f deploy/docker/compose.release.yaml config >/dev/null
+          docker compose -f deploy/truenas/compose.yaml config >/dev/null
+
+      - name: Build published image targets
+        run: |
+          set -euo pipefail
+          docker build --build-arg VERSION=ci-test --target control -f deploy/docker/Dockerfile -t runnerhub-ci-control .
+          docker build --build-arg VERSION=ci-test --target agent -f deploy/docker/Dockerfile -t runnerhub-ci-agent .
+          docker build --build-arg VERSION=ci-test --target bootstrap -f deploy/docker/Dockerfile -t runnerhub-ci-bootstrap .
+          docker build --build-arg VERSION=ci-test --target scaleset -f deploy/docker/Dockerfile -t runnerhub-ci-scaleset .
+
+      - name: Exercise TrueNAS-style persisted control and Docker agent
+        run: |
+          set -euo pipefail
+          tmp="$(mktemp -d)"
+          root="$tmp/runnerhub"
+          compose_file="$tmp/compose.yaml"
+          project="runnerhub-truenas-ci"
+          port="$(python3 - <<'PY'
+          import socket
+          s = socket.socket()
+          s.bind(('127.0.0.1', 0))
+          print(s.getsockname()[1])
+          s.close()
+          PY
+          )"
+
+          cleanup() {
+            docker compose -p "$project" -f "$compose_file" down --remove-orphans >/dev/null 2>&1 || true
+            sudo rm -rf "$tmp"
+          }
+          trap cleanup EXIT
+
+          mkdir -p "$root/data" "$root/agent" "$root/secrets"
+          openssl genrsa -out "$root/secrets/github-app.pem" 2048 >/dev/null 2>&1
+          chmod 0600 "$root/secrets/github-app.pem"
+
+          sed \
+            -e "s|/mnt/POOL/runnerhub|$root|g" \
+            -e 's|ghcr.io/example-user/runnerhub-control:latest|runnerhub-ci-control|g' \
+            -e 's|ghcr.io/example-user/runnerhub-agent:latest|runnerhub-ci-agent|g' \
+            -e 's|ghcr.io/example-user/runnerhub-bootstrap:latest|runnerhub-ci-bootstrap|g' \
+            -e 's|ghcr.io/example-user/runnerhub-scaleset:latest|runnerhub-ci-scaleset|g' \
+            -e 's|pull_policy: always|pull_policy: never|g' \
+            -e 's|Iv1.CHANGE_ME|Iv1.ci|g' \
+            -e 's|CHANGE_ME_INSTALLATION_ID|12345678|g' \
+            -e 's|https://github.com/OWNER/REPOSITORY|https://github.com/acme/app|g' \
+            -e "s|published: \"8787\"|published: \"$port\"|g" \
+            deploy/truenas/compose.yaml > "$compose_file"
+
+          wait_for_agent() {
+            for _ in $(seq 1 60); do
+              agent_id="$(docker compose -p "$project" -f "$compose_file" ps -q agent 2>/dev/null || true)"
+              agent_health=""
+              if [ -n "$agent_id" ]; then
+                agent_health="$(docker inspect "$agent_id" --format '{{.State.Health.Status}}' 2>/dev/null || true)"
+              fi
+              if [ "$agent_health" = "healthy" ] && \
+                 curl --fail --silent "http://127.0.0.1:$port/healthz" >/dev/null 2>&1 && \
+                 [ -s "$root/secrets/admin-key" ] && \
+                 [ -s "$root/agent/agent-credentials.json" ]; then
+                admin_key="$(sudo cat "$root/secrets/admin-key")"
+                hosts="$(curl --fail --silent \
+                  -H "Authorization: Bearer $admin_key" \
+                  "http://127.0.0.1:$port/api/v1/hosts" 2>/dev/null || true)"
+                if printf '%s' "$hosts" | python3 -c '
+          import json, sys
+          hosts = json.load(sys.stdin)
+          assert any(h.get("provider") == "docker" and h.get("state") == "online" for h in hosts)
+          ' >/dev/null 2>&1; then
+                  return 0
+                fi
+              fi
+              sleep 1
+            done
+            echo 'TrueNAS-style RunnerHub stack did not become ready' >&2
+            docker compose -p "$project" -f "$compose_file" ps >&2 || true
+            docker compose -p "$project" -f "$compose_file" logs --no-color >&2 || true
+            return 1
+          }
+
+          docker compose -p "$project" -f "$compose_file" up -d init-secrets control agent
+          wait_for_agent
+
+          admin_before="$(sudo cat "$root/secrets/admin-key")"
+          secrets_before="$(sudo sha256sum \
+            "$root/secrets/enrollment-token" \
+            "$root/secrets/agent-secret" \
+            "$root/secrets/admin-key" \
+            "$root/secrets/scaleset-key" | sha256sum | cut -d' ' -f1)"
+          host_before="$(sudo cat "$root/agent/agent-credentials.json" | python3 -c 'import json,sys; print(json.load(sys.stdin)["hostId"])')"
+
+          docker compose -p "$project" -f "$compose_file" down --remove-orphans
+          docker compose -p "$project" -f "$compose_file" up -d init-secrets control agent
+          wait_for_agent
+
+          test "$(sudo cat "$root/secrets/admin-key")" = "$admin_before"
+          secrets_after="$(sudo sha256sum \
+            "$root/secrets/enrollment-token" \
+            "$root/secrets/agent-secret" \
+            "$root/secrets/admin-key" \
+            "$root/secrets/scaleset-key" | sha256sum | cut -d' ' -f1)"
+          test "$secrets_after" = "$secrets_before"
+          host_after="$(sudo cat "$root/agent/agent-credentials.json" | python3 -c 'import json,sys; print(json.load(sys.stdin)["hostId"])')"
+          test "$host_after" = "$host_before"

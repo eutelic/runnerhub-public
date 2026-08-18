@@ -1,0 +1,36 @@
+# VCS / editor metadata
+.git
+.github/ISSUE_TEMPLATE
+.DS_Store
+.vscode
+.idea
+
+# Local RunnerHub state
+agent-credentials.json
+runnerhub.db
+runnerhub.db-shm
+runnerhub.db-wal
+**/runnerhub.db
+**/runnerhub.db-shm
+**/runnerhub.db-wal
+
+# Deployment secrets and generated environment files
+**/.env
+**/.env.*
+!**/.env.example
+**/*.pem
+**/*.key
+**/*.p12
+**/*.pfx
+
+# Local build outputs
+/runnerhubd
+/runnerhub-agent
+/scaleset/runnerhub-scaleset
+*.out
+coverage*
+
+# Common temporary/cache directories
+**/.cache
+**/tmp
+**/node_modules

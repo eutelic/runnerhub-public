@@ -1,0 +1,5 @@
+package policy
+
+import("testing";"github.com/example-user/runnerhub/internal/core")
+func TestAllowlistChecksOnlyAssignedIdentity(t *testing.T){p:=core.RunnerPool{AllowedRepositories:[]string{"acme/app"},AllowedWorkflows:[]string{"acme/app/.github/workflows/build.yml@main"}};e:=Engine{};if err:=e.Evaluate(Request{Pool:p});err!=nil{t.Fatalf("prewarmed worker should rely on GitHub group policy: %v",err)};if e.Evaluate(Request{Pool:p,Repository:"acme/other"})==nil{t.Fatal("concrete disallowed repository accepted")};if e.Evaluate(Request{Pool:p,Repository:"acme/app",Workflow:"acme/app/.github/workflows/other.yml@main"})==nil{t.Fatal("concrete disallowed workflow accepted")}}
+func TestContainerDinDRequiresPrivilegedWorkerOptIn(t *testing.T){pool:=core.RunnerPool{Isolation:core.IsolationContainerDinD};if err:= (Engine{}).ValidatePool(pool);err==nil{t.Fatal("container-dind accepted without privileged worker opt-in")};if err:=(Engine{AllowPrivileged:true}).ValidatePool(pool);err!=nil{t.Fatalf("container-dind rejected with explicit privileged opt-in: %v",err)}}
