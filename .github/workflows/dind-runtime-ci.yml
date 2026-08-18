@@ -55,7 +55,10 @@ jobs:
             # be removed before the runner that owns that namespace.
             docker rm -f "$sidecar" >/dev/null 2>&1 || true
             docker rm -f "$runner" >/dev/null 2>&1 || true
-            rm -rf "$tmp"
+            # dockerd creates root-owned state under the bind-mounted /var/run.
+            # GitHub-hosted runners provide passwordless sudo; use it here so
+            # successful runtime assertions are not reported as cleanup errors.
+            sudo rm -rf "$tmp"
           }
           trap cleanup EXIT
 
