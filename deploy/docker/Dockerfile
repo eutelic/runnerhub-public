@@ -1,6 +1,6 @@
 ARG VERSION=dev
 
-FROM golang:1.26-bookworm AS build
+FROM golang:1.26.6-bookworm AS build
 ARG VERSION
 WORKDIR /src
 COPY go.mod go.sum ./
@@ -9,7 +9,7 @@ COPY . .
 RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" -o /out/runnerhubd ./cmd/runnerhubd && \
     CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" -o /out/runnerhub-agent ./cmd/runnerhub-agent
 
-FROM golang:1.26-bookworm AS scaleset-build
+FROM golang:1.26.6-bookworm AS scaleset-build
 WORKDIR /src
 COPY scaleset/go.mod scaleset/go.sum ./
 RUN go mod download
