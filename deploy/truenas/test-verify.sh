@@ -31,12 +31,49 @@ printf '%s\n' 'test-private-key' > "$root/secrets/github-app.pem"
 chmod 0600 "$root/secrets/enrollment-token" "$root/secrets/agent-secret" "$root/secrets/admin-key" "$root/secrets/scaleset-key" "$root/secrets/github-app.pem"
 printf '%s\n' '{"hostId":"host-test"}' > "$root/agent/agent-credentials.json"
 
-# Force the verifier down its no-host-Docker path even on CI machines that have
-# a Docker CLI/daemon available. Direct Docker cleanup behavior has separate
-# provider/runtime coverage.
+# The mock defaults to an unavailable Docker CLI so the existing API/filesystem
+# verifier path remains covered. FAKE_DOCKER_MODE enables direct listener-health
+# and stale-container checks without requiring a real Docker daemon.
 cat > "$tmp/bin/docker" <<'EOF'
-#!/bin/sh
-exit 1
+#!/usr/bin/env bash
+set -euo pipefail
+mode="${FAKE_DOCKER_MODE:-unavailable}"
+
+case "${1:-}" in
+  version)
+    [ "$mode" != unavailable ] || exit 1
+    exit 0
+    ;;
+  ps)
+    [ "$mode" != unavailable ] || exit 1
+    args=" $* "
+    if [[ "$args" == *"label=io.runnerhub.component=scaleset"* ]]; then
+      case "$mode" in
+        healthy|unhealthy) printf '%s\n' scaleset-ci ;;
+        missing) : ;;
+        duplicate) printf '%s\n' scaleset-ci scaleset-ci-2 ;;
+        *) printf '%s\n' scaleset-ci ;;
+      esac
+      exit 0
+    fi
+    # No worker or DinD sidecars in this mock installation.
+    exit 0
+    ;;
+  inspect)
+    [ "$mode" != unavailable ] || exit 1
+    if [[ " $* " == *"State.Health.Status"* ]]; then
+      case "$mode" in
+        unhealthy) printf '%s\n' unhealthy ;;
+        *) printf '%s\n' healthy ;;
+      esac
+      exit 0
+    fi
+    exit 0
+    ;;
+  *)
+    exit 1
+    ;;
+esac
 EOF
 chmod +x "$tmp/bin/docker"
 
@@ -137,12 +174,32 @@ done
 [ "$ready" = "true" ] || { echo 'mock RunnerHub API did not start' >&2; exit 1; }
 
 PATH="$tmp/bin:$PATH" bash -n "$verify"
+
+# Docker-unavailable path remains valid and explicitly reports skipped direct
+# container checks.
 PATH="$tmp/bin:$PATH" bash "$verify" "$root" "http://127.0.0.1:$port" > "$tmp/success.log"
 grep -Fq '[ ok ] administrative API rejects unauthenticated requests' "$tmp/success.log"
 grep -Fq '[ ok ] scale-set credential remains constrained to its expected API surface' "$tmp/success.log"
 grep -Fq '[ ok ] expected pool pool-docker: isolation=container-trusted runs-on=runnerhub maxConcurrency=2 image=ghcr.io/actions/actions-runner:latest' "$tmp/success.log"
 grep -Fq '[note] additional pools configured: 1' "$tmp/success.log"
+grep -Fq '[note] host Docker CLI is unavailable; skipped direct scale-set and stale-container checks' "$tmp/success.log"
 grep -Fq '[ ok ] RunnerHub TrueNAS installation passed local verification' "$tmp/success.log"
+
+# With host Docker access, the exact listener container must exist and report
+# healthy only after the GitHub message-session readiness marker is published.
+FAKE_DOCKER_MODE=healthy PATH="$tmp/bin:$PATH" \
+  bash "$verify" "$root" "http://127.0.0.1:$port" > "$tmp/docker-success.log"
+grep -Fq '[ ok ] scale-set listener is healthy after GitHub message-session setup' "$tmp/docker-success.log"
+grep -Fq '[ ok ] no stale RunnerHub worker containers (0 current container records)' "$tmp/docker-success.log"
+grep -Fq '[ ok ] no orphan Docker-in-Docker sidecars' "$tmp/docker-success.log"
+
+for mode in unhealthy missing duplicate; do
+  if FAKE_DOCKER_MODE="$mode" PATH="$tmp/bin:$PATH" \
+    bash "$verify" "$root" "http://127.0.0.1:$port" >/dev/null 2>&1; then
+    echo "verifier unexpectedly accepted scale-set Docker mode: $mode" >&2
+    exit 1
+  fi
+done
 
 PATH="$tmp/bin:$PATH" RUNNERHUB_VERIFY_ISOLATION=container-trusted \
   bash "$verify" "$root" "http://127.0.0.1:$port" >/dev/null

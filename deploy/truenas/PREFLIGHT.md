@@ -87,13 +87,17 @@ Use `--runnerhub-tag sha-FULL_COMMIT_SHA` if you want the generated installation
 
 Paste the generated YAML into **Apps > Discover Apps > Custom App > Install via YAML** and install it as `runnerhub`.
 
+The `scaleset` service has its own healthcheck. It does not become healthy merely because the process started: the readiness marker is published only after RunnerHub has validated its configuration, authenticated to GitHub, found or created the runner scale set, verified the RunnerHub pool, recovered active workers, and created the outbound GitHub message session. The entrypoint removes any stale marker on every container restart before repeating that setup.
+
 After the stack is up, run:
 
 ```bash
 sudo bash deploy/truenas/verify.sh /mnt/POOL/runnerhub http://127.0.0.1:8787
 ```
 
-The post-install verifier defaults to pool ID `pool-docker` and runner label `runnerhub`. For a DinD deployment, also assert the expected isolation:
+The post-install verifier defaults to pool ID `pool-docker` and runner label `runnerhub`. When the host Docker CLI is available, it also locates the exact scale-set listener by those labels and requires its Docker health status to be `healthy`. If the host Docker CLI is unavailable, the API, persistence, credential, host, and pool checks still run and the direct container checks are reported as skipped.
+
+For a DinD deployment, also assert the expected isolation:
 
 ```bash
 sudo RUNNERHUB_VERIFY_ISOLATION=container-dind \

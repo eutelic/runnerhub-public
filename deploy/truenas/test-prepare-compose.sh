@@ -30,6 +30,10 @@ grep -Fq 'published: "8787"' "$trusted"
 grep -Fq 'pool-isolation: &pool-isolation container-trusted' "$trusted"
 grep -Fq 'allow-privileged-workers: &allow-privileged-workers "false"' "$trusted"
 grep -Fq 'ghcr.io/example-user/runnerhub-control:latest' "$trusted"
+grep -Fq 'io.runnerhub.component: scaleset' "$trusted"
+grep -Fq 'io.runnerhub.pool: *pool-id' "$trusted"
+grep -Fq 'io.runnerhub.scale-set: *scaleset-name' "$trusted"
+grep -Fq 'test -s /run/runnerhub/scaleset-ready' "$trusted"
 ! grep -Eq 'CHANGE_ME|/mnt/POOL/runnerhub|github\.com/OWNER/REPOSITORY' "$trusted"
 
 bash "$prepare" \
