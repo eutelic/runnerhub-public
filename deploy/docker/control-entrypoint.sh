@@ -29,9 +29,35 @@ if [ -z "${RUNNERHUB_API_KEYS:-}" ] && [ -n "${RUNNERHUB_ADMIN_KEY:-}" ] && [ -n
 fi
 
 # A newly-created named volume or dedicated bind mount may not retain the
-# ownership baked into the image. Repair only RunnerHub's dedicated data
-# directory before dropping privileges; the daemon itself never runs as root.
+# ownership baked into the image. The image uses a fixed runnerhub UID/GID, but
+# repair an existing database once here as well so the first upgrade from older
+# auto-assigned service UIDs and restores from backup remain readable.
 chown runnerhub:runnerhub /data
+
+db_path="${RUNNERHUB_DB:-/data/runnerhub.db}"
+case "$db_path" in
+  /data/*) ;;
+  *)
+    echo "RunnerHub container database path must remain beneath /data: $db_path" >&2
+    exit 1
+    ;;
+esac
+
+repair_db_file() {
+  path="$1"
+  if [ -L "$path" ]; then
+    echo "RunnerHub database state must not be a symbolic link: $path" >&2
+    exit 1
+  fi
+  if [ -e "$path" ]; then
+    chown runnerhub:runnerhub "$path"
+  fi
+}
+
+repair_db_file "$db_path"
+repair_db_file "$db_path-wal"
+repair_db_file "$db_path-shm"
+repair_db_file "$db_path-journal"
 
 exec setpriv \
   --reuid=runnerhub \

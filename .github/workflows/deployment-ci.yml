@@ -41,6 +41,7 @@ jobs:
           sh -n deploy/docker/scaleset-entrypoint.sh
           sh -n deploy/docker/bootstrap-entrypoint.sh
           sh -n deploy/docker/init-secrets.sh
+          bash -n deploy/docker/test-control-data-ownership.sh
           bash -n deploy/truenas/verify.sh
 
           tmp="$(mktemp -d)"
@@ -114,6 +115,11 @@ jobs:
           docker build --build-arg VERSION=ci-test --target agent -f deploy/docker/Dockerfile -t runnerhub-ci-agent .
           docker build --build-arg VERSION=ci-test --target bootstrap -f deploy/docker/Dockerfile -t runnerhub-ci-bootstrap .
           docker build --build-arg VERSION=ci-test --target scaleset -f deploy/docker/Dockerfile -t runnerhub-ci-scaleset .
+
+      - name: Verify control persistent data ownership migration
+        run: |
+          set -euo pipefail
+          bash deploy/docker/test-control-data-ownership.sh runnerhub-ci-control
 
       - name: Exercise TrueNAS-style persisted control and Docker agent
         run: |
