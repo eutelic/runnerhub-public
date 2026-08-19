@@ -3,6 +3,9 @@ set -euo pipefail
 
 root="${1:-${RUNNERHUB_TRUENAS_ROOT:-/mnt/tank/runnerhub}}"
 control_url="${2:-${RUNNERHUB_VERIFY_URL:-http://127.0.0.1:8787}}"
+expected_pool_id="${3:-${RUNNERHUB_VERIFY_POOL_ID:-pool-docker}}"
+expected_label="${4:-${RUNNERHUB_VERIFY_SCALESET_NAME:-runnerhub}}"
+expected_isolation="${5:-${RUNNERHUB_VERIFY_ISOLATION:-}}"
 
 fail() {
   echo "[fail] $*" >&2
@@ -16,6 +19,13 @@ ok() {
 note() {
   echo "[note] $*"
 }
+
+printf '%s' "$expected_pool_id" | grep -Eq '^[A-Za-z0-9._-]+$' || fail "expected pool ID contains unsupported characters: $expected_pool_id"
+printf '%s' "$expected_label" | grep -Eq '^[A-Za-z0-9._-]+$' || fail "expected runner label contains unsupported characters: $expected_label"
+case "$expected_isolation" in
+  ""|container-trusted|container-dind) ;;
+  *) fail "expected isolation must be container-trusted or container-dind" ;;
+esac
 
 for cmd in curl python3 stat; do
   command -v "$cmd" >/dev/null 2>&1 || fail "$cmd is required"
@@ -114,26 +124,48 @@ scaleset_hosts_status="$(curl --config "$tmp/curl-scaleset.conf" --silent --outp
 unset scaleset_hosts_status
 ok "scale-set credential remains constrained to its expected API surface"
 
-python3 - "$tmp/hosts.json" "$tmp/pools.json" "$tmp/workers.json" <<'PY'
+python3 - "$tmp/hosts.json" "$tmp/pools.json" "$tmp/workers.json" "$expected_pool_id" "$expected_label" "$expected_isolation" <<'PY'
 import json
 import sys
 
 hosts = json.load(open(sys.argv[1]))
 pools = json.load(open(sys.argv[2]))
 workers = json.load(open(sys.argv[3]))
+expected_pool_id = sys.argv[4]
+expected_label = sys.argv[5]
+expected_isolation = sys.argv[6]
 
 online = [h for h in hosts if h.get("provider") == "docker" and h.get("state") == "online"]
 if not online:
     raise SystemExit("[fail] no online Docker host is registered")
-if not pools:
-    raise SystemExit("[fail] no RunnerHub pool is configured")
+
+matches = [p for p in pools if p.get("id") == expected_pool_id]
+if len(matches) != 1:
+    raise SystemExit(f"[fail] expected exactly one pool with id {expected_pool_id!r}, found {len(matches)}")
+pool = matches[0]
+
+labels = pool.get("labels") or []
+if expected_label not in labels:
+    raise SystemExit(
+        f"[fail] expected pool {expected_pool_id!r} to advertise runner label {expected_label!r}; found {labels!r}"
+    )
+if expected_isolation and pool.get("isolation") != expected_isolation:
+    raise SystemExit(
+        f"[fail] expected pool {expected_pool_id!r} isolation {expected_isolation!r}; found {pool.get('isolation')!r}"
+    )
+if not isinstance(pool.get("maxConcurrency"), int) or pool.get("maxConcurrency", 0) <= 0:
+    raise SystemExit(f"[fail] expected pool {expected_pool_id!r} to have positive maxConcurrency")
+if not str(pool.get("image") or "").strip():
+    raise SystemExit(f"[fail] expected pool {expected_pool_id!r} to have a runner image")
 
 print(f"[ ok ] online Docker hosts: {len(online)}")
-print(f"[ ok ] configured pools: {len(pools)}")
+print(
+    f"[ ok ] expected pool {expected_pool_id}: isolation={pool.get('isolation')} "
+    f"runs-on={','.join(labels)} maxConcurrency={pool.get('maxConcurrency')} image={pool.get('image')}"
+)
 print(f"[note] workers recorded by control plane: {len(workers)}")
-for pool in pools:
-    labels = ",".join(pool.get("labels") or [])
-    print(f"[note] pool {pool.get('id')}: isolation={pool.get('isolation')} runs-on={labels}")
+if len(pools) > 1:
+    print(f"[note] additional pools configured: {len(pools) - 1}")
 PY
 
 credential_file="$root/agent/agent-credentials.json"
