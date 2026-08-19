@@ -26,7 +26,7 @@ See [ROADMAP](ROADMAP.md), [security model](docs/SECURITY.md), [release guide](d
 - 100-job simulated lifecycle soak exercising scheduler/store/agent/reconciler with zero simulated stale registrations
 - CI with tests, race detection, vet, `govulncheck`, macOS/Windows agent cross-builds and Docker/TrueNAS-shaped runtime smokes
 - source-free release Compose packaging plus multi-architecture GHCR images for control, agent, bootstrap and scale-set services
-- TrueNAS SCALE 24.10+ Custom App Compose deployment with persistent datasets, automatic internal-secret generation, automatic pool bootstrap and a post-install verifier
+- TrueNAS SCALE 24.10+ Custom App deployment with host/image preflights, deterministic YAML generation, persistent state, automatic internal-secret generation, automatic pool bootstrap, authenticated scale-set readiness health and post-install verification
 
 ## Fastest local Docker install
 
@@ -44,11 +44,27 @@ No inbound GitHub webhook or public RunnerHub listener is required for this defa
 
 ## Image-based Docker / TrueNAS install
 
-RunnerHub publishes four runtime images to GHCR: `runnerhub-control`, `runnerhub-agent`, `runnerhub-bootstrap`, and `runnerhub-scaleset`. Immutable same-commit tags are published first; the moving `latest` tags advance only after all four images have built successfully. The one-shot bootstrap container waits for the Docker agent and creates/updates the repository pool before the scale-set listener starts.
+RunnerHub publishes four runtime images to GHCR: `runnerhub-control`, `runnerhub-agent`, `runnerhub-bootstrap`, and `runnerhub-scaleset`. Immutable same-commit tags are published first; the moving `latest` tags advance only after all four images have built successfully and the promotion step verifies the supported platform manifests match the source commit. The one-shot bootstrap container waits for the Docker agent and creates/updates the repository pool before the scale-set listener starts.
 
 For a normal Docker host, use `deploy/docker/compose.release.yaml` with the generated `.env`; it pulls prebuilt images and does not need a source checkout to build RunnerHub.
 
-For TrueNAS SCALE 24.10+, use `deploy/truenas/compose.yaml` through **Install via YAML** and follow [deploy/truenas/README.md](deploy/truenas/README.md). The TrueNAS stack stores control, agent and secret state in explicit datasets and generates RunnerHub's internal enrollment/API credentials on first boot instead of requiring them in the YAML. After installation, `deploy/truenas/verify.sh` can verify control health/authentication, Docker-host registration, pool state, persistence, stale workers and orphan DinD sidecars.
+For TrueNAS SCALE 24.10+, follow [deploy/truenas/README.md](deploy/truenas/README.md). The recommended path is:
+
+```text
+preflight-host.sh
+    ↓
+check-images.sh
+    ↓
+prepare-compose.sh
+    ↓
+TrueNAS Install via YAML
+    ↓
+verify.sh
+    ↓
+real runs-on: runnerhub smoke job
+```
+
+The TrueNAS stack stores control, agent and secret state in explicit datasets and generates RunnerHub's internal enrollment/API credentials on first boot instead of requiring them in YAML. The scale-set container becomes healthy only after its GitHub authentication/message-session setup reaches the listener readiness boundary. The post-install verifier checks credentials, API authorization, Docker-host registration, the expected pool, persistence, listener health when host Docker access is available, stale workers, and orphan DinD sidecars.
 
 The Docker agent intentionally mounts the host Docker socket and must be treated as trusted/root-equivalent infrastructure. Workflow containers never receive that host socket. The default `container-trusted` pool therefore does not support Docker container actions/service containers. Repositories that need those GitHub features can explicitly opt into `container-dind`, which gives each worker a private Docker daemon but uses a privileged sidecar and remains trusted-workload-only. See [docs/providers/docker.md](docs/providers/docker.md) and [docs/SECURITY.md](docs/SECURITY.md).
 
