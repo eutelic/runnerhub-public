@@ -17,7 +17,7 @@ note() {
   echo "[note] $*"
 }
 
-for cmd in curl python3; do
+for cmd in curl python3 stat; do
   command -v "$cmd" >/dev/null 2>&1 || fail "$cmd is required"
 done
 
@@ -37,29 +37,82 @@ read_protected() {
   fi
 }
 
-admin_key="$(read_protected "$root/secrets/admin-key" 2>/dev/null || true)"
-[ -n "$admin_key" ] || fail "cannot read generated admin key at $root/secrets/admin-key (run with sudo if needed)"
-ok "generated admin credential is readable"
+stat_mode_protected() {
+  local path="$1"
+  if stat -c '%a' "$path" >/dev/null 2>&1; then
+    stat -c '%a' "$path"
+  elif command -v sudo >/dev/null 2>&1; then
+    sudo stat -c '%a' "$path"
+  else
+    return 1
+  fi
+}
 
-for secret in enrollment-token agent-secret admin-key scaleset-key github-app.pem; do
-  value="$(read_protected "$root/secrets/$secret" 2>/dev/null || true)"
-  [ -n "$value" ] || fail "missing or empty secret: $root/secrets/$secret"
+validate_generated_secret() {
+  local name="$1"
+  local path="$root/secrets/$name"
+  local value mode
+
+  [ ! -L "$path" ] || fail "generated secret must not be a symbolic link: $path"
+  [ -f "$path" ] || fail "generated secret must be a regular file: $path"
+
+  value="$(read_protected "$path" 2>/dev/null || true)"
+  [ "${#value}" -eq 64 ] || fail "generated secret must contain exactly 64 hexadecimal characters: $path"
+  case "$value" in
+    *[!0-9a-fA-F]*) fail "generated secret contains non-hexadecimal characters: $path" ;;
+  esac
+
+  mode="$(stat_mode_protected "$path" 2>/dev/null || true)"
+  [ "$mode" = "600" ] || fail "generated secret must have mode 0600: $path (found ${mode:-unknown})"
+
+  unset value mode
+}
+
+for secret in enrollment-token agent-secret admin-key scaleset-key; do
+  validate_generated_secret "$secret"
 done
-ok "all persisted RunnerHub credentials and GitHub App key are present"
+ok "generated RunnerHub credentials are regular 0600 files with valid 256-bit hex values"
+
+github_key="$root/secrets/github-app.pem"
+[ ! -L "$github_key" ] || fail "GitHub App key must not be a symbolic link: $github_key"
+[ -f "$github_key" ] || fail "GitHub App key must be a regular file: $github_key"
+github_key_value="$(read_protected "$github_key" 2>/dev/null || true)"
+[ -n "$github_key_value" ] || fail "missing or empty GitHub App key: $github_key"
+unset github_key_value
+ok "persisted GitHub App key is present as a regular file"
+
+admin_key="$(read_protected "$root/secrets/admin-key" 2>/dev/null || true)"
+scaleset_key="$(read_protected "$root/secrets/scaleset-key" 2>/dev/null || true)"
+[ -n "$admin_key" ] || fail "cannot read generated admin key at $root/secrets/admin-key (run with sudo if needed)"
+[ -n "$scaleset_key" ] || fail "cannot read generated scale-set key at $root/secrets/scaleset-key (run with sudo if needed)"
+[ "$admin_key" != "$scaleset_key" ] || fail "admin and scale-set credentials must be distinct"
+ok "generated administrative and scale-set credentials are readable and distinct"
 
 curl --fail --silent --show-error "$control_url/healthz" >/dev/null || fail "control health check failed at $control_url/healthz"
 ok "control plane is healthy"
 
+unauth_status="$(curl --silent --output /dev/null --write-out '%{http_code}' "$control_url/api/v1/hosts" || true)"
+[ "$unauth_status" = "401" ] || fail "unauthenticated API request should return 401, got ${unauth_status:-no status}"
+ok "administrative API rejects unauthenticated requests"
+
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 chmod 0700 "$tmp"
-printf 'header = "Authorization: Bearer %s"\n' "$admin_key" > "$tmp/curl-auth.conf"
-chmod 0600 "$tmp/curl-auth.conf"
-unset admin_key value
+printf 'header = "Authorization: Bearer %s"\n' "$admin_key" > "$tmp/curl-admin.conf"
+printf 'header = "Authorization: Bearer %s"\n' "$scaleset_key" > "$tmp/curl-scaleset.conf"
+chmod 0600 "$tmp/curl-admin.conf" "$tmp/curl-scaleset.conf"
+unset admin_key scaleset_key unauth_status
 
-curl --config "$tmp/curl-auth.conf" --fail --silent --show-error "$control_url/api/v1/hosts" > "$tmp/hosts.json" || fail "authenticated hosts API failed"
-curl --config "$tmp/curl-auth.conf" --fail --silent --show-error "$control_url/api/v1/pools" > "$tmp/pools.json" || fail "authenticated pools API failed"
-curl --config "$tmp/curl-auth.conf" --fail --silent --show-error "$control_url/api/v1/workers" > "$tmp/workers.json" || fail "authenticated workers API failed"
+curl --config "$tmp/curl-admin.conf" --fail --silent --show-error "$control_url/api/v1/hosts" > "$tmp/hosts.json" || fail "authenticated hosts API failed"
+curl --config "$tmp/curl-admin.conf" --fail --silent --show-error "$control_url/api/v1/pools" > "$tmp/pools.json" || fail "authenticated pools API failed"
+curl --config "$tmp/curl-admin.conf" --fail --silent --show-error "$control_url/api/v1/workers" > "$tmp/workers.json" || fail "authenticated workers API failed"
+ok "admin credential can read hosts, pools, and workers"
+
+curl --config "$tmp/curl-scaleset.conf" --fail --silent --show-error "$control_url/api/v1/workers" >/dev/null || fail "scale-set credential cannot read workers"
+scaleset_hosts_status="$(curl --config "$tmp/curl-scaleset.conf" --silent --output /dev/null --write-out '%{http_code}' "$control_url/api/v1/hosts" || true)"
+[ "$scaleset_hosts_status" = "403" ] || fail "scale-set credential should be forbidden from reading hosts, got ${scaleset_hosts_status:-no status}"
+unset scaleset_hosts_status
+ok "scale-set credential remains constrained to its expected API surface"
 
 python3 - "$tmp/hosts.json" "$tmp/pools.json" "$tmp/workers.json" <<'PY'
 import json
