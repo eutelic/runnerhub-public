@@ -175,6 +175,19 @@ unset credential_json
 ok "Docker agent credential persisted"
 
 if command -v docker >/dev/null 2>&1 && docker version >/dev/null 2>&1; then
+  mapfile -t scaleset_containers < <(
+    docker ps \
+      --filter "label=io.runnerhub.component=scaleset" \
+      --filter "label=io.runnerhub.pool=$expected_pool_id" \
+      --filter "label=io.runnerhub.scale-set=$expected_label" \
+      --format '{{.ID}}'
+  )
+  [ "${#scaleset_containers[@]}" -eq 1 ] || fail "expected exactly one running scale-set listener for pool $expected_pool_id / label $expected_label, found ${#scaleset_containers[@]}"
+  scaleset_health="$(docker inspect --format '{{.State.Health.Status}}' "${scaleset_containers[0]}" 2>/dev/null || true)"
+  [ "$scaleset_health" = "healthy" ] || fail "scale-set listener is not healthy after GitHub message-session setup (status: ${scaleset_health:-unknown})"
+  unset scaleset_health scaleset_containers
+  ok "scale-set listener is healthy after GitHub message-session setup"
+
   docker ps -a --filter label=io.runnerhub.worker --format '{{.Label "io.runnerhub.worker"}}|||{{.ID}}|||{{.Status}}' > "$tmp/containers.txt"
 
   python3 - "$tmp/workers.json" "$tmp/containers.txt" <<'PY'
@@ -216,7 +229,7 @@ PY
   done < <(docker ps -a --filter label=io.runnerhub.role=dind --format '{{.ID}}|||{{.Label "io.runnerhub.parent"}}')
   ok "no orphan Docker-in-Docker sidecars"
 else
-  note "host Docker CLI is unavailable; skipped direct stale-container checks"
+  note "host Docker CLI is unavailable; skipped direct scale-set and stale-container checks"
 fi
 
 echo
