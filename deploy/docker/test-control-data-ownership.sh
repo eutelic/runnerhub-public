@@ -2,10 +2,32 @@
 set -euo pipefail
 
 image="${1:-runnerhub-ci-control}"
+host_uid="$(id -u)"
+host_gid="$(id -g)"
 
 tmp="$(mktemp -d)"
+
+run_chown() {
+  local owner="$1"
+  local path="$2"
+  if [ "$host_uid" -eq 0 ]; then
+    chown "$owner" "$path"
+  elif command -v sudo >/dev/null 2>&1; then
+    sudo chown "$owner" "$path"
+  else
+    echo 'test-control-data-ownership: root or sudo is required for ownership migration checks' >&2
+    exit 1
+  fi
+}
+
 cleanup() {
-  rm -rf "$tmp"
+  if [ "$host_uid" -eq 0 ]; then
+    rm -rf "$tmp"
+  elif command -v sudo >/dev/null 2>&1; then
+    sudo rm -rf "$tmp"
+  else
+    rm -rf "$tmp" || true
+  fi
 }
 trap cleanup EXIT
 
@@ -13,22 +35,10 @@ mkdir -p "$tmp/data"
 touch "$tmp/data/runnerhub.db"
 chmod 0600 "$tmp/data/runnerhub.db"
 
-chown_old() {
-  local path="$1"
-  if [ "$(id -u)" -eq 0 ]; then
-    chown 12345:12345 "$path"
-  elif command -v sudo >/dev/null 2>&1; then
-    sudo chown 12345:12345 "$path"
-  else
-    echo 'test-control-data-ownership: root or sudo is required to simulate old persisted ownership' >&2
-    exit 1
-  fi
-}
-
 stat_uid() { stat -c '%u' "$1"; }
 stat_gid() { stat -c '%g' "$1"; }
 
-chown_old "$tmp/data/runnerhub.db"
+run_chown 12345:12345 "$tmp/data/runnerhub.db"
 [ "$(stat_uid "$tmp/data/runnerhub.db")" = "12345" ]
 
 common_env=(
@@ -71,6 +81,12 @@ EOF
   exit 1
 }
 
+# The entrypoint correctly changed the bind-mounted directory owner too. Give the
+# test process temporary ownership again so it can set up the symlink scenario.
+run_chown "$host_uid:$host_gid" "$tmp/data"
+run_chown "$host_uid:$host_gid" "$tmp/data/runnerhub.db"
+run_chown "$host_uid:$host_gid" "$tmp/data/runtime-identity"
+
 # The root entrypoint must not follow an attacker-/corruption-controlled symlink
 # while repairing database ownership.
 rm -f "$tmp/data/runnerhub.db" "$tmp/data/runtime-identity"
@@ -95,7 +111,7 @@ EOF
   exit 1
 fi
 
-[ "$(stat_uid "$tmp/outside-db")" != "10001" ] || {
+[ "$(stat_uid "$tmp/outside-db")" = "$host_uid" ] || {
   echo 'control entrypoint followed the symlink and changed the target owner' >&2
   exit 1
 }
