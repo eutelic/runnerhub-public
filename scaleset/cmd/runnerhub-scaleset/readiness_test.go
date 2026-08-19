@@ -71,11 +71,8 @@ func TestMainStillEmitsReadinessBoundary(t *testing.T) {
 		t.Fatalf("read main.go: %v", err)
 	}
 	want := []byte(`slog.Info("scale-set listener ready"`)
-	// main.go contains source text, not an escaped Go string. Keep the fallback
-	// below explicit so this test catches an intentional log-boundary change.
-	if !bytes.Contains(source, []byte(`slog.Info("scale-set listener ready"`)) &&
-		!bytes.Contains(source, []byte(`slog.Info("scale-set listener ready"`)) {
-		t.Fatalf("main.go no longer emits readiness boundary %q; update the readiness health contract deliberately (wanted %q)", scaleSetReadyMessage, want)
+	if !bytes.Contains(source, want) {
+		t.Fatalf("main.go no longer emits readiness boundary %q; update the readiness health contract deliberately", scaleSetReadyMessage)
 	}
 }
 
