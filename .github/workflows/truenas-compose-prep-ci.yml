@@ -1,4 +1,4 @@
-name: truenas-compose-prep-ci
+name: truenas-deploy-tools-ci
 
 on:
   pull_request:
@@ -7,6 +7,8 @@ on:
       - 'deploy/truenas/compose.yaml'
       - 'deploy/truenas/prepare-compose.sh'
       - 'deploy/truenas/test-prepare-compose.sh'
+      - 'deploy/truenas/verify.sh'
+      - 'deploy/truenas/test-verify.sh'
   push:
     branches: [main]
     paths:
@@ -14,14 +16,18 @@ on:
       - 'deploy/truenas/compose.yaml'
       - 'deploy/truenas/prepare-compose.sh'
       - 'deploy/truenas/test-prepare-compose.sh'
+      - 'deploy/truenas/verify.sh'
+      - 'deploy/truenas/test-verify.sh'
 
 permissions:
   contents: read
 
 jobs:
-  prepare-compose:
+  truenas-tools:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
       - name: Validate TrueNAS Compose generator
         run: bash deploy/truenas/test-prepare-compose.sh
+      - name: Validate TrueNAS post-install verifier
+        run: bash deploy/truenas/test-verify.sh
