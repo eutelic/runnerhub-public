@@ -4,7 +4,6 @@ on:
   push:
     branches:
       - main
-      - agent/core-foundation
     tags:
       - 'v*'
     paths:
@@ -87,11 +86,13 @@ jobs:
   promote-latest:
     name: Promote coherent latest set
     needs: publish
-    # Development branches publish immutable SHA tags for validation, but only
-    # the default branch is allowed to advance the deployment-facing :latest set.
+    # Only the default branch may advance the deployment-facing :latest set.
+    # Tags and manual non-main runs keep their immutable/version tags only.
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v6
+
       - uses: docker/setup-buildx-action@v3
 
       - name: Log in to GHCR
@@ -111,3 +112,14 @@ jobs:
               --tag "ghcr.io/example-user/${image}:latest" \
               "ghcr.io/example-user/${image}:${SOURCE_TAG}"
           done
+
+      - name: Verify promoted image set
+        env:
+          SOURCE_TAG: sha-${{ github.sha }}
+        run: |
+          set -euo pipefail
+          bash deploy/truenas/check-images.sh --tag "$SOURCE_TAG"
+          bash deploy/truenas/check-images.sh --tag latest
+          bash deploy/truenas/verify-image-set.sh \
+            --source-tag "$SOURCE_TAG" \
+            --target-tag latest

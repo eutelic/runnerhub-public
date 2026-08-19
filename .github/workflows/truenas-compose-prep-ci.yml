@@ -4,24 +4,12 @@ on:
   pull_request:
     paths:
       - '.github/workflows/truenas-compose-prep-ci.yml'
-      - 'deploy/truenas/compose.yaml'
-      - 'deploy/truenas/prepare-compose.sh'
-      - 'deploy/truenas/test-prepare-compose.sh'
-      - 'deploy/truenas/verify.sh'
-      - 'deploy/truenas/test-verify.sh'
-      - 'deploy/truenas/check-images.sh'
-      - 'deploy/truenas/test-check-images.sh'
+      - 'deploy/truenas/**'
   push:
     branches: [main]
     paths:
       - '.github/workflows/truenas-compose-prep-ci.yml'
-      - 'deploy/truenas/compose.yaml'
-      - 'deploy/truenas/prepare-compose.sh'
-      - 'deploy/truenas/test-prepare-compose.sh'
-      - 'deploy/truenas/verify.sh'
-      - 'deploy/truenas/test-verify.sh'
-      - 'deploy/truenas/check-images.sh'
-      - 'deploy/truenas/test-check-images.sh'
+      - 'deploy/truenas/**'
 
 permissions:
   contents: read
@@ -37,3 +25,5 @@ jobs:
         run: bash deploy/truenas/test-verify.sh
       - name: Validate TrueNAS release image preflight
         run: bash deploy/truenas/test-check-images.sh
+      - name: Validate coherent image promotion verifier
+        run: bash deploy/truenas/test-verify-image-set.sh
