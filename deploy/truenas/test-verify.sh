@@ -84,7 +84,22 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json(200, [{'id': 'host-test', 'provider': 'docker', 'state': 'online'}])
                 return
             if self.path == '/api/v1/pools':
-                self.send_json(200, [{'id': 'pool-docker', 'isolation': 'container-trusted', 'labels': ['runnerhub']}])
+                self.send_json(200, [
+                    {
+                        'id': 'pool-docker',
+                        'isolation': 'container-trusted',
+                        'labels': ['runnerhub'],
+                        'maxConcurrency': 2,
+                        'image': 'ghcr.io/actions/actions-runner:latest',
+                    },
+                    {
+                        'id': 'unrelated-pool',
+                        'isolation': 'container-trusted',
+                        'labels': ['other'],
+                        'maxConcurrency': 1,
+                        'image': 'example.invalid/other:latest',
+                    },
+                ])
                 return
             if self.path == '/api/v1/workers':
                 self.send_json(200, [])
@@ -125,7 +140,27 @@ PATH="$tmp/bin:$PATH" bash -n "$verify"
 PATH="$tmp/bin:$PATH" bash "$verify" "$root" "http://127.0.0.1:$port" > "$tmp/success.log"
 grep -Fq '[ ok ] administrative API rejects unauthenticated requests' "$tmp/success.log"
 grep -Fq '[ ok ] scale-set credential remains constrained to its expected API surface' "$tmp/success.log"
+grep -Fq '[ ok ] expected pool pool-docker: isolation=container-trusted runs-on=runnerhub maxConcurrency=2 image=ghcr.io/actions/actions-runner:latest' "$tmp/success.log"
+grep -Fq '[note] additional pools configured: 1' "$tmp/success.log"
 grep -Fq '[ ok ] RunnerHub TrueNAS installation passed local verification' "$tmp/success.log"
+
+PATH="$tmp/bin:$PATH" RUNNERHUB_VERIFY_ISOLATION=container-trusted \
+  bash "$verify" "$root" "http://127.0.0.1:$port" >/dev/null
+
+if PATH="$tmp/bin:$PATH" bash "$verify" "$root" "http://127.0.0.1:$port" missing-pool runnerhub >/dev/null 2>&1; then
+  echo 'verifier unexpectedly accepted a missing expected pool' >&2
+  exit 1
+fi
+
+if PATH="$tmp/bin:$PATH" bash "$verify" "$root" "http://127.0.0.1:$port" pool-docker wrong-label >/dev/null 2>&1; then
+  echo 'verifier unexpectedly accepted a pool missing the expected runner label' >&2
+  exit 1
+fi
+
+if PATH="$tmp/bin:$PATH" bash "$verify" "$root" "http://127.0.0.1:$port" pool-docker runnerhub container-dind >/dev/null 2>&1; then
+  echo 'verifier unexpectedly accepted the wrong pool isolation' >&2
+  exit 1
+fi
 
 chmod 0644 "$root/secrets/admin-key"
 if PATH="$tmp/bin:$PATH" bash "$verify" "$root" "http://127.0.0.1:$port" >/dev/null 2>&1; then
