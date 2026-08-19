@@ -60,6 +60,10 @@ services:
     depends_on:
       - control
       - agent
+    labels:
+      io.runnerhub.component: scaleset
+      io.runnerhub.pool: ${RUNNERHUB_POOL_ID:-pool-docker}
+      io.runnerhub.scale-set: ${RUNNERHUB_SCALESET_NAME:-runnerhub}
     environment:
       RUNNERHUB_GITHUB_URL: ${RUNNERHUB_GITHUB_URL:?required}
       RUNNERHUB_SCALESET_NAME: ${RUNNERHUB_SCALESET_NAME:-runnerhub}
@@ -75,6 +79,12 @@ services:
       RUNNERHUB_ALLOW_INSECURE_HTTP: "true"
     secrets:
       - github_app_private_key
+    healthcheck:
+      test: ["CMD-SHELL", "test -s /run/runnerhub/scaleset-ready"]
+      interval: 5s
+      timeout: 2s
+      retries: 24
+      start_period: 5s
 
 volumes:
   runnerhub-data: {}
