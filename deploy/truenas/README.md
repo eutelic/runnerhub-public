@@ -1,8 +1,18 @@
 # Deploy RunnerHub on TrueNAS SCALE
 
-This is the supported **image-based** deployment path for TrueNAS SCALE 24.10 or newer, where Custom Apps can be installed from Docker Compose YAML.
+This is the supported **image-based** deployment path for TrueNAS SCALE 24.10 or newer. TrueNAS pulls prebuilt RunnerHub images from GHCR; the NAS does not need to build RunnerHub or install Go.
 
-It does not build RunnerHub on the NAS. TrueNAS pulls the prebuilt RunnerHub control, agent, bootstrap, and scale-set images from GHCR.
+The recommended flow is:
+
+1. prepare the TrueNAS Apps pool, RunnerHub datasets, and GitHub App key;
+2. run the read-only host preflight;
+3. verify that the four RunnerHub images you intend to deploy are pullable;
+4. generate installation YAML from the checked-in template;
+5. install it through **Custom App > Install via YAML**;
+6. run the post-install verifier;
+7. run a real `runs-on: runnerhub` workflow.
+
+`deploy/truenas/compose.yaml` remains the canonical Compose template. The helper scripts make the installation reproducible and fail early on common configuration mistakes.
 
 ## Security model
 
@@ -10,11 +20,13 @@ RunnerHub's `agent` service mounts `/var/run/docker.sock` because it creates and
 
 Use this deployment only for trusted private repositories. Do not expose port `8787` directly to the public Internet. The default YAML serves HTTP on the LAN so the dashboard can be opened from another machine; the API still requires a RunnerHub credential.
 
-The default pool uses `container-trusted`, which does not give workflows a Docker daemon. If a workflow needs Docker container actions, service containers, or a `container:` job, see **Docker workflow compatibility** below rather than mounting the TrueNAS Docker socket into the job.
+The default pool uses `container-trusted`, which does not give workflows a Docker daemon. If a workflow needs Docker container actions, service containers, or a `container:` job, see **Docker workflow compatibility** below rather than mounting the TrueNAS Docker socket into the workflow runner.
 
-## 1. Prepare storage
+## 1. Prepare TrueNAS storage
 
-Create dedicated RunnerHub application storage. TrueNAS recommends separate datasets for application data and the **Apps** dataset preset for application storage, so the preferred layout is:
+Configure a TrueNAS Apps storage pool if one is not already configured.
+
+Create dedicated RunnerHub application storage. The preferred layout is:
 
 ```text
 /mnt/POOL/runnerhub
@@ -23,50 +35,123 @@ Create dedicated RunnerHub application storage. TrueNAS recommends separate data
 /mnt/POOL/runnerhub/secrets
 ```
 
-Create `runnerhub` and the three child datasets with the **Apps** preset where practical. If you use ordinary directories instead, ensure the Docker app can read/write them and preserve execute/traverse permission on the parent path.
+Use your actual pool name instead of `tank`. Create `runnerhub` and the three child datasets with the **Apps** preset where practical. If you use ordinary directories instead, make sure they are readable, writable, and traversable from applications.
 
-Copy the GitHub App private key to:
+Do not place RunnerHub state in an unrelated database/media dataset. The agent path is intentionally bind-mounted at the **same absolute path** inside the agent container and on TrueNAS because the host Docker daemon later mounts short-lived JIT and optional DinD state from that path into worker infrastructure.
+
+## 2. Create and install the GitHub App
+
+For the repository-scoped automatic runner path, create a GitHub App and install it only on the private repository RunnerHub should manage.
+
+Repository permissions:
+
+```text
+Administration: Read & write
+Metadata: Read-only
+```
+
+Record:
+
+```text
+GitHub App client ID       Iv1...
+Installation ID            numeric ID
+Repository URL             https://github.com/OWNER/REPOSITORY
+Private key                 .pem file
+```
+
+Copy the private key to:
 
 ```text
 /mnt/POOL/runnerhub/secrets/github-app.pem
 ```
 
-Keep the PEM file private (mode `0600` is recommended).
+Restrict it to the owner:
 
-Do not place RunnerHub state in an unrelated database/media dataset. The agent path is intentionally bind-mounted at the **same absolute path** inside the agent container and on TrueNAS because the host Docker daemon later mounts short-lived JIT and optional DinD state from that path into worker infrastructure.
-
-## 2. Create the GitHub App
-
-For the repository-scoped automatic runner path, create a GitHub App and install it only on the private repository RunnerHub should manage.
-
-Record:
-
-- GitHub App client ID (`Iv1...`)
-- installation ID
-- repository URL (`https://github.com/OWNER/REPOSITORY`)
-- the PEM private key copied above
-
-The current quickstart permission set is repository **Administration: read/write** plus **Metadata: read-only**.
-
-## 3. Edit the TrueNAS Compose template
-
-Open `deploy/truenas/compose.yaml` and change the installation-specific values in `x-runnerhub-config`:
-
-- `/mnt/POOL/runnerhub/...` to your real dataset paths
-- `Iv1.CHANGE_ME` to the GitHub App client ID
-- `CHANGE_ME_INSTALLATION_ID` to the installation ID
-- `https://github.com/OWNER/REPOSITORY` to the target private repository
-
-Keep these safe defaults unless you specifically need Docker-based workflow features:
-
-```yaml
-pool-isolation: &pool-isolation container-trusted
-allow-privileged-workers: &allow-privileged-workers "false"
+```bash
+sudo chmod 600 /mnt/POOL/runnerhub/secrets/github-app.pem
 ```
 
-You do **not** need to generate or paste RunnerHub enrollment/API secrets into the YAML.
+RunnerHub does not require an inbound webhook for this deployment path.
 
-On first boot, the `init-secrets` service validates `github-app.pem` and creates four random 256-bit credentials in the secrets dataset:
+## 3. Run the host preflight
+
+From a RunnerHub checkout on the TrueNAS shell:
+
+```bash
+sudo bash deploy/truenas/preflight-host.sh /mnt/POOL/runnerhub
+```
+
+This is diagnostic only; it does not change TrueNAS configuration. It checks:
+
+- TrueNAS SCALE 24.10 or newer;
+- the Apps/Docker service is `RUNNING`;
+- an Apps storage pool is configured;
+- `/var/run/docker.sock` exists;
+- the RunnerHub data/agent/secrets paths exist, are accessible, and are not symlinks;
+- `github-app.pem` is owner-only and parses as a private key.
+
+See `deploy/truenas/PREFLIGHT.md` for the detailed pre-install flow.
+
+## 4. Configure GHCR access and verify the image set
+
+RunnerHub uses four runtime images:
+
+```text
+ghcr.io/example-user/runnerhub-control
+ghcr.io/example-user/runnerhub-agent
+ghcr.io/example-user/runnerhub-bootstrap
+ghcr.io/example-user/runnerhub-scaleset
+```
+
+If the packages are private, TrueNAS must authenticate to GHCR. Create a **personal access token (classic)** with only `read:packages`, then in TrueNAS use **Apps > Configuration > Sign-in to a Docker registry** and add GHCR:
+
+```text
+Registry: https://ghcr.io
+Username: your GitHub username
+Password: PAT classic with read:packages
+```
+
+Do not put the registry token in RunnerHub's Compose YAML.
+
+Before installing, verify the image tag from a machine whose Docker client has the same GHCR access:
+
+```bash
+bash deploy/truenas/check-images.sh --tag latest
+```
+
+For an immutable deployment or rollback candidate:
+
+```bash
+bash deploy/truenas/check-images.sh --tag sha-FULL_COMMIT_SHA
+```
+
+The preflight requires all four images to be readable and to publish both `linux/amd64` and `linux/arm64`.
+
+## 5. Generate the TrueNAS YAML
+
+Use the deterministic generator rather than hand-editing the template:
+
+```bash
+bash deploy/truenas/prepare-compose.sh \
+  --root /mnt/POOL/runnerhub \
+  --github-client-id Iv1.EXAMPLE \
+  --github-installation-id 12345678 \
+  --github-url https://github.com/OWNER/REPOSITORY \
+  --output runnerhub-truenas.yaml
+```
+
+The generated YAML defaults to:
+
+```text
+Dashboard/API port       8787
+Pool ID                  pool-docker
+runs-on label            runnerhub
+Maximum runners          2
+Isolation                container-trusted
+RunnerHub image tag      latest
+```
+
+RunnerHub's internal enrollment/API credentials are **not** placed in the YAML. On first boot, `init-secrets` validates `github-app.pem` and creates four random 256-bit credentials in the secrets dataset:
 
 ```text
 enrollment-token
@@ -75,68 +160,99 @@ admin-key
 scaleset-key
 ```
 
-Existing non-empty secret files are preserved, so restarting or updating the app does not rotate credentials unexpectedly. An empty secret file causes startup to fail instead of silently replacing it.
+Existing valid values are preserved across restart/update. Malformed, empty, or symlinked generated credential state fails closed rather than being silently replaced.
 
-Port `8787` is the default dashboard/API port on the NAS. Change the `published` value if that port is already used.
+For an immutable release, add:
 
-## 4. Configure GHCR access
-
-GitHub Container Registry packages are private when first published unless their visibility is changed. If the four RunnerHub packages are still private, TrueNAS must authenticate before the app can pull them.
-
-Create a **personal access token (classic)** with only `read:packages` for this pull-only use. In TrueNAS go to **Apps > Configuration > Sign-in to a Docker registry** and add an **Other Registry** entry for GHCR using:
-
-```text
-Registry: https://ghcr.io
-Username: your GitHub username
-Password: the PAT classic with read:packages
+```bash
+--runnerhub-tag sha-FULL_COMMIT_SHA
 ```
 
-Do not put this registry token in the RunnerHub Compose YAML.
+That applies the same tag to control, agent, bootstrap, and scale-set images.
 
-Alternatively, the four RunnerHub container packages can be changed to **Public** in GitHub package settings. Public GHCR containers support anonymous pulls and therefore remove the registry credential from the TrueNAS setup. GitHub treats changing a package to public as irreversible, so RunnerHub does not automate that decision.
+See `deploy/truenas/PREPARE_COMPOSE.md` for all generator options.
 
-## 5. Install in TrueNAS
+### Manual template editing
+
+If you deliberately prefer to edit `deploy/truenas/compose.yaml` yourself, change only the installation-specific values in `x-runnerhub-config`:
+
+- `/mnt/POOL/runnerhub/...`
+- `Iv1.CHANGE_ME`
+- `CHANGE_ME_INSTALLATION_ID`
+- `https://github.com/OWNER/REPOSITORY`
+
+Keep the four RunnerHub service images on the same tag. Do not independently pin or update only one RunnerHub service.
+
+## 6. Install in TrueNAS
 
 In TrueNAS:
 
-1. Configure an Apps pool if one is not already configured.
-2. Go to **Apps > Discover Apps**.
-3. Open the menu next to Custom App and choose **Install via YAML**.
-4. Use `runnerhub` as the application name.
-5. Paste the edited contents of `deploy/truenas/compose.yaml`.
-6. Save.
+1. Go to **Apps > Discover Apps**.
+2. Open the Custom App menu and choose **Install via YAML**.
+3. Use `runnerhub` as the application name.
+4. Paste the generated `runnerhub-truenas.yaml`.
+5. Save.
 
-The stack starts in this order:
+The stack starts in dependency order:
 
 1. `init-secrets` validates the GitHub App key and prepares persistent RunnerHub credentials.
-2. `control` starts and opens its internal API.
-3. `agent` verifies access to the host Docker daemon, connects through the Compose network, and enrolls as a Docker host.
-4. one-shot `bootstrap` starts only after the control plane and Docker daemon checks are healthy, then creates/updates the repository pool.
-5. `scaleset` starts only after bootstrap succeeds and opens the outbound GitHub message session.
+2. `control` opens the RunnerHub API and persistent SQLite database.
+3. `agent` verifies host Docker access and enrolls the NAS as a Docker host.
+4. one-shot `bootstrap` waits for a healthy control/agent pair and creates or updates the repository pool.
+5. `scaleset` authenticates to GitHub and opens the outbound scale-set message session.
+
+The `scaleset` process has a dedicated readiness healthcheck. It becomes healthy only after configuration, GitHub authentication, scale-set lookup/create, RunnerHub pool validation, active-worker recovery, GitHub message-session creation, and listener construction all succeed. A stale readiness marker is removed on every process restart before setup is repeated.
 
 No inbound GitHub webhook or public RunnerHub endpoint is required.
 
-## 6. Retrieve the admin key
+## 7. Verify the installation
 
-After the first successful start, read the generated admin key from the TrueNAS shell:
+Run the post-install verifier from a checkout on the TrueNAS shell:
+
+```bash
+sudo bash deploy/truenas/verify.sh /mnt/POOL/runnerhub http://127.0.0.1:8787
+```
+
+The verifier checks:
+
+- persistent generated-secret format, permissions, and anti-symlink rules;
+- GitHub App key presence;
+- control health;
+- unauthenticated API rejection;
+- admin/scaler authorization boundaries;
+- an online Docker host;
+- the expected `pool-docker` pool and `runnerhub` label;
+- persisted agent identity;
+- when the host Docker CLI is available, the exact scale-set listener is `healthy` after GitHub message-session setup;
+- stale RunnerHub worker containers;
+- orphan DinD sidecars.
+
+If the host Docker CLI is unavailable, the direct container checks are reported as skipped while the API, state, credential, host, and pool checks still run.
+
+For a DinD deployment, also assert the expected isolation:
+
+```bash
+sudo RUNNERHUB_VERIFY_ISOLATION=container-dind \
+  bash deploy/truenas/verify.sh /mnt/POOL/runnerhub http://127.0.0.1:8787
+```
+
+Retrieve the generated admin key when you need dashboard/API administration:
 
 ```bash
 sudo cat /mnt/POOL/runnerhub/secrets/admin-key
 ```
 
-Use your actual dataset path. Store this value in your password manager; it authorizes administrative RunnerHub API operations.
+Store it in a password manager.
 
-## 7. Verify
+## 8. Run a real GitHub Actions smoke job
 
-Open:
+Open the dashboard:
 
 ```text
 http://TRUENAS_IP:8787
 ```
 
-Paste the admin key into the API token field. The host should show `online` with provider `docker`.
-
-Then add a workflow job to the configured repository:
+Then add a workflow job to the configured private repository:
 
 ```yaml
 jobs:
@@ -147,40 +263,43 @@ jobs:
       - run: echo "RunnerHub on TrueNAS works"
 ```
 
-After the job completes, verify that the worker reaches `deleted` in RunnerHub and that no stale `runnerhub-*` worker container remains.
+Expected lifecycle:
 
-If you have this repository checkout available in the TrueNAS shell, run the included verifier after the app and pool are up:
+1. GitHub sends demand to the outbound scale-set listener.
+2. RunnerHub creates an ephemeral Docker worker on TrueNAS.
+3. The job runs.
+4. RunnerHub removes the worker and exact GitHub registration after completion.
 
-```bash
-sudo bash deploy/truenas/verify.sh /mnt/POOL/runnerhub http://127.0.0.1:8787
-```
-
-Change the dataset path and port if you customized them. The verifier checks persistent secret/agent state, control health and authenticated API access, an online Docker host, pool presence, stale worker containers, and orphan DinD sidecars. If the host Docker CLI is unavailable it reports that direct container checks were skipped rather than treating the whole installation as failed.
+After the job completes, run `verify.sh` again and confirm the worker reaches `deleted` in RunnerHub with no stale worker container remaining.
 
 ## Docker workflow compatibility
 
 GitHub self-hosted runners require Docker for Docker container actions, service containers, and `container:` jobs. RunnerHub deliberately does **not** solve this by mounting TrueNAS `/var/run/docker.sock` into the workflow runner.
 
-If the configured repository requires those features, change both TrueNAS template values:
+For trusted repositories that need those features, generate the YAML with:
+
+```bash
+--isolation container-dind
+```
+
+The generator changes both required settings together:
 
 ```yaml
 pool-isolation: &pool-isolation container-dind
 allow-privileged-workers: &allow-privileged-workers "true"
 ```
 
-`container-dind` creates a private Docker-in-Docker daemon for each ephemeral RunnerHub worker. The runner sees only that private daemon socket; it never receives the TrueNAS host Docker socket.
+`container-dind` creates a private Docker-in-Docker daemon for each ephemeral RunnerHub worker. The workflow runner sees only that private daemon socket; it never receives the TrueNAS host Docker socket.
 
-The tradeoff is that the DinD sidecar itself runs with Docker `--privileged`, which is a materially weaker host-isolation boundary than the default mode. Use it only for trusted private-repository CI. It is **not** equivalent to a VM/microVM sandbox.
+The DinD sidecar itself runs with Docker `--privileged`, so this remains a trusted-workload-only mode and is not equivalent to VM/microVM isolation.
 
-The infrastructure image can also be pinned in the template:
+You can also pin the DinD image:
 
-```yaml
-dind-image: &dind-image docker:dind
+```bash
+--dind-image docker:28-dind
 ```
 
-For a production deployment, pin the DinD image to a tested version/digest as part of the same upgrade discipline as RunnerHub itself.
-
-DinD currently has coarser resource accounting than `container-trusted`: pool CPU/memory limits apply to the runner container, but the privileged DinD sidecar and its nested containers do not yet share one scheduler-accounted CPU/memory envelope, and DinD work/daemon state is bind-backed rather than using the default worker's bounded tmpfs. Strict per-worker DinD CPU, memory, and disk accounting remains a hardening item.
+DinD currently has coarser resource accounting than `container-trusted`: pool CPU/memory limits apply to the runner container, but the privileged DinD sidecar and nested containers do not yet share one scheduler-accounted CPU/memory/disk envelope.
 
 ## Persistence and backup
 
@@ -192,34 +311,53 @@ agent/
 secrets/
 ```
 
-The control database, per-host agent credential, generated service credentials, and GitHub App key are all required to restore the same installation cleanly.
+They contain the control database, per-host agent credential, generated service credentials, and GitHub App key needed to restore the same installation.
 
 Do not delete or regenerate individual secret files while the stack is running.
 
+The control image uses a fixed non-root UID/GID and performs a narrow startup ownership repair for the configured SQLite database/WAL files. This makes restores and upgrades from older image identities deterministic without recursively changing unrelated files in the dataset.
+
 ## Updating and rollback
 
-The template uses `:latest` plus `pull_policy: always`. Image publishing first creates immutable tags for the same source commit across every RunnerHub service, then advances the `latest` tags only after all four builds succeed. This reduces the chance of an update pulling a mixed-version RunnerHub stack.
+The default template uses `:latest` plus `pull_policy: always`. Release publishing creates immutable same-commit tags first and advances `latest` only after all four runtime images build successfully. The promotion step then verifies that `latest` contains the exact `linux/amd64` and `linux/arm64` child manifests from that source commit.
 
-For the safest alpha rollback, replace `:latest` in all four RunnerHub service images with the same immutable `sha-<full-commit>` tag published by the image workflow. Returning all four services to the previous SHA rolls application binaries back while preserving state.
+For a safer alpha deployment, pin an immutable tag when generating the YAML:
 
-The `init-secrets` service also uses the bootstrap image; pin it to the same SHA as the bootstrap service when pinning a deployment.
+```bash
+--runnerhub-tag sha-FULL_COMMIT_SHA
+```
+
+Before changing the installed app, validate the candidate tag:
+
+```bash
+bash deploy/truenas/check-images.sh --tag sha-FULL_COMMIT_SHA
+```
+
+Rollback by generating/installing YAML using the previous known-good SHA. Persistent state is retained; all four RunnerHub binaries move together.
 
 ## Troubleshooting first boot
 
 Check services in dependency order:
 
-1. `init-secrets`: invalid/missing PEM or unwritable secrets dataset.
-2. `control`: database/dataset permissions, invalid generated credential files, or a rejected privileged-worker configuration.
-3. `agent`: its Docker healthcheck fails when `/var/run/docker.sock` is unavailable or the Docker daemon cannot be reached; enrollment/state-path problems then appear in agent logs.
-4. `bootstrap`: no online Docker host or repository pool validation failure. A `container-dind` pool is rejected unless privileged workers are explicitly enabled.
-5. `scaleset`: GitHub App permissions/installation ID or GitHub message-session failure.
+1. `init-secrets`: missing/invalid PEM, malformed persisted credential, or unwritable secrets dataset.
+2. `control`: database/dataset permissions, invalid credentials, or a rejected privileged-worker configuration.
+3. `agent`: Docker socket/daemon access, enrollment, or state-path problems.
+4. `bootstrap`: no online Docker host, GitHub repository security validation failure, or pool configuration failure.
+5. `scaleset`: GitHub App client/installation/key mismatch, runner-group/scale-set mismatch, RunnerHub pool mismatch, or GitHub message-session failure. The container remains unhealthy until the full listener setup reaches its readiness boundary.
 
-For DinD job failures, also inspect the per-worker `runnerhub-*-dind` sidecar. RunnerHub treats a missing/exited DinD sidecar as a worker failure and removes it with the worker during cleanup.
+Useful checks:
+
+```bash
+sudo bash deploy/truenas/preflight-host.sh /mnt/POOL/runnerhub
+sudo bash deploy/truenas/verify.sh /mnt/POOL/runnerhub http://127.0.0.1:8787
+```
+
+For DinD job failures, inspect the per-worker `runnerhub-*-dind` sidecar. RunnerHub treats a missing/exited sidecar as worker failure and removes it with the worker during cleanup.
 
 Because initialization is fail-closed, a lower service should not start successfully after a prerequisite has failed.
 
 ## TrueNAS provider vs running on TrueNAS
 
-The separate `RUNNERHUB_PROVIDER=truenas` adapter uses host-side `midclt` to create TrueNAS Custom Apps. It is an experimental provider for a host-side agent and is **not** required to run RunnerHub on modern TrueNAS SCALE.
+The separate `RUNNERHUB_PROVIDER=truenas` adapter uses host-side `midclt` to create TrueNAS Custom Apps. It is an experimental provider for a host-side agent and is **not** required to run RunnerHub itself on modern TrueNAS SCALE.
 
-For a RunnerHub appliance installed as a TrueNAS Custom App, use `RUNNERHUB_PROVIDER=docker` as this template does.
+For the RunnerHub appliance installed as a TrueNAS Custom App, use `RUNNERHUB_PROVIDER=docker` as the checked-in template does.
