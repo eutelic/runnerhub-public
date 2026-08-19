@@ -1,0 +1,91 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+verify="$script_dir/verify-image-set.sh"
+
+tmp="$(mktemp -d)"
+trap 'rm -rf "$tmp"' EXIT
+mkdir -p "$tmp/bin"
+
+cat > "$tmp/bin/docker" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+[ "${1:-}" = buildx ] || exit 9
+[ "${2:-}" = imagetools ] || exit 9
+[ "${3:-}" = inspect ] || exit 9
+[ "${4:-}" = --raw ] || exit 9
+ref="${5:-}"
+
+image=""
+case "$ref" in
+  *runnerhub-control:*) image=control ;;
+  *runnerhub-agent:*) image=agent ;;
+  *runnerhub-bootstrap:*) image=bootstrap ;;
+  *runnerhub-scaleset:*) image=scaleset ;;
+  *) echo 'unknown image' >&2; exit 1 ;;
+esac
+
+tag="${ref##*:}"
+mode="${FAKE_PROMOTION_MODE:-ok}"
+
+if [ "$mode" = missing ] && [ "$image" = agent ] && [ "$tag" = latest ]; then
+  echo 'manifest unknown' >&2
+  exit 1
+fi
+
+amd="sha256:${image}aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+arm="sha256:${image}bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+
+if [ "$mode" = mismatch ] && [ "$image" = bootstrap ] && [ "$tag" = latest ]; then
+  arm="sha256:${image}cccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+fi
+
+if [ "$mode" = badarch ] && [ "$image" = scaleset ] && [ "$tag" = latest ]; then
+  printf '{"schemaVersion":2,"manifests":[{"digest":"%s","platform":{"os":"linux","architecture":"amd64"}}]}\n' "$amd"
+  exit 0
+fi
+
+if [ "$mode" = duplicate ] && [ "$image" = control ] && [ "$tag" = latest ]; then
+  printf '{"schemaVersion":2,"manifests":[{"digest":"%s","platform":{"os":"linux","architecture":"amd64"}},{"digest":"%s","platform":{"os":"linux","architecture":"amd64"}},{"digest":"%s","platform":{"os":"linux","architecture":"arm64"}}]}\n' "$amd" "$amd" "$arm"
+  exit 0
+fi
+
+printf '{"schemaVersion":2,"manifests":[{"digest":"%s","platform":{"os":"linux","architecture":"amd64"}},{"digest":"%s","platform":{"os":"linux","architecture":"arm64"}},{"digest":"sha256:attestation","platform":{"os":"unknown","architecture":"unknown"}}]}\n' "$amd" "$arm"
+EOF
+chmod +x "$tmp/bin/docker"
+
+PATH="$tmp/bin:$PATH" bash -n "$verify"
+PATH="$tmp/bin:$PATH" bash "$verify" --source-tag sha-deadbeef --target-tag latest > "$tmp/success.log"
+for image in control agent bootstrap scaleset; do
+  grep -Fq "ghcr.io/example-user/runnerhub-$image:latest matches ghcr.io/example-user/runnerhub-$image:sha-deadbeef" "$tmp/success.log"
+done
+grep -Fq '[ ok ] coherent RunnerHub image promotion verified: sha-deadbeef -> latest' "$tmp/success.log"
+
+if FAKE_PROMOTION_MODE=mismatch PATH="$tmp/bin:$PATH" bash "$verify" --source-tag sha-deadbeef >/dev/null 2>&1; then
+  echo 'promotion verifier unexpectedly accepted a platform digest mismatch' >&2
+  exit 1
+fi
+
+if FAKE_PROMOTION_MODE=missing PATH="$tmp/bin:$PATH" bash "$verify" --source-tag sha-deadbeef >/dev/null 2>&1; then
+  echo 'promotion verifier unexpectedly accepted a missing target image' >&2
+  exit 1
+fi
+
+if FAKE_PROMOTION_MODE=badarch PATH="$tmp/bin:$PATH" bash "$verify" --source-tag sha-deadbeef >/dev/null 2>&1; then
+  echo 'promotion verifier unexpectedly accepted a missing target platform' >&2
+  exit 1
+fi
+
+if FAKE_PROMOTION_MODE=duplicate PATH="$tmp/bin:$PATH" bash "$verify" --source-tag sha-deadbeef >/dev/null 2>&1; then
+  echo 'promotion verifier unexpectedly accepted duplicate platform manifests' >&2
+  exit 1
+fi
+
+if PATH="$tmp/bin:$PATH" bash "$verify" --source-tag 'bad tag' >/dev/null 2>&1; then
+  echo 'promotion verifier unexpectedly accepted an invalid source tag' >&2
+  exit 1
+fi
+
+printf 'RunnerHub image promotion verification tests passed.\n'
