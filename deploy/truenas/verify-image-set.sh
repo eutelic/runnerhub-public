@@ -82,10 +82,12 @@ for image in control agent bootstrap scaleset; do
 
   python3 - "$source_json" "$target_json" "$source_ref" "$target_ref" <<'PY'
 import json
+import re
 import sys
 
 source_path, target_path, source_ref, target_ref = sys.argv[1:]
 required = {"linux/amd64", "linux/arm64"}
+digest_re = re.compile(r"^sha256:[0-9a-f]{64}$")
 
 
 def platform_digests(path, ref):
@@ -102,8 +104,8 @@ def platform_digests(path, ref):
         if key not in required:
             continue
         digest = manifest.get("digest")
-        if not isinstance(digest, str) or not digest.startswith("sha256:"):
-            raise SystemExit(f"[fail] {ref} has invalid digest for {key}: {digest!r}")
+        if not isinstance(digest, str) or not digest_re.fullmatch(digest):
+            raise SystemExit(f"[fail] {ref} has invalid SHA-256 digest for {key}: {digest!r}")
         if key in result:
             raise SystemExit(f"[fail] {ref} contains duplicate manifest entries for {key}")
         result[key] = digest
