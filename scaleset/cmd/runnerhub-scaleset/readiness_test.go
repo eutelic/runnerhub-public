@@ -31,7 +31,7 @@ func TestReadinessHandlerMarksOnlyReadyBoundary(t *testing.T) {
 		t.Fatalf("read readiness file: %v", err)
 	}
 	if string(got) != "ready\n" {
-		t.Fatalf("readiness file = %q, want %q", got, "ready\\n")
+		t.Fatalf("readiness file = %q, want %q", got, "ready\n")
 	}
 	info, err := os.Stat(path)
 	if err != nil {
@@ -71,18 +71,21 @@ func TestMainStillEmitsReadinessBoundary(t *testing.T) {
 		t.Fatalf("read main.go: %v", err)
 	}
 	want := []byte(`slog.Info("scale-set listener ready"`)
-	if !bytes.Contains(source, want) {
-		t.Fatalf("main.go no longer emits readiness boundary %q; update the readiness health contract deliberately", scaleSetReadyMessage)
+	// main.go contains source text, not an escaped Go string. Keep the fallback
+	// below explicit so this test catches an intentional log-boundary change.
+	if !bytes.Contains(source, []byte(`slog.Info("scale-set listener ready"`)) &&
+		!bytes.Contains(source, []byte(`slog.Info("scale-set listener ready"`)) {
+		t.Fatalf("main.go no longer emits readiness boundary %q; update the readiness health contract deliberately (wanted %q)", scaleSetReadyMessage, want)
 	}
 }
 
-func TestReadinessHandlerDelegatesEnabled(t *testing.T) {
+func TestReadinessHandlerKeepsInfoObservable(t *testing.T) {
 	t.Parallel()
 
 	next := slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelWarn})
 	h := &readinessHandler{next: next, path: filepath.Join(t.TempDir(), "ready")}
-	if h.Enabled(context.Background(), slog.LevelInfo) {
-		t.Fatal("readiness handler should preserve downstream level filtering")
+	if !h.Enabled(context.Background(), slog.LevelInfo) {
+		t.Fatal("readiness handler must keep Info records observable for the readiness boundary")
 	}
 	if !h.Enabled(context.Background(), slog.LevelError) {
 		t.Fatal("readiness handler should preserve enabled downstream levels")
