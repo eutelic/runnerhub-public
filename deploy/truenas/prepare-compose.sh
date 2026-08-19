@@ -123,7 +123,7 @@ done
 root="${root%/}"
 github_url="${github_url%/}"
 
-[[ "$root" == /mnt/*/runnerhub ]] || fail '--root must look like /mnt/POOL/runnerhub'
+[[ "$root" =~ ^/mnt/[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*/runnerhub$ ]] || fail '--root must be an absolute TrueNAS dataset path ending in /runnerhub'
 [[ "$github_client_id" =~ ^[A-Za-z0-9._-]+$ ]] || fail 'GitHub App client ID contains unsupported characters'
 [[ "$github_installation_id" =~ ^[0-9]+$ ]] || fail 'GitHub App installation ID must be numeric'
 [[ "$github_url" =~ ^https://github\.com/[^/[:space:]]+/[^/[:space:]]+$ ]] || fail '--github-url must be a GitHub repository URL'
@@ -131,8 +131,8 @@ github_url="${github_url%/}"
 [[ "$port" =~ ^[0-9]+$ ]] || fail '--port must be numeric'
 ((port >= 1 && port <= 65535)) || fail '--port must be between 1 and 65535'
 [[ "$runnerhub_tag" =~ ^[A-Za-z0-9_.-]+$ ]] || fail '--runnerhub-tag contains unsupported characters'
-[[ -n "$runner_image" ]] || fail '--runner-image cannot be empty'
-[[ -n "$dind_image" ]] || fail '--dind-image cannot be empty'
+[[ "$runner_image" =~ ^[A-Za-z0-9./:_@-]+$ ]] || fail '--runner-image contains unsupported characters'
+[[ "$dind_image" =~ ^[A-Za-z0-9./:_@-]+$ ]] || fail '--dind-image contains unsupported characters'
 
 case "$isolation" in
   container-trusted)
@@ -185,6 +185,24 @@ sed \
 if grep -Eq 'CHANGE_ME|/mnt/POOL/runnerhub|github\.com/OWNER/REPOSITORY' "$tmp"; then
   fail 'generated Compose still contains an installation placeholder'
 fi
+
+# Fail closed if the template changes and any requested rewrite silently stops
+# matching. This keeps the generator coupled to the checked-in Compose contract.
+grep -Fq "data-path: &data-path $root/data" "$tmp" || fail 'data path rewrite did not apply'
+grep -Fq "state-path: &state-path $root/agent" "$tmp" || fail 'state path rewrite did not apply'
+grep -Fq "secrets-path: &secrets-path $root/secrets" "$tmp" || fail 'secrets path rewrite did not apply'
+grep -Fq "github-client-id: &github-client-id $github_client_id" "$tmp" || fail 'GitHub client ID rewrite did not apply'
+grep -Fq "github-installation-id: &github-installation-id $github_installation_id" "$tmp" || fail 'GitHub installation ID rewrite did not apply'
+grep -Fq "github-url: &github-url $github_url" "$tmp" || fail 'GitHub repository rewrite did not apply'
+grep -Fq "max-runners: &max-runners \"$max_runners\"" "$tmp" || fail 'max-runners rewrite did not apply'
+grep -Fq "published: \"$port\"" "$tmp" || fail 'dashboard port rewrite did not apply'
+grep -Fq "pool-isolation: &pool-isolation $isolation" "$tmp" || fail 'pool isolation rewrite did not apply'
+grep -Fq "allow-privileged-workers: &allow-privileged-workers \"$allow_privileged\"" "$tmp" || fail 'privileged-worker rewrite did not apply'
+grep -Fq "runner-image: &runner-image $runner_image" "$tmp" || fail 'runner image rewrite did not apply'
+grep -Fq "dind-image: &dind-image $dind_image" "$tmp" || fail 'DinD image rewrite did not apply'
+for image in control agent bootstrap scaleset; do
+  grep -Fq "ghcr.io/example-user/runnerhub-${image}:$runnerhub_tag" "$tmp" || fail "RunnerHub ${image} image tag rewrite did not apply"
+done
 
 if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
   docker compose -f "$tmp" config >/dev/null || fail 'generated Compose failed docker compose validation'
