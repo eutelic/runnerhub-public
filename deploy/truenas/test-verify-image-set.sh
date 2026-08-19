@@ -35,11 +35,26 @@ if [ "$mode" = missing ] && [ "$image" = agent ] && [ "$tag" = latest ]; then
   exit 1
 fi
 
-amd="sha256:${image}aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-arm="sha256:${image}bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+repeat_hex() {
+  printf '%064s' '' | tr ' ' "$1"
+}
+
+case "$image" in
+  control) amd_char=a; arm_char=b ;;
+  agent) amd_char=c; arm_char=d ;;
+  bootstrap) amd_char=e; arm_char=f ;;
+  scaleset) amd_char=1; arm_char=2 ;;
+esac
+
+amd="sha256:$(repeat_hex "$amd_char")"
+arm="sha256:$(repeat_hex "$arm_char")"
 
 if [ "$mode" = mismatch ] && [ "$image" = bootstrap ] && [ "$tag" = latest ]; then
-  arm="sha256:${image}cccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+  arm="sha256:$(repeat_hex 3)"
+fi
+
+if [ "$mode" = baddigest ] && [ "$image" = agent ] && [ "$tag" = latest ]; then
+  arm='sha256:not-a-real-digest'
 fi
 
 if [ "$mode" = badarch ] && [ "$image" = scaleset ] && [ "$tag" = latest ]; then
@@ -80,6 +95,11 @@ fi
 
 if FAKE_PROMOTION_MODE=duplicate PATH="$tmp/bin:$PATH" bash "$verify" --source-tag sha-deadbeef >/dev/null 2>&1; then
   echo 'promotion verifier unexpectedly accepted duplicate platform manifests' >&2
+  exit 1
+fi
+
+if FAKE_PROMOTION_MODE=baddigest PATH="$tmp/bin:$PATH" bash "$verify" --source-tag sha-deadbeef >/dev/null 2>&1; then
+  echo 'promotion verifier unexpectedly accepted an invalid SHA-256 digest' >&2
   exit 1
 fi
 
