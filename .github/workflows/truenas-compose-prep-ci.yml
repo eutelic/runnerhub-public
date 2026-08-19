@@ -1,0 +1,27 @@
+name: truenas-compose-prep-ci
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/truenas-compose-prep-ci.yml'
+      - 'deploy/truenas/compose.yaml'
+      - 'deploy/truenas/prepare-compose.sh'
+      - 'deploy/truenas/test-prepare-compose.sh'
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/truenas-compose-prep-ci.yml'
+      - 'deploy/truenas/compose.yaml'
+      - 'deploy/truenas/prepare-compose.sh'
+      - 'deploy/truenas/test-prepare-compose.sh'
+
+permissions:
+  contents: read
+
+jobs:
+  prepare-compose:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Validate TrueNAS Compose generator
+        run: bash deploy/truenas/test-prepare-compose.sh
