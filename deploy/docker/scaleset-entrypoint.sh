@@ -7,6 +7,14 @@ runnerhub_load_secret RUNNERHUB_CONTROL_TOKEN RUNNERHUB_CONTROL_TOKEN_FILE
 runtime_dir=/run/runnerhub
 install -d -m 0700 -o runnerhub -g runnerhub "$runtime_dir"
 
+# Docker restart policies restart the same container filesystem. Clear the
+# previous process's marker before every listener launch so health cannot remain
+# green while a new GitHub authentication/message-session setup is still in
+# progress or has failed.
+ready_file="$runtime_dir/scaleset-ready"
+rm -f "$ready_file" "$ready_file.tmp"
+export RUNNERHUB_READY_FILE="$ready_file"
+
 if [ -n "${RUNNERHUB_GITHUB_APP_PRIVATE_KEY_FILE:-}" ]; then
   source_key="$RUNNERHUB_GITHUB_APP_PRIVATE_KEY_FILE"
   if [ ! -r "$source_key" ]; then
