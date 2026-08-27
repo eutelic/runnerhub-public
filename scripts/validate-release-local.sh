@@ -158,15 +158,15 @@ if [ "$full" = true ]; then
     -v "$repo_root:/src:ro" \
     -w /src \
     golang:1.26.6-bookworm \
-    bash -lc '
+    bash -c '
       set -euo pipefail
       go test ./...
       go test -race ./internal/...
       go test -tags localtest ./tests/soak -count=1
       go vet ./...
       go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...
-      GOOS=darwin GOARCH=amd64 CGO_ENABLED=0 go build -o /tmp/runnerhub-agent-darwin ./cmd/runnerhub-agent
-      GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -o /tmp/runnerhub-agent-windows.exe ./cmd/runnerhub-agent
+      GOOS=darwin GOARCH=amd64 CGO_ENABLED=0 go build -buildvcs=false -o /tmp/runnerhub-agent-darwin ./cmd/runnerhub-agent
+      GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -buildvcs=false -o /tmp/runnerhub-agent-windows.exe ./cmd/runnerhub-agent
     '
 
   step 'Run full scale-set Go validation in production toolchain'
@@ -174,7 +174,7 @@ if [ "$full" = true ]; then
     -v "$repo_root:/src:ro" \
     -w /src/scaleset \
     golang:1.26.6-bookworm \
-    bash -lc '
+    bash -c '
       set -euo pipefail
       go test ./...
       go vet ./...

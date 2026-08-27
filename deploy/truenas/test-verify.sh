@@ -185,6 +185,24 @@ grep -Fq '[note] additional pools configured: 1' "$tmp/success.log"
 grep -Fq '[note] host Docker CLI is unavailable; skipped direct scale-set and stale-container checks' "$tmp/success.log"
 grep -Fq '[ ok ] RunnerHub TrueNAS installation passed local verification' "$tmp/success.log"
 
+# A managed GitHub App key may live outside RunnerHub's own secrets directory.
+managed_dir="$tmp/scale-secrets/secrets"
+mkdir -p "$managed_dir"
+chmod 0700 "$tmp/scale-secrets" "$managed_dir"
+printf '%s\n' 'managed-test-private-key' > "$managed_dir/runnerhub_github_app"
+chmod 0444 "$managed_dir/runnerhub_github_app"
+PATH="$tmp/bin:$PATH" bash "$verify" \
+  "$root" "http://127.0.0.1:$port" pool-docker runnerhub "" \
+  "$managed_dir/runnerhub_github_app" > "$tmp/managed-success.log"
+grep -Fq "[ ok ] configured GitHub App key is present as a regular file: $managed_dir/runnerhub_github_app" "$tmp/managed-success.log"
+
+if PATH="$tmp/bin:$PATH" bash "$verify" \
+  "$root" "http://127.0.0.1:$port" pool-docker runnerhub "" \
+  "$managed_dir/missing" >/dev/null 2>&1; then
+  echo 'verifier unexpectedly accepted a missing external GitHub App key' >&2
+  exit 1
+fi
+
 # With host Docker access, the exact listener container must exist and report
 # healthy only after the GitHub message-session readiness marker is published.
 FAKE_DOCKER_MODE=healthy PATH="$tmp/bin:$PATH" \

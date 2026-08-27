@@ -2,6 +2,7 @@
 set -euo pipefail
 
 root="${1:-${RUNNERHUB_TRUENAS_ROOT:-/mnt/tank/runnerhub}}"
+key="${2:-${RUNNERHUB_GITHUB_APP_KEY_PATH:-$root/secrets/github-app.pem}}"
 docker_socket="${RUNNERHUB_DOCKER_SOCKET:-/var/run/docker.sock}"
 
 fail() {
@@ -22,6 +23,7 @@ for cmd in midclt python3 openssl stat; do
 done
 
 [[ "$root" == /* ]] || fail "RunnerHub root must be an absolute path: $root"
+[[ "$key" == /* ]] || fail "GitHub App key path must be absolute: $key"
 if [[ "$root" != /mnt/* ]]; then
   note "RunnerHub root is outside /mnt; TrueNAS datasets normally mount beneath /mnt"
 fi
@@ -31,7 +33,6 @@ version="$(python3 - "$version_raw" <<'PY'
 import json
 import re
 import sys
-
 raw = sys.argv[1].strip()
 try:
     value = json.loads(raw)
@@ -79,19 +80,27 @@ for dir in data agent secrets; do
 done
 ok "RunnerHub data, agent, and secrets paths are accessible"
 
-key="$root/secrets/github-app.pem"
 [ ! -L "$key" ] || fail "GitHub App private key must not be a symbolic link: $key"
 [ -f "$key" ] || fail "missing GitHub App private key: $key"
 [ -r "$key" ] || fail "GitHub App private key is not readable: $key"
 
 mode="$(stat -c '%a' "$key" 2>/dev/null)" || fail "cannot read permissions for $key"
 case "$mode" in
-  400|600) ;;
-  *) fail "GitHub App private key should be owner-only mode 0600 (or 0400); found $mode" ;;
+  400|600)
+    ;;
+  444)
+    parent="$(dirname -- "$key")"
+    [ ! -L "$parent" ] || fail "parent directory of a mode-0444 key must not be a symbolic link: $parent"
+    parent_mode="$(stat -c '%a' "$parent" 2>/dev/null)" || fail "cannot read permissions for $parent"
+    [ "$parent_mode" = "700" ] || fail "mode-0444 keys require a mode-0700 parent directory; found $parent_mode"
+    ;;
+  *)
+    fail "GitHub App private key mode must be 0400/0600, or 0444 inside a mode-0700 directory; found $mode"
+    ;;
 esac
 
 openssl pkey -in "$key" -noout >/dev/null 2>&1 || fail "GitHub App private key is not a valid private key: $key"
-ok "GitHub App private key is valid and owner-only"
+ok "GitHub App private key is valid and protected: $key"
 
 if command -v docker >/dev/null 2>&1; then
   if DOCKER_HOST="unix://$docker_socket" docker version >/dev/null 2>&1; then

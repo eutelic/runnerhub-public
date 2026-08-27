@@ -9,6 +9,7 @@ trap 'rm -rf "$tmp"' EXIT
 
 trusted="$tmp/trusted.yaml"
 dind="$tmp/dind.yaml"
+managed="$tmp/managed.yaml"
 
 bash -n "$prepare"
 
@@ -22,6 +23,9 @@ bash "$prepare" \
 grep -Fq '/mnt/tank/runnerhub/data' "$trusted"
 grep -Fq '/mnt/tank/runnerhub/agent' "$trusted"
 grep -Fq '/mnt/tank/runnerhub/secrets' "$trusted"
+grep -Fq 'github-app-key-path: &github-app-key-path /mnt/tank/runnerhub/secrets/github-app.pem' "$trusted"
+grep -Fq 'file: *github-app-key-path' "$trusted"
+grep -Fq 'RUNNERHUB_GITHUB_APP_PRIVATE_KEY_FILE: /run/secrets/runnerhub-github-app' "$trusted"
 grep -Fq 'github-client-id: &github-client-id Iv1.test' "$trusted"
 grep -Fq 'github-installation-id: &github-installation-id 12345678' "$trusted"
 grep -Fq 'github-url: &github-url https://github.com/acme/private-repo' "$trusted"
@@ -59,6 +63,20 @@ for image in control agent bootstrap scaleset; do
   grep -Fq "ghcr.io/example-user/runnerhub-${image}:sha-deadbeef" "$dind"
 done
 
+# External managed keys must not alter RunnerHub's own data/secrets locations.
+managed_key='/mnt/Databases/apps_n_stuff/scale-secrets/secrets/runnerhub_github_app'
+bash "$prepare" \
+  --root /mnt/Databases/apps_n_stuff/runnerhub \
+  --github-client-id Iv1.managed \
+  --github-installation-id 11223344 \
+  --github-url https://github.com/acme/managed-key \
+  --github-app-key-path "$managed_key" \
+  --output "$managed"
+grep -Fq "github-app-key-path: &github-app-key-path $managed_key" "$managed"
+grep -Fq 'secrets-path: &secrets-path /mnt/Databases/apps_n_stuff/runnerhub/secrets' "$managed"
+grep -Fq 'file: *github-app-key-path' "$managed"
+! grep -Fq 'runnerhub/secrets/github-app.pem' "$managed"
+
 if bash "$prepare" \
   --root /srv/runnerhub \
   --github-client-id Iv1.test \
@@ -83,6 +101,16 @@ if bash "$prepare" \
   --github-installation-id 1 \
   --github-url https://example.com/acme/repo >/dev/null 2>&1; then
   echo 'non-GitHub repository URL unexpectedly succeeded' >&2
+  exit 1
+fi
+
+if bash "$prepare" \
+  --root /mnt/tank/runnerhub \
+  --github-client-id Iv1.test \
+  --github-installation-id 1 \
+  --github-url https://github.com/acme/repo \
+  --github-app-key-path /srv/not-truenas/key.pem >/dev/null 2>&1; then
+  echo 'non-/mnt GitHub App key path unexpectedly succeeded' >&2
   exit 1
 fi
 

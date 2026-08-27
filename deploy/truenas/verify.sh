@@ -6,6 +6,7 @@ control_url="${2:-${RUNNERHUB_VERIFY_URL:-http://127.0.0.1:8787}}"
 expected_pool_id="${3:-${RUNNERHUB_VERIFY_POOL_ID:-pool-docker}}"
 expected_label="${4:-${RUNNERHUB_VERIFY_SCALESET_NAME:-runnerhub}}"
 expected_isolation="${5:-${RUNNERHUB_VERIFY_ISOLATION:-}}"
+github_key="${6:-${RUNNERHUB_GITHUB_APP_KEY_PATH:-$root/secrets/github-app.pem}}"
 
 fail() {
   echo "[fail] $*" >&2
@@ -26,6 +27,7 @@ case "$expected_isolation" in
   ""|container-trusted|container-dind) ;;
   *) fail "expected isolation must be container-trusted or container-dind" ;;
 esac
+[[ "$github_key" == /* ]] || fail "GitHub App key path must be absolute: $github_key"
 
 for cmd in curl python3 stat; do
   command -v "$cmd" >/dev/null 2>&1 || fail "$cmd is required"
@@ -83,13 +85,12 @@ for secret in enrollment-token agent-secret admin-key scaleset-key; do
 done
 ok "generated RunnerHub credentials are regular 0600 files with valid 256-bit hex values"
 
-github_key="$root/secrets/github-app.pem"
 [ ! -L "$github_key" ] || fail "GitHub App key must not be a symbolic link: $github_key"
 [ -f "$github_key" ] || fail "GitHub App key must be a regular file: $github_key"
 github_key_value="$(read_protected "$github_key" 2>/dev/null || true)"
 [ -n "$github_key_value" ] || fail "missing or empty GitHub App key: $github_key"
 unset github_key_value
-ok "persisted GitHub App key is present as a regular file"
+ok "configured GitHub App key is present as a regular file: $github_key"
 
 admin_key="$(read_protected "$root/secrets/admin-key" 2>/dev/null || true)"
 scaleset_key="$(read_protected "$root/secrets/scaleset-key" 2>/dev/null || true)"

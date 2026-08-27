@@ -25,7 +25,6 @@ python3 - "$socket" <<'PY' &
 import socket
 import sys
 import time
-
 path = sys.argv[1]
 sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
 sock.bind(path)
@@ -92,8 +91,27 @@ RUNNERHUB_DOCKER_SOCKET="$socket" PATH="$tmp/bin:$PATH" \
 grep -Fq '[ ok ] TrueNAS version is supported: 25.10.1' "$tmp/success.log"
 grep -Fq '[ ok ] TrueNAS Apps/Docker service is RUNNING' "$tmp/success.log"
 grep -Fq '[ ok ] TrueNAS Apps storage pool is configured: tank' "$tmp/success.log"
-grep -Fq '[ ok ] GitHub App private key is valid and owner-only' "$tmp/success.log"
+grep -Fq '[ ok ] GitHub App private key is valid and protected:' "$tmp/success.log"
 grep -Fq '[ ok ] RunnerHub TrueNAS host preflight passed' "$tmp/success.log"
+
+# Scale Secrets publishes secret files as 0444 inside its protected 0700
+# secrets directory. RunnerHub may consume that file directly without copying.
+managed_dir="$tmp/scale-secrets/secrets"
+mkdir -p "$managed_dir"
+chmod 0700 "$tmp/scale-secrets" "$managed_dir"
+openssl genrsa -out "$managed_dir/runnerhub_github_app" 2048 >/dev/null 2>&1
+chmod 0444 "$managed_dir/runnerhub_github_app"
+RUNNERHUB_DOCKER_SOCKET="$socket" PATH="$tmp/bin:$PATH" \
+  bash "$preflight" "$root" "$managed_dir/runnerhub_github_app" > "$tmp/managed.log"
+grep -Fq '[ ok ] GitHub App private key is valid and protected:' "$tmp/managed.log"
+
+chmod 0755 "$managed_dir"
+if RUNNERHUB_DOCKER_SOCKET="$socket" PATH="$tmp/bin:$PATH" \
+  bash "$preflight" "$root" "$managed_dir/runnerhub_github_app" >/dev/null 2>&1; then
+  echo 'host preflight unexpectedly accepted a mode-0444 key in a broad directory' >&2
+  exit 1
+fi
+chmod 0700 "$managed_dir"
 
 for mode in oldversion badversion stopped unconfigured; do
   if FAKE_TRUENAS_MODE="$mode" RUNNERHUB_DOCKER_SOCKET="$socket" PATH="$tmp/bin:$PATH" \

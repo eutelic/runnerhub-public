@@ -9,6 +9,7 @@ Usage:
     --github-client-id Iv1.EXAMPLE \
     --github-installation-id 12345678 \
     --github-url https://github.com/OWNER/REPOSITORY \
+    [--github-app-key-path /mnt/POOL/runnerhub/secrets/github-app.pem] \
     [--max-runners 2] \
     [--port 8787] \
     [--isolation container-trusted|container-dind] \
@@ -17,9 +18,11 @@ Usage:
     [--dind-image IMAGE] \
     [--output FILE]
 
-The generated YAML contains installation identifiers and paths, but no RunnerHub
-internal credentials or GitHub registry token. RunnerHub generates its internal
-credentials on first boot in the configured secrets dataset.
+By default the GitHub App key is read from ROOT/secrets/github-app.pem.
+--github-app-key-path may point at another existing TrueNAS host file, such as
+a secret managed by Scale Secrets. The generated YAML contains only that host
+path; it never embeds the private-key contents, RunnerHub internal credentials,
+or a GHCR registry token.
 EOF
 }
 
@@ -39,6 +42,7 @@ root=""
 github_client_id=""
 github_installation_id=""
 github_url=""
+github_app_key_path=""
 max_runners="2"
 port="8787"
 isolation="container-trusted"
@@ -67,6 +71,11 @@ while (($#)); do
     --github-url)
       (($# >= 2)) || fail '--github-url requires a value'
       github_url="$2"
+      shift 2
+      ;;
+    --github-app-key-path)
+      (($# >= 2)) || fail '--github-app-key-path requires a value'
+      github_app_key_path="$2"
       shift 2
       ;;
     --max-runners)
@@ -122,8 +131,13 @@ done
 
 root="${root%/}"
 github_url="${github_url%/}"
+if [[ -z "$github_app_key_path" ]]; then
+  github_app_key_path="$root/secrets/github-app.pem"
+fi
 
 [[ "$root" =~ ^/mnt/[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*/runnerhub$ ]] || fail '--root must be an absolute TrueNAS dataset path ending in /runnerhub'
+[[ "$github_app_key_path" =~ ^/mnt/[A-Za-z0-9._/-]+$ ]] || fail '--github-app-key-path must be an absolute TrueNAS /mnt path without whitespace'
+[[ "$github_app_key_path" != */ ]] || fail '--github-app-key-path must name a file'
 [[ "$github_client_id" =~ ^[A-Za-z0-9._-]+$ ]] || fail 'GitHub App client ID contains unsupported characters'
 [[ "$github_installation_id" =~ ^[0-9]+$ ]] || fail 'GitHub App installation ID must be numeric'
 [[ "$github_url" =~ ^https://github\.com/[^/[:space:]]+/[^/[:space:]]+$ ]] || fail '--github-url must be a GitHub repository URL'
@@ -146,11 +160,12 @@ case "$isolation" in
     ;;
 esac
 
-for marker in '/mnt/POOL/runnerhub' 'Iv1.CHANGE_ME' 'CHANGE_ME_INSTALLATION_ID' 'https://github.com/OWNER/REPOSITORY'; do
+for marker in '/mnt/POOL/runnerhub' '/mnt/POOL/runnerhub/secrets/github-app.pem' 'Iv1.CHANGE_ME' 'CHANGE_ME_INSTALLATION_ID' 'https://github.com/OWNER/REPOSITORY'; do
   grep -Fq "$marker" "$template" || fail "template marker missing: $marker"
 done
 
 root_esc="$(escape_sed_replacement "$root")"
+key_path_esc="$(escape_sed_replacement "$github_app_key_path")"
 client_esc="$(escape_sed_replacement "$github_client_id")"
 installation_esc="$(escape_sed_replacement "$github_installation_id")"
 github_url_esc="$(escape_sed_replacement "$github_url")"
@@ -162,10 +177,14 @@ tag_esc="$(escape_sed_replacement "$runnerhub_tag")"
 runner_image_esc="$(escape_sed_replacement "$runner_image")"
 dind_image_esc="$(escape_sed_replacement "$dind_image")"
 
-tmp="$(mktemp)"
-trap 'rm -f "$tmp"' EXIT
+work="$(mktemp -d)"
+tmp="$work/compose.yaml"
+trap 'rm -rf "$work"' EXIT
 
+# Rewrite the key path before the general root replacement so an explicitly
+# external key path is not accidentally forced back under ROOT/secrets.
 sed \
+  -e "s|github-app-key-path: &github-app-key-path /mnt/POOL/runnerhub/secrets/github-app.pem|github-app-key-path: \&github-app-key-path $key_path_esc|" \
   -e "s|/mnt/POOL/runnerhub|$root_esc|g" \
   -e "s|Iv1.CHANGE_ME|$client_esc|g" \
   -e "s|CHANGE_ME_INSTALLATION_ID|$installation_esc|g" \
@@ -191,6 +210,8 @@ fi
 grep -Fq "data-path: &data-path $root/data" "$tmp" || fail 'data path rewrite did not apply'
 grep -Fq "state-path: &state-path $root/agent" "$tmp" || fail 'state path rewrite did not apply'
 grep -Fq "secrets-path: &secrets-path $root/secrets" "$tmp" || fail 'secrets path rewrite did not apply'
+grep -Fq "github-app-key-path: &github-app-key-path $github_app_key_path" "$tmp" || fail 'GitHub App key path rewrite did not apply'
+grep -Fq "file: *github-app-key-path" "$tmp" || fail 'GitHub App Compose secret wiring is missing'
 grep -Fq "github-client-id: &github-client-id $github_client_id" "$tmp" || fail 'GitHub client ID rewrite did not apply'
 grep -Fq "github-installation-id: &github-installation-id $github_installation_id" "$tmp" || fail 'GitHub installation ID rewrite did not apply'
 grep -Fq "github-url: &github-url $github_url" "$tmp" || fail 'GitHub repository rewrite did not apply'
@@ -204,8 +225,16 @@ for image in control agent bootstrap scaleset; do
   grep -Fq "ghcr.io/example-user/runnerhub-${image}:$runnerhub_tag" "$tmp" || fail "RunnerHub ${image} image tag rewrite did not apply"
 done
 
+# Compose may read a file-backed secret while loading configuration. Lint a
+# copy that points the secret at harmless local content so validation never
+# opens the real GitHub App private key and can run away from the TrueNAS host.
 if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
-  docker compose -f "$tmp" config >/dev/null || fail 'generated Compose failed docker compose validation'
+  validation_key="$work/compose-validation-secret"
+  validation_compose="$work/compose-validation.yaml"
+  printf 'runnerhub-compose-validation-only\n' > "$validation_key"
+  validation_key_esc="$(escape_sed_replacement "$validation_key")"
+  sed "s|^    file: \*github-app-key-path$|    file: \"$validation_key_esc\"|" "$tmp" > "$validation_compose"
+  docker compose -f "$validation_compose" config >/dev/null || fail 'generated Compose failed docker compose validation'
 fi
 
 if [[ -n "$output" ]]; then

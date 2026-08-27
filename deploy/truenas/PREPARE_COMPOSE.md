@@ -1,6 +1,6 @@
 # Prepare the TrueNAS Compose file
 
-`deploy/truenas/compose.yaml` remains the canonical TrueNAS SCALE 24.10+ Custom App template. `prepare-compose.sh` turns that template into installation-ready YAML without placing RunnerHub internal credentials or a GHCR registry token in the generated file.
+`deploy/truenas/compose.yaml` remains the canonical TrueNAS SCALE 24.10+ Custom App template. `prepare-compose.sh` turns that template into installation-ready YAML without placing RunnerHub internal credentials, the GitHub App private-key contents, or a GHCR registry token in the generated file.
 
 ## Basic usage
 
@@ -20,12 +20,29 @@ The generated file uses:
 - `/mnt/POOL/runnerhub/data`
 - `/mnt/POOL/runnerhub/agent`
 - `/mnt/POOL/runnerhub/secrets`
+- `/mnt/POOL/runnerhub/secrets/github-app.pem` as the default/manual GitHub App key source
 - dashboard/API port `8787`
 - two maximum concurrent runners
 - `container-trusted` isolation
 - the coherent `latest` RunnerHub image set
 
-Create the three datasets and place `github-app.pem` in the secrets dataset before installing the generated YAML in TrueNAS.
+For the manual flow, create the three datasets and place `github-app.pem` in the secrets dataset before installing the generated YAML in TrueNAS.
+
+## Use a key managed by Scale Secrets
+
+RunnerHub can reference an existing secret-manager file instead of copying the PEM into its own secrets directory:
+
+```bash
+bash deploy/truenas/prepare-compose.sh \
+  --root /mnt/POOL/runnerhub \
+  --github-client-id Iv1.EXAMPLE \
+  --github-installation-id 12345678 \
+  --github-url https://github.com/OWNER/REPOSITORY \
+  --github-app-key-path /mnt/POOL/app-secrets/secrets/runnerhub_github_app \
+  --output runnerhub-truenas.yaml
+```
+
+Use the actual host path reported by Scale Secrets. The generated YAML stores only the path and mounts that file as a Compose secret into the RunnerHub services that require it. See `SCALE_SECRETS.md` for the complete upload, preflight, deployment, and rotation flow.
 
 ## Pin a release or rollback
 
@@ -62,6 +79,7 @@ You can also pin the DinD image:
 ## Other options
 
 ```text
+--github-app-key-path /mnt/.../FILE
 --max-runners N
 --port PORT
 --runner-image IMAGE

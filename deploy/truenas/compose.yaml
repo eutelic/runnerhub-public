@@ -1,5 +1,5 @@
 # RunnerHub TrueNAS SCALE 24.10+ Custom App template.
-# Replace the CHANGE_ME values and /mnt/POOL paths before installing.
+# Replace the installation identifiers and /mnt/POOL paths before installing.
 # RunnerHub's internal credentials are generated automatically and persisted
 # beneath the configured secrets path.
 
@@ -15,6 +15,9 @@ x-runnerhub-config:
   data-path: &data-path /mnt/POOL/runnerhub/data
   state-path: &state-path /mnt/POOL/runnerhub/agent
   secrets-path: &secrets-path /mnt/POOL/runnerhub/secrets
+  # Manual/default: place github-app.pem in the RunnerHub secrets directory.
+  # Scale Secrets users can point this at its managed host file instead.
+  github-app-key-path: &github-app-key-path /mnt/POOL/runnerhub/secrets/github-app.pem
   github-client-id: &github-client-id Iv1.CHANGE_ME
   github-installation-id: &github-installation-id CHANGE_ME_INSTALLATION_ID
   github-url: &github-url https://github.com/OWNER/REPOSITORY
@@ -29,6 +32,14 @@ x-runnerhub-config:
   allow-privileged-workers: &allow-privileged-workers "false"
   dind-image: &dind-image docker:dind
 
+# The GitHub App key is intentionally modeled as a Compose file secret instead
+# of requiring it to live beside RunnerHub's generated internal credentials.
+# This preserves the manual path while allowing secret managers such as Scale
+# Secrets to provide the exact same file from another TrueNAS dataset.
+secrets:
+  runnerhub-github-app:
+    file: *github-app-key-path
+
 services:
   init-secrets:
     image: *bootstrap-image
@@ -37,7 +48,9 @@ services:
     entrypoint: ["/usr/local/bin/runnerhub-init-secrets"]
     environment:
       RUNNERHUB_SECRETS_DIR: /secrets
-      RUNNERHUB_GITHUB_APP_PRIVATE_KEY_FILE: /secrets/github-app.pem
+      RUNNERHUB_GITHUB_APP_PRIVATE_KEY_FILE: /run/secrets/runnerhub-github-app
+    secrets:
+      - runnerhub-github-app
     volumes:
       - type: bind
         source: *secrets-path
@@ -64,9 +77,11 @@ services:
       RUNNERHUB_SCALESET_KEY_FILE: /run/runnerhub-secrets/scaleset-key
       RUNNERHUB_ALLOW_PRIVILEGED_WORKERS: *allow-privileged-workers
       RUNNERHUB_GITHUB_APP_ISSUER: *github-client-id
-      RUNNERHUB_GITHUB_APP_PRIVATE_KEY_FILE: /run/runnerhub-secrets/github-app.pem
+      RUNNERHUB_GITHUB_APP_PRIVATE_KEY_FILE: /run/secrets/runnerhub-github-app
       RUNNERHUB_GITHUB_API_URL: https://api.github.com
       RUNNERHUB_ALLOWED_IMAGES: *runner-image
+    secrets:
+      - runnerhub-github-app
     volumes:
       - type: bind
         source: *data-path
@@ -176,8 +191,10 @@ services:
       RUNNERHUB_RUNNER_GROUP: ""
       RUNNERHUB_GITHUB_APP_CLIENT_ID: *github-client-id
       RUNNERHUB_GITHUB_APP_INSTALLATION_ID: *github-installation-id
-      RUNNERHUB_GITHUB_APP_PRIVATE_KEY_FILE: /run/runnerhub-secrets/github-app.pem
+      RUNNERHUB_GITHUB_APP_PRIVATE_KEY_FILE: /run/secrets/runnerhub-github-app
       RUNNERHUB_ALLOW_INSECURE_HTTP: "true"
+    secrets:
+      - runnerhub-github-app
     volumes:
       - type: bind
         source: *secrets-path
