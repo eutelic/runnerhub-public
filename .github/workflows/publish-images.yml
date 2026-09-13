@@ -30,7 +30,17 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  verify-release:
+    name: Validate release candidate
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v6
+      - name: Run full release validation
+        run: bash scripts/validate-release-local.sh --full
+
   publish:
+    needs: verify-release
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
