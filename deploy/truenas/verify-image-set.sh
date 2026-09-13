@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-registry="${RUNNERHUB_IMAGE_REGISTRY:-ghcr.io/example-user}"
+registry="${RUNNERHUB_IMAGE_REGISTRY:-ghcr.io/eutelic}"
 source_tag="${RUNNERHUB_IMAGE_SOURCE_TAG:-}"
 target_tag="${RUNNERHUB_IMAGE_TARGET_TAG:-latest}"
 
@@ -11,7 +11,7 @@ Usage:
   bash deploy/truenas/verify-image-set.sh \
     --source-tag sha-FULL_COMMIT_SHA \
     [--target-tag latest] \
-    [--registry ghcr.io/example-user]
+    [--registry ghcr.io/eutelic]
 
 Verifies that all four target-tag RunnerHub images publish linux/amd64 and
 linux/arm64 using the exact same platform manifest digests as the source tag.

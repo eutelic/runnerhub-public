@@ -2,7 +2,7 @@
 
 package store
 
-import("context";"sync";"time";"github.com/example-user/runnerhub/internal/agent";"github.com/example-user/runnerhub/internal/core")
+import("context";"sync";"time";"github.com/eutelic/runnerhub/internal/agent";"github.com/eutelic/runnerhub/internal/core")
 type SQLite struct{mu sync.Mutex;hosts map[string]core.Host;pools map[string]core.RunnerPool;workers map[string]core.Worker;audit []core.AuditEvent;commands map[string]CommandRecord}
 func OpenSQLite(string)(*SQLite,error){return &SQLite{hosts:map[string]core.Host{},pools:map[string]core.RunnerPool{},workers:map[string]core.Worker{},commands:map[string]CommandRecord{}},nil}
 func(s *SQLite)Close()error{return nil}

@@ -2,7 +2,7 @@ name: runnerhub
 
 services:
   control:
-    image: ghcr.io/example-user/runnerhub-control:${RUNNERHUB_IMAGE_TAG:-latest}
+    image: ghcr.io/eutelic/runnerhub-control:${RUNNERHUB_IMAGE_TAG:-latest}
     pull_policy: always
     restart: unless-stopped
     ports:
@@ -32,7 +32,7 @@ services:
       start_period: 5s
 
   agent:
-    image: ghcr.io/example-user/runnerhub-agent:${RUNNERHUB_IMAGE_TAG:-latest}
+    image: ghcr.io/eutelic/runnerhub-agent:${RUNNERHUB_IMAGE_TAG:-latest}
     pull_policy: always
     restart: unless-stopped
     depends_on:
@@ -62,7 +62,7 @@ services:
       start_period: 5s
 
   bootstrap:
-    image: ghcr.io/example-user/runnerhub-bootstrap:${RUNNERHUB_IMAGE_TAG:-latest}
+    image: ghcr.io/eutelic/runnerhub-bootstrap:${RUNNERHUB_IMAGE_TAG:-latest}
     pull_policy: always
     restart: "no"
     depends_on:
@@ -86,7 +86,7 @@ services:
       RUNNERHUB_BOOTSTRAP_TIMEOUT_SECONDS: ${RUNNERHUB_BOOTSTRAP_TIMEOUT_SECONDS:-180}
 
   scaleset:
-    image: ghcr.io/example-user/runnerhub-scaleset:${RUNNERHUB_IMAGE_TAG:-latest}
+    image: ghcr.io/eutelic/runnerhub-scaleset:${RUNNERHUB_IMAGE_TAG:-latest}
     pull_policy: always
     restart: unless-stopped
     depends_on:

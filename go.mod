@@ -1,4 +1,4 @@
-module github.com/example-user/runnerhub
+module github.com/eutelic/runnerhub
 
 go 1.23.0
 

@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/example-user/runnerhub/internal/core"
+	"github.com/eutelic/runnerhub/internal/core"
 )
 
 func testPrivateKeyPEM(t *testing.T) []byte {
@@ -34,7 +34,7 @@ func TestGitHubAppTokenSourceResolvesAndCachesRepositoryInstallation(t *testing.
 			t.Fatal("expected bearer jwt")
 		}
 		switch r.URL.Path {
-		case "/repos/example-user/runnerhub/installation":
+		case "/repos/eutelic/runnerhub/installation":
 			installationRequests.Add(1)
 			_, _ = w.Write([]byte(`{"id":77}`))
 		case "/app/installations/77/access_tokens":
@@ -65,7 +65,7 @@ func TestGitHubAppTokenSourceResolvesAndCachesRepositoryInstallation(t *testing.
 		t.Fatal(err)
 	}
 	source.now = func() time.Time { return time.Date(2026, 8, 8, 23, 0, 0, 0, time.UTC) }
-	scope := core.GitHubScope{Kind: core.ScopeRepository, Owner: "example-user", Repository: "runnerhub"}
+	scope := core.GitHubScope{Kind: core.ScopeRepository, Owner: "eutelic", Repository: "runnerhub"}
 
 	first, err := source.Token(context.Background(), scope)
 	if err != nil {

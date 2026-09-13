@@ -10,13 +10,13 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/example-user/runnerhub/internal/agent"
-	"github.com/example-user/runnerhub/internal/provider"
-	dockerprovider "github.com/example-user/runnerhub/internal/providers/docker"
-	firecrackerprovider "github.com/example-user/runnerhub/internal/providers/firecracker"
-	processprovider "github.com/example-user/runnerhub/internal/providers/process"
-	proxmoxprovider "github.com/example-user/runnerhub/internal/providers/proxmox"
-	truenasprovider "github.com/example-user/runnerhub/internal/providers/truenas"
+	"github.com/eutelic/runnerhub/internal/agent"
+	"github.com/eutelic/runnerhub/internal/provider"
+	dockerprovider "github.com/eutelic/runnerhub/internal/providers/docker"
+	firecrackerprovider "github.com/eutelic/runnerhub/internal/providers/firecracker"
+	processprovider "github.com/eutelic/runnerhub/internal/providers/process"
+	proxmoxprovider "github.com/eutelic/runnerhub/internal/providers/proxmox"
+	truenasprovider "github.com/eutelic/runnerhub/internal/providers/truenas"
 )
 
 var version = "dev"

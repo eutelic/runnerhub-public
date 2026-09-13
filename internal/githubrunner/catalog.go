@@ -1,6 +1,6 @@
 package githubrunner
 
-import("context";"encoding/json";"errors";"fmt";"net/http";"net/url";"strconv";"strings";"time";"github.com/example-user/runnerhub/internal/core")
+import("context";"encoding/json";"errors";"fmt";"net/http";"net/url";"strconv";"strings";"time";"github.com/eutelic/runnerhub/internal/core")
 type Repository struct{ID int64 `json:"id"`;FullName string `json:"fullName"`;Private bool `json:"private"`;DefaultBranch string `json:"defaultBranch"`}
 type RunnerGroup struct{ID int64 `json:"id"`;Name string `json:"name"`;Visibility string `json:"visibility"`;Default bool `json:"default,omitempty"`;Inherited bool `json:"inherited,omitempty"`;AllowsPublicRepositories bool `json:"allows_public_repositories"`;RestrictedToWorkflows bool `json:"restricted_to_workflows"`;SelectedWorkflows []string `json:"selected_workflows,omitempty"`;WorkflowRestrictionsReadOnly bool `json:"workflow_restrictions_read_only,omitempty"`}
 type Catalog interface{ListRepositories(context.Context,core.GitHubScope)([]Repository,error);GetRepository(context.Context,string,string)(Repository,error);ListRunnerGroups(context.Context,string)([]RunnerGroup,error);GetRunnerGroup(context.Context,string,int64)(RunnerGroup,error);ListRunnerGroupRepositories(context.Context,string,int64)([]Repository,error)}

@@ -1,4 +1,4 @@
-module github.com/example-user/runnerhub/scaleset
+module github.com/eutelic/runnerhub/scaleset
 
 go 1.25.3
 

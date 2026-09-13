@@ -42,7 +42,7 @@ chmod +x "$tmp/bin/docker"
 PATH="$tmp/bin:$PATH" bash -n "$check"
 PATH="$tmp/bin:$PATH" bash "$check" --tag sha-deadbeef > "$tmp/success.log"
 for image in control agent bootstrap scaleset; do
-  grep -Fq "ghcr.io/example-user/runnerhub-$image:sha-deadbeef publishes linux/amd64 and linux/arm64" "$tmp/success.log"
+  grep -Fq "ghcr.io/eutelic/runnerhub-$image:sha-deadbeef publishes linux/amd64 and linux/arm64" "$tmp/success.log"
 done
 grep -Fq '[ ok ] all four RunnerHub runtime images are available for tag sha-deadbeef' "$tmp/success.log"
 

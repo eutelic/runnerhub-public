@@ -1,6 +1,6 @@
 package proxmox
 
-import("bytes";"context";"encoding/json";"errors";"fmt";"io";"net/http";"net/url";"os";"path/filepath";"strconv";"strings";"time";"github.com/example-user/runnerhub/internal/core";"github.com/example-user/runnerhub/internal/provider")
+import("bytes";"context";"encoding/json";"errors";"fmt";"io";"net/http";"net/url";"os";"path/filepath";"strconv";"strings";"time";"github.com/eutelic/runnerhub/internal/core";"github.com/eutelic/runnerhub/internal/provider")
 var errNotFound=errors.New("proxmox resource not found")
 type Config struct{BaseURL string;TokenID string;TokenSecret string;Node string;TemplateVMID int;HostID string;HTTPClient *http.Client;SnippetDir string;SnippetStore string};type Provider struct{cfg Config;client *http.Client}
 func New(c Config)(*Provider,error){if c.BaseURL==""||c.TokenID==""||c.TokenSecret==""||c.Node==""||c.TemplateVMID<=0{return nil,errors.New("proxmox base url, token, node and template vmid required")};u,err:=url.Parse(c.BaseURL);if err!=nil||u.Scheme!="https"{return nil,errors.New("proxmox base url must use https")};h:=c.HTTPClient;if h==nil{h=&http.Client{Timeout:30*time.Second}};if c.SnippetStore==""{c.SnippetStore="local"};return &Provider{cfg:c,client:h},nil}

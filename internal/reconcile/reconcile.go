@@ -6,12 +6,12 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/example-user/runnerhub/internal/agent"
-	"github.com/example-user/runnerhub/internal/agenthub"
-	"github.com/example-user/runnerhub/internal/core"
-	"github.com/example-user/runnerhub/internal/githubrunner"
-	"github.com/example-user/runnerhub/internal/provider"
-	"github.com/example-user/runnerhub/internal/store"
+	"github.com/eutelic/runnerhub/internal/agent"
+	"github.com/eutelic/runnerhub/internal/agenthub"
+	"github.com/eutelic/runnerhub/internal/core"
+	"github.com/eutelic/runnerhub/internal/githubrunner"
+	"github.com/eutelic/runnerhub/internal/provider"
+	"github.com/eutelic/runnerhub/internal/store"
 )
 
 type Reconciler struct {

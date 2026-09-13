@@ -1,6 +1,6 @@
 package scheduler
 
-import("context";"errors";"testing";"github.com/example-user/runnerhub/internal/core";"github.com/example-user/runnerhub/internal/store")
+import("context";"errors";"testing";"github.com/eutelic/runnerhub/internal/core";"github.com/eutelic/runnerhub/internal/store")
 func testPool()core.RunnerPool{return core.RunnerPool{ID:"p",Name:"linux",Isolation:core.IsolationContainerTrusted,Resources:core.Resources{CPUMillis:1000,MemoryBytes:1<<30},MaxConcurrency:2}}
 func putHost(t *testing.T,st store.Store,id string){t.Helper();if err:=st.UpsertHost(context.Background(),core.Host{ID:id,Name:id,Provider:"docker",State:core.HostOnline,Tags:map[string]string{"isolation.container-trusted":"true"},Capacity:core.Resources{CPUMillis:8000,MemoryBytes:16<<30}});err!=nil{t.Fatal(err)}}
 func TestSelectHost(t *testing.T){st,_:=store.OpenSQLite(":memory:");defer st.Close();putHost(t,st,"a");d,err:=(Scheduler{Store:st}).SelectHost(context.Background(),testPool());if err!=nil||d.Host.ID!="a"{t.Fatalf("decision=%+v err=%v",d,err)}}

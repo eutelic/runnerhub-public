@@ -2,7 +2,7 @@
 
 package store
 
-import("context";"database/sql";"encoding/json";"errors";"fmt";"time";"github.com/example-user/runnerhub/internal/agent";"github.com/example-user/runnerhub/internal/core";_ "modernc.org/sqlite")
+import("context";"database/sql";"encoding/json";"errors";"fmt";"time";"github.com/eutelic/runnerhub/internal/agent";"github.com/eutelic/runnerhub/internal/core";_ "modernc.org/sqlite")
 type SQLite struct{db *sql.DB}
 func OpenSQLite(path string)(*SQLite,error){db,err:=sql.Open("sqlite",path);if err!=nil{return nil,err};db.SetMaxOpenConns(1);s:=&SQLite{db:db};if err:=s.migrate(context.Background());err!=nil{_=db.Close();return nil,err};return s,nil}
 func(s *SQLite)Close()error{return s.db.Close()}

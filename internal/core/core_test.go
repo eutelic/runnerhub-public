@@ -16,7 +16,7 @@ func TestWorkerCannotLeaveDeleted(t *testing.T) {
 	}
 }
 func validPool() RunnerPool {
-	return RunnerPool{Name: "linux-small", Scope: GitHubScope{Kind: ScopeRepository, Owner: "example-user", Repository: "runnerhub"}, Labels: []string{"linux-small"}, Isolation: IsolationContainerTrusted, MaxConcurrency: 4, RunnerGroupID: 1}
+	return RunnerPool{Name: "linux-small", Scope: GitHubScope{Kind: ScopeRepository, Owner: "eutelic", Repository: "runnerhub"}, Labels: []string{"linux-small"}, Isolation: IsolationContainerTrusted, MaxConcurrency: 4, RunnerGroupID: 1}
 }
 func TestValidateRunnerPool(t *testing.T) {
 	if err := ValidateRunnerPool(validPool()); err != nil {

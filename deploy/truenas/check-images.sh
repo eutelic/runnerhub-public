@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-registry="${RUNNERHUB_IMAGE_REGISTRY:-ghcr.io/example-user}"
+registry="${RUNNERHUB_IMAGE_REGISTRY:-ghcr.io/eutelic}"
 tag="${RUNNERHUB_IMAGE_TAG:-latest}"
 
 usage() {

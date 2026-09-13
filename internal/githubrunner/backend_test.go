@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/example-user/runnerhub/internal/core"
+	"github.com/eutelic/runnerhub/internal/core"
 )
 
 type staticTokenSource string
@@ -19,7 +19,7 @@ func (s staticTokenSource) Token(context.Context, core.GitHubScope) (string, err
 
 func TestValidateJITConfigRequest(t *testing.T) {
 	req := JITConfigRequest{
-		Scope:         core.GitHubScope{Kind: core.ScopeRepository, Owner: "example-user", Repository: "runnerhub"},
+		Scope:         core.GitHubScope{Kind: core.ScopeRepository, Owner: "eutelic", Repository: "runnerhub"},
 		RunnerName:    "runnerhub-linux-small-a1b2c3",
 		RunnerGroupID: 1,
 		Labels:        []string{"linux-small"},
@@ -31,7 +31,7 @@ func TestValidateJITConfigRequest(t *testing.T) {
 
 func TestValidateJITConfigRequestRejectsMissingGroup(t *testing.T) {
 	req := JITConfigRequest{
-		Scope:      core.GitHubScope{Kind: core.ScopeRepository, Owner: "example-user", Repository: "runnerhub"},
+		Scope:      core.GitHubScope{Kind: core.ScopeRepository, Owner: "eutelic", Repository: "runnerhub"},
 		RunnerName: "runnerhub-linux-small-a1b2c3",
 		Labels:     []string{"linux-small"},
 	}
@@ -42,7 +42,7 @@ func TestValidateJITConfigRequestRejectsMissingGroup(t *testing.T) {
 
 func TestHTTPBackendGenerateRepositoryJITConfig(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost || r.URL.Path != "/repos/example-user/runnerhub/actions/runners/generate-jitconfig" {
+		if r.Method != http.MethodPost || r.URL.Path != "/repos/eutelic/runnerhub/actions/runners/generate-jitconfig" {
 			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
 		}
 		if r.Header.Get("Authorization") != "Bearer secret-token" {
@@ -73,7 +73,7 @@ func TestHTTPBackendGenerateRepositoryJITConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 	got, err := backend.GenerateJITConfig(context.Background(), JITConfigRequest{
-		Scope:         core.GitHubScope{Kind: core.ScopeRepository, Owner: "example-user", Repository: "runnerhub"},
+		Scope:         core.GitHubScope{Kind: core.ScopeRepository, Owner: "eutelic", Repository: "runnerhub"},
 		RunnerName:    "runnerhub-a1",
 		RunnerGroupID: 1,
 		Labels:        []string{"linux-small"},
@@ -107,7 +107,7 @@ func TestHTTPBackendGetOrganizationRunner(t *testing.T) {
 
 func TestHTTPBackendDeleteRepositoryRunner(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodDelete || r.URL.Path != "/repos/example-user/runnerhub/actions/runners/42" {
+		if r.Method != http.MethodDelete || r.URL.Path != "/repos/eutelic/runnerhub/actions/runners/42" {
 			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
 		}
 		w.WriteHeader(http.StatusNoContent)
@@ -115,7 +115,7 @@ func TestHTTPBackendDeleteRepositoryRunner(t *testing.T) {
 	defer server.Close()
 
 	backend, _ := NewHTTPBackendWithBaseURL(server.Client(), staticTokenSource("secret-token"), server.URL)
-	if err := backend.DeleteRunner(context.Background(), core.GitHubScope{Kind: core.ScopeRepository, Owner: "example-user", Repository: "runnerhub"}, 42); err != nil {
+	if err := backend.DeleteRunner(context.Background(), core.GitHubScope{Kind: core.ScopeRepository, Owner: "eutelic", Repository: "runnerhub"}, 42); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -128,7 +128,7 @@ func TestHTTPBackendDoesNotEchoTokenOnError(t *testing.T) {
 
 	const token = "should-never-appear"
 	backend, _ := NewHTTPBackendWithBaseURL(server.Client(), staticTokenSource(token), server.URL)
-	_, err := backend.GetRunner(context.Background(), core.GitHubScope{Kind: core.ScopeRepository, Owner: "example-user", Repository: "runnerhub"}, 42)
+	_, err := backend.GetRunner(context.Background(), core.GitHubScope{Kind: core.ScopeRepository, Owner: "eutelic", Repository: "runnerhub"}, 42)
 	if err == nil {
 		t.Fatal("expected error")
 	}

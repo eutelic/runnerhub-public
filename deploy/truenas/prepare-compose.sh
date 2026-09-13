@@ -195,10 +195,10 @@ sed \
   -e "s|allow-privileged-workers: &allow-privileged-workers \"false\"|allow-privileged-workers: \&allow-privileged-workers \"$allow_privileged_esc\"|" \
   -e "s|runner-image: &runner-image ghcr.io/actions/actions-runner:latest|runner-image: \&runner-image $runner_image_esc|" \
   -e "s|dind-image: &dind-image docker:dind|dind-image: \&dind-image $dind_image_esc|" \
-  -e "s|ghcr.io/example-user/runnerhub-control:latest|ghcr.io/example-user/runnerhub-control:$tag_esc|" \
-  -e "s|ghcr.io/example-user/runnerhub-agent:latest|ghcr.io/example-user/runnerhub-agent:$tag_esc|" \
-  -e "s|ghcr.io/example-user/runnerhub-bootstrap:latest|ghcr.io/example-user/runnerhub-bootstrap:$tag_esc|" \
-  -e "s|ghcr.io/example-user/runnerhub-scaleset:latest|ghcr.io/example-user/runnerhub-scaleset:$tag_esc|" \
+  -e "s|ghcr.io/eutelic/runnerhub-control:latest|ghcr.io/eutelic/runnerhub-control:$tag_esc|" \
+  -e "s|ghcr.io/eutelic/runnerhub-agent:latest|ghcr.io/eutelic/runnerhub-agent:$tag_esc|" \
+  -e "s|ghcr.io/eutelic/runnerhub-bootstrap:latest|ghcr.io/eutelic/runnerhub-bootstrap:$tag_esc|" \
+  -e "s|ghcr.io/eutelic/runnerhub-scaleset:latest|ghcr.io/eutelic/runnerhub-scaleset:$tag_esc|" \
   "$template" > "$tmp"
 
 if grep -Eq 'CHANGE_ME|/mnt/POOL/runnerhub|github\.com/OWNER/REPOSITORY' "$tmp"; then
@@ -222,7 +222,7 @@ grep -Fq "allow-privileged-workers: &allow-privileged-workers \"$allow_privilege
 grep -Fq "runner-image: &runner-image $runner_image" "$tmp" || fail 'runner image rewrite did not apply'
 grep -Fq "dind-image: &dind-image $dind_image" "$tmp" || fail 'DinD image rewrite did not apply'
 for image in control agent bootstrap scaleset; do
-  grep -Fq "ghcr.io/example-user/runnerhub-${image}:$runnerhub_tag" "$tmp" || fail "RunnerHub ${image} image tag rewrite did not apply"
+  grep -Fq "ghcr.io/eutelic/runnerhub-${image}:$runnerhub_tag" "$tmp" || fail "RunnerHub ${image} image tag rewrite did not apply"
 done
 
 # Compose may read a file-backed secret while loading configuration. Lint a

@@ -5,9 +5,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/example-user/runnerhub/internal/core"
-	"github.com/example-user/runnerhub/internal/githubrunner"
-	"github.com/example-user/runnerhub/internal/store"
+	"github.com/eutelic/runnerhub/internal/core"
+	"github.com/eutelic/runnerhub/internal/githubrunner"
+	"github.com/eutelic/runnerhub/internal/store"
 )
 
 type missingGH struct{}

@@ -1,6 +1,6 @@
 package githubrunner
 
-import("context";"errors";"strings";"github.com/example-user/runnerhub/internal/core")
+import("context";"errors";"strings";"github.com/eutelic/runnerhub/internal/core")
 var ErrNotFound=errors.New("github runner not found")
 type JITConfigRequest struct{Scope core.GitHubScope `json:"scope"`;RunnerName string `json:"runnerName"`;RunnerGroupID int64 `json:"runnerGroupId"`;Labels []string `json:"labels"`;WorkFolder string `json:"workFolder,omitempty"`}
 type JITConfig struct{RunnerID int64 `json:"runnerId"`;RunnerName string `json:"runnerName"`;EncodedConfig string `json:"-"`}

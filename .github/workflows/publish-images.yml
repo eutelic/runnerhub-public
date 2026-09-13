@@ -72,7 +72,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ghcr.io/example-user/${{ matrix.image }}
+          images: ghcr.io/eutelic/${{ matrix.image }}
           tags: |
             type=raw,value=sha-${{ github.sha }}
             type=sha,format=short,prefix=sha-
@@ -121,8 +121,8 @@ jobs:
           set -euo pipefail
           for image in runnerhub-control runnerhub-agent runnerhub-bootstrap runnerhub-scaleset; do
             docker buildx imagetools create \
-              --tag "ghcr.io/example-user/${image}:latest" \
-              "ghcr.io/example-user/${image}:${SOURCE_TAG}"
+              --tag "ghcr.io/eutelic/${image}:latest" \
+              "ghcr.io/eutelic/${image}:${SOURCE_TAG}"
           done
 
       - name: Verify promoted image set

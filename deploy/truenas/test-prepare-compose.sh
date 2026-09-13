@@ -33,7 +33,7 @@ grep -Fq 'max-runners: &max-runners "2"' "$trusted"
 grep -Fq 'published: "8787"' "$trusted"
 grep -Fq 'pool-isolation: &pool-isolation container-trusted' "$trusted"
 grep -Fq 'allow-privileged-workers: &allow-privileged-workers "false"' "$trusted"
-grep -Fq 'ghcr.io/example-user/runnerhub-control:latest' "$trusted"
+grep -Fq 'ghcr.io/eutelic/runnerhub-control:latest' "$trusted"
 grep -Fq 'io.runnerhub.component: scaleset' "$trusted"
 grep -Fq 'io.runnerhub.pool: *pool-id' "$trusted"
 grep -Fq 'io.runnerhub.scale-set: *scaleset-name' "$trusted"
@@ -60,7 +60,7 @@ grep -Fq 'allow-privileged-workers: &allow-privileged-workers "true"' "$dind"
 grep -Fq 'runner-image: &runner-image ghcr.io/actions/actions-runner:2.328.0' "$dind"
 grep -Fq 'dind-image: &dind-image docker:28-dind' "$dind"
 for image in control agent bootstrap scaleset; do
-  grep -Fq "ghcr.io/example-user/runnerhub-${image}:sha-deadbeef" "$dind"
+  grep -Fq "ghcr.io/eutelic/runnerhub-${image}:sha-deadbeef" "$dind"
 done
 
 # External managed keys must not alter RunnerHub's own data/secrets locations.

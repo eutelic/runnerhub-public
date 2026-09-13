@@ -12,9 +12,9 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/example-user/runnerhub/internal/core"
-	"github.com/example-user/runnerhub/internal/hostinfo"
-	"github.com/example-user/runnerhub/internal/provider"
+	"github.com/eutelic/runnerhub/internal/core"
+	"github.com/eutelic/runnerhub/internal/hostinfo"
+	"github.com/eutelic/runnerhub/internal/provider"
 )
 
 type CommandRunner interface {

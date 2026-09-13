@@ -1,6 +1,6 @@
 package process
 
-import("context";"errors";"os";"os/exec";"path/filepath";"runtime";"strconv";"strings";"syscall";"github.com/example-user/runnerhub/internal/core";"github.com/example-user/runnerhub/internal/hostinfo";"github.com/example-user/runnerhub/internal/provider")
+import("context";"errors";"os";"os/exec";"path/filepath";"runtime";"strconv";"strings";"syscall";"github.com/eutelic/runnerhub/internal/core";"github.com/eutelic/runnerhub/internal/hostinfo";"github.com/eutelic/runnerhub/internal/provider")
 type Config struct{RunnerDir,StateDir,HostID string};type Provider struct{cfg Config}
 func New(c Config)(*Provider,error){if c.RunnerDir==""{return nil,errors.New("runner directory required")};if c.StateDir==""{c.StateDir="/var/lib/runnerhub/process"};return &Provider{cfg:c},nil}
 func(p *Provider)Capabilities(context.Context)(provider.Capabilities,error){return provider.Capabilities{Provider:"process",OS:runtime.GOOS,Architecture:runtime.GOARCH,Capacity:hostinfo.Capacity(p.cfg.StateDir),IsolationModes:[]core.IsolationMode{core.IsolationHostPersistent},Features:map[string]bool{"specialHardware":true},Labels:map[string]string{"os":runtime.GOOS,"arch":runtime.GOARCH,"isolation.host-persistent":"true"}},nil}

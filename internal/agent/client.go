@@ -1,6 +1,6 @@
 package agent
 
-import("bytes";"context";"encoding/json";"errors";"fmt";"io";"math/rand";"net";"net/http";"net/url";"os";"path/filepath";"strings";"time";"github.com/example-user/runnerhub/internal/provider")
+import("bytes";"context";"encoding/json";"errors";"fmt";"io";"math/rand";"net";"net/http";"net/url";"os";"path/filepath";"strings";"time";"github.com/eutelic/runnerhub/internal/provider")
 type ClientConfig struct{ControlPlaneURL string;EnrollmentToken string;CredentialFile string;Name string;Provider string;AgentVersion string;HTTPClient *http.Client;AllowInsecureHTTP bool}
 type storedCredential struct{HostID string `json:"hostId"`;Token string `json:"token"`}
 type Client struct{cfg ClientConfig;http *http.Client;providers map[string]provider.Provider;hostID string;token string;poll time.Duration}

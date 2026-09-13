@@ -5,8 +5,8 @@ import (
 	"errors"
 	"time"
 
-	"github.com/example-user/runnerhub/internal/agent"
-	"github.com/example-user/runnerhub/internal/core"
+	"github.com/eutelic/runnerhub/internal/agent"
+	"github.com/eutelic/runnerhub/internal/core"
 )
 
 var ErrNotFound = errors.New("store: not found")

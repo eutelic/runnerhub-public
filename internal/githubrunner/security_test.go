@@ -1,6 +1,6 @@
 package githubrunner
 
-import("context";"testing";"github.com/example-user/runnerhub/internal/core")
+import("context";"testing";"github.com/eutelic/runnerhub/internal/core")
 type fakeCatalog struct{repo Repository;group RunnerGroup;repos []Repository}
 func(f fakeCatalog)ListRepositories(context.Context,core.GitHubScope)([]Repository,error){return f.repos,nil};func(f fakeCatalog)GetRepository(context.Context,string,string)(Repository,error){return f.repo,nil};func(f fakeCatalog)ListRunnerGroups(context.Context,string)([]RunnerGroup,error){return []RunnerGroup{f.group},nil};func(f fakeCatalog)GetRunnerGroup(context.Context,string,int64)(RunnerGroup,error){return f.group,nil};func(f fakeCatalog)ListRunnerGroupRepositories(context.Context,string,int64)([]Repository,error){return f.repos,nil}
 func securePool()core.RunnerPool{return core.RunnerPool{Name:"secure",Scope:core.GitHubScope{Kind:core.ScopeOrganization,Owner:"acme"},Labels:[]string{"secure"},Isolation:core.IsolationContainerTrusted,MaxConcurrency:2,RunnerGroupID:7,AllowedRepositories:[]string{"acme/app"},AllowedWorkflows:[]string{"acme/app/.github/workflows/build.yml@main"}}}

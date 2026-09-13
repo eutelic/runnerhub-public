@@ -130,10 +130,10 @@ See `PREFLIGHT.md` for details.
 RunnerHub uses four runtime images:
 
 ```text
-ghcr.io/example-user/runnerhub-control
-ghcr.io/example-user/runnerhub-agent
-ghcr.io/example-user/runnerhub-bootstrap
-ghcr.io/example-user/runnerhub-scaleset
+ghcr.io/eutelic/runnerhub-control
+ghcr.io/eutelic/runnerhub-agent
+ghcr.io/eutelic/runnerhub-bootstrap
+ghcr.io/eutelic/runnerhub-scaleset
 ```
 
 If the packages are private, configure TrueNAS GHCR access with a pull-only credential. Do not put a registry token in RunnerHub's Compose YAML.

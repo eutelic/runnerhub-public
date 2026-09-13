@@ -1,6 +1,6 @@
 package policy
 
-import("errors";"fmt";"strings";"github.com/example-user/runnerhub/internal/core";"github.com/example-user/runnerhub/internal/images")
+import("errors";"fmt";"strings";"github.com/eutelic/runnerhub/internal/core";"github.com/eutelic/runnerhub/internal/images")
 type Request struct{Pool core.RunnerPool;Repository string;Workflow string;Public bool;Privileged bool;DockerSocket bool}
 type Engine struct{AllowPublic bool;AllowPrivileged bool;AllowedImages map[string]struct{};MaxResources core.Resources;RequirePinnedImages bool}
 func(e Engine)ValidatePool(pool core.RunnerPool)error{if pool.Isolation==core.IsolationContainerDinD&&!e.AllowPrivileged{return errors.New("container-dind requires privileged worker mode to be enabled")};if e.RequirePinnedImages&&pool.Image!=""{if err:=images.ValidatePinned(pool.Image);err!=nil{return err}};if len(e.AllowedImages)>0&&pool.Image!=""{if _,ok:=e.AllowedImages[pool.Image];!ok{return fmt.Errorf("image %q is not allowlisted",pool.Image)}};if e.MaxResources.CPUMillis>0&&pool.Resources.CPUMillis>e.MaxResources.CPUMillis{return errors.New("cpu request exceeds policy")};if e.MaxResources.MemoryBytes>0&&pool.Resources.MemoryBytes>e.MaxResources.MemoryBytes{return errors.New("memory request exceeds policy")};if e.MaxResources.DiskBytes>0&&pool.Resources.DiskBytes>e.MaxResources.DiskBytes{return errors.New("disk request exceeds policy")};if e.MaxResources.GPUs>0&&pool.Resources.GPUs>e.MaxResources.GPUs{return errors.New("gpu request exceeds policy")};return nil}

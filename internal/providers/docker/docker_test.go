@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/example-user/runnerhub/internal/core"
-	"github.com/example-user/runnerhub/internal/provider"
+	"github.com/eutelic/runnerhub/internal/core"
+	"github.com/eutelic/runnerhub/internal/provider"
 )
 
 type fakeRunner struct {

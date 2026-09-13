@@ -74,7 +74,7 @@ chmod +x "$tmp/bin/docker"
 PATH="$tmp/bin:$PATH" bash -n "$verify"
 PATH="$tmp/bin:$PATH" bash "$verify" --source-tag sha-deadbeef --target-tag latest > "$tmp/success.log"
 for image in control agent bootstrap scaleset; do
-  grep -Fq "ghcr.io/example-user/runnerhub-$image:latest matches ghcr.io/example-user/runnerhub-$image:sha-deadbeef" "$tmp/success.log"
+  grep -Fq "ghcr.io/eutelic/runnerhub-$image:latest matches ghcr.io/eutelic/runnerhub-$image:sha-deadbeef" "$tmp/success.log"
 done
 grep -Fq '[ ok ] coherent RunnerHub image promotion verified: sha-deadbeef -> latest' "$tmp/success.log"
 

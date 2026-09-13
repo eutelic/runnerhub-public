@@ -149,10 +149,10 @@ jobs:
 
           sed \
             -e "s|/mnt/POOL/runnerhub|$root|g" \
-            -e 's|ghcr.io/example-user/runnerhub-control:latest|runnerhub-ci-control|g' \
-            -e 's|ghcr.io/example-user/runnerhub-agent:latest|runnerhub-ci-agent|g' \
-            -e 's|ghcr.io/example-user/runnerhub-bootstrap:latest|runnerhub-ci-bootstrap|g' \
-            -e 's|ghcr.io/example-user/runnerhub-scaleset:latest|runnerhub-ci-scaleset|g' \
+            -e 's|ghcr.io/eutelic/runnerhub-control:latest|runnerhub-ci-control|g' \
+            -e 's|ghcr.io/eutelic/runnerhub-agent:latest|runnerhub-ci-agent|g' \
+            -e 's|ghcr.io/eutelic/runnerhub-bootstrap:latest|runnerhub-ci-bootstrap|g' \
+            -e 's|ghcr.io/eutelic/runnerhub-scaleset:latest|runnerhub-ci-scaleset|g' \
             -e 's|pull_policy: always|pull_policy: never|g' \
             -e 's|Iv1.CHANGE_ME|Iv1.ci|g' \
             -e 's|CHANGE_ME_INSTALLATION_ID|12345678|g' \

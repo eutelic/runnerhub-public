@@ -1,7 +1,7 @@
 package githubrunner
 
 import(
-"bytes";"context";"crypto";"crypto/rand";"crypto/rsa";"crypto/sha256";"crypto/x509";"encoding/base64";"encoding/json";"encoding/pem";"errors";"fmt";"io";"net/http";"net/url";"strconv";"strings";"sync";"time";"github.com/example-user/runnerhub/internal/core")
+"bytes";"context";"crypto";"crypto/rand";"crypto/rsa";"crypto/sha256";"crypto/x509";"encoding/base64";"encoding/json";"encoding/pem";"errors";"fmt";"io";"net/http";"net/url";"strconv";"strings";"sync";"time";"github.com/eutelic/runnerhub/internal/core")
 type GitHubAppConfig struct{Issuer string;PrivateKeyPEM []byte;BaseURL string;HTTPClient *http.Client}
 type cachedInstallationToken struct{token string;expiresAt time.Time}
 type GitHubAppTokenSource struct{issuer string;privateKey *rsa.PrivateKey;baseURL *url.URL;client *http.Client;now func()time.Time;mu sync.Mutex;installationIDs map[string]int64;tokens map[string]cachedInstallationToken}

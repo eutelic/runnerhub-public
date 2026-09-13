@@ -7,9 +7,9 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/example-user/runnerhub/internal/core"
-	"github.com/example-user/runnerhub/internal/policy"
-	"github.com/example-user/runnerhub/internal/store"
+	"github.com/eutelic/runnerhub/internal/core"
+	"github.com/eutelic/runnerhub/internal/policy"
+	"github.com/eutelic/runnerhub/internal/store"
 )
 
 func TestCreateDinDPoolRequiresPrivilegedPolicy(t *testing.T) {

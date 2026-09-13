@@ -6,10 +6,10 @@
 # Keep these four RunnerHub images on the same release/commit when pinning or
 # rolling back. init-secrets intentionally reuses the bootstrap image.
 x-runnerhub-images:
-  control: &control-image ghcr.io/example-user/runnerhub-control:latest
-  agent: &agent-image ghcr.io/example-user/runnerhub-agent:latest
-  bootstrap: &bootstrap-image ghcr.io/example-user/runnerhub-bootstrap:latest
-  scaleset: &scaleset-image ghcr.io/example-user/runnerhub-scaleset:latest
+  control: &control-image ghcr.io/eutelic/runnerhub-control:latest
+  agent: &agent-image ghcr.io/eutelic/runnerhub-agent:latest
+  bootstrap: &bootstrap-image ghcr.io/eutelic/runnerhub-bootstrap:latest
+  scaleset: &scaleset-image ghcr.io/eutelic/runnerhub-scaleset:latest
 
 x-runnerhub-config:
   data-path: &data-path /mnt/POOL/runnerhub/data

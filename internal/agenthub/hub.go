@@ -2,7 +2,7 @@ package agenthub
 
 import(
 "context";"crypto/aes";"crypto/cipher";"crypto/hmac";"crypto/rand";"crypto/sha256";"encoding/base64";"errors";"strconv";"strings";"sync";"time"
-"github.com/example-user/runnerhub/internal/agent";"github.com/example-user/runnerhub/internal/core";"github.com/example-user/runnerhub/internal/store")
+"github.com/eutelic/runnerhub/internal/agent";"github.com/eutelic/runnerhub/internal/core";"github.com/eutelic/runnerhub/internal/store")
 type ResultHandler func(context.Context,string,agent.CommandResult)error
 type Hub struct{store store.Store;enrollSecret []byte;agentSecret []byte;aead cipher.AEAD;mu sync.Mutex;caps map[string]agent.HostView;onResult ResultHandler;now func()time.Time;lease time.Duration}
 func New(st store.Store,enrollmentSecret,agentSecret string)(*Hub,error){if st==nil{return nil,errors.New("store required")};if len(enrollmentSecret)<16||len(agentSecret)<32{return nil,errors.New("enrollment secret must be >=16 chars and agent secret >=32 chars")};key:=sha256.Sum256([]byte("runnerhub/durable-command/v1\x00"+agentSecret));block,err:=aes.NewCipher(key[:]);if err!=nil{return nil,err};aead,err:=cipher.NewGCM(block);if err!=nil{return nil,err};return &Hub{store:st,enrollSecret:[]byte(enrollmentSecret),agentSecret:[]byte(agentSecret),aead:aead,caps:map[string]agent.HostView{},now:time.Now,lease:time.Minute},nil}

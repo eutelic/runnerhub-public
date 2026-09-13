@@ -5,10 +5,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/example-user/runnerhub/internal/agent"
-	"github.com/example-user/runnerhub/internal/core"
-	"github.com/example-user/runnerhub/internal/provider"
-	"github.com/example-user/runnerhub/internal/store"
+	"github.com/eutelic/runnerhub/internal/agent"
+	"github.com/eutelic/runnerhub/internal/core"
+	"github.com/eutelic/runnerhub/internal/provider"
+	"github.com/eutelic/runnerhub/internal/store"
 )
 
 func TestCreateResultMovesWorkerToRegistering(t *testing.T) {

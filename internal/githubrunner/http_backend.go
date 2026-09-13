@@ -12,7 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"github.com/example-user/runnerhub/internal/core"
+	"github.com/eutelic/runnerhub/internal/core"
 )
 const defaultAPIVersion="2026-03-10"
 type TokenSource interface{Token(context.Context,core.GitHubScope)(string,error)}

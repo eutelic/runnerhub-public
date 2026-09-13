@@ -1,6 +1,6 @@
 package fleet
 
-import("sort";"time";"github.com/example-user/runnerhub/internal/core";"github.com/example-user/runnerhub/internal/scheduler")
+import("sort";"time";"github.com/eutelic/runnerhub/internal/core";"github.com/eutelic/runnerhub/internal/scheduler")
 type VersionSummary struct{AgentVersions map[string]int `json:"agentVersions"`;RunnerVersions map[string]int `json:"runnerVersions"`;Images map[string]int `json:"images"`;OfflineHosts int `json:"offlineHosts"`;DrainingHosts int `json:"drainingHosts"`}
 func Versions(hosts []core.Host,workers []core.Worker)VersionSummary{s:=VersionSummary{AgentVersions:map[string]int{},RunnerVersions:map[string]int{},Images:map[string]int{}};for _,h:=range hosts{v:=h.AgentVersion;if v==""{v="unknown"};s.AgentVersions[v]++;if h.State==core.HostOffline{s.OfflineHosts++};if h.State==core.HostDraining{s.DrainingHosts++}};for _,w:=range workers{if w.State==core.WorkerDeleted{continue};s.Images[w.Image]++;v:=w.GitHubRunnerVersion;if v==""{v="unknown"};s.RunnerVersions[v]++};return s}
 type Health struct{PoolID string `json:"poolId"`;OnlineHosts int `json:"onlineHosts"`;ActiveWorkers int `json:"activeWorkers"`;BusyWorkers int `json:"busyWorkers"`;Healthy bool `json:"healthy"`;Reasons []string `json:"reasons,omitempty"`}
