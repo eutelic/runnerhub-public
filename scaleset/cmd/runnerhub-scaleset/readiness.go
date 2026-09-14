@@ -8,7 +8,10 @@ import (
 	"strings"
 )
 
-const scaleSetReadyMessage = "scale-set listener ready"
+const (
+	scaleSetReadyMessage = "scale-set listener ready"
+	scaleSetManagerReadyMessage = "scale-set manager ready"
+)
 
 func init() {
 	path := strings.TrimSpace(os.Getenv("RUNNERHUB_READY_FILE"))
@@ -31,7 +34,7 @@ func (h *readinessHandler) Enabled(ctx context.Context, level slog.Level) bool {
 }
 
 func (h *readinessHandler) Handle(ctx context.Context, record slog.Record) error {
-	if record.Message == scaleSetReadyMessage {
+	if record.Message == scaleSetReadyMessage || record.Message == scaleSetManagerReadyMessage {
 		if err := writeReadinessFile(h.path); err != nil {
 			// Do not mask the original log record or alter listener process
 			// supervision. The missing marker intentionally leaves the container

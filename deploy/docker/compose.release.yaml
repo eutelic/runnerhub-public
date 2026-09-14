@@ -17,11 +17,15 @@ services:
       RUNNERHUB_SCALESET_KEY: ${RUNNERHUB_SCALESET_KEY:?required}
       RUNNERHUB_ALLOW_PRIVILEGED_WORKERS: ${RUNNERHUB_ALLOW_PRIVILEGED_WORKERS:-false}
       RUNNERHUB_GITHUB_APP_ISSUER: ${RUNNERHUB_GITHUB_APP_ISSUER:?required}
+      RUNNERHUB_GITHUB_CLIENT_SECRET_FILE: /run/secrets/github_client_secret
+      RUNNERHUB_GITHUB_APP_SLUG: ${RUNNERHUB_GITHUB_APP_SLUG:?required}
+      RUNNERHUB_PUBLIC_URL: ${RUNNERHUB_PUBLIC_URL:?required}
       RUNNERHUB_GITHUB_APP_PRIVATE_KEY_FILE: /run/secrets/github_app_private_key
       RUNNERHUB_GITHUB_API_URL: ${RUNNERHUB_GITHUB_API_URL:-https://api.github.com}
       RUNNERHUB_ALLOWED_IMAGES: ${RUNNERHUB_ALLOWED_IMAGES:-ghcr.io/actions/actions-runner:latest}
     secrets:
       - github_app_private_key
+      - github_client_secret
     volumes:
       - runnerhub-data:/data
     healthcheck:
@@ -61,52 +65,22 @@ services:
       retries: 20
       start_period: 5s
 
-  bootstrap:
-    image: ghcr.io/eutelic/runnerhub-bootstrap:${RUNNERHUB_IMAGE_TAG:-latest}
-    pull_policy: always
-    restart: "no"
-    depends_on:
-      control:
-        condition: service_healthy
-      agent:
-        condition: service_healthy
-    environment:
-      RUNNERHUB_CONTROL_URL: http://control:8080
-      RUNNERHUB_ADMIN_KEY: ${RUNNERHUB_ADMIN_KEY:?required}
-      RUNNERHUB_GITHUB_URL: ${RUNNERHUB_GITHUB_URL:?required}
-      RUNNERHUB_POOL_ID: ${RUNNERHUB_POOL_ID:-pool-docker}
-      RUNNERHUB_SCALESET_NAME: ${RUNNERHUB_SCALESET_NAME:-runnerhub}
-      RUNNERHUB_MAX_RUNNERS: ${RUNNERHUB_MAX_RUNNERS:-2}
-      RUNNERHUB_RUNNER_GROUP_ID: ${RUNNERHUB_RUNNER_GROUP_ID:-1}
-      RUNNERHUB_RUNNER_IMAGE: ${RUNNERHUB_RUNNER_IMAGE:-ghcr.io/actions/actions-runner:latest}
-      RUNNERHUB_POOL_ISOLATION: ${RUNNERHUB_POOL_ISOLATION:-container-trusted}
-      RUNNERHUB_POOL_CPU_MILLIS: ${RUNNERHUB_POOL_CPU_MILLIS:-4000}
-      RUNNERHUB_POOL_MEMORY_BYTES: ${RUNNERHUB_POOL_MEMORY_BYTES:-8589934592}
-      RUNNERHUB_POOL_DISK_BYTES: ${RUNNERHUB_POOL_DISK_BYTES:-21474836480}
-      RUNNERHUB_BOOTSTRAP_TIMEOUT_SECONDS: ${RUNNERHUB_BOOTSTRAP_TIMEOUT_SECONDS:-180}
-
   scaleset:
     image: ghcr.io/eutelic/runnerhub-scaleset:${RUNNERHUB_IMAGE_TAG:-latest}
     pull_policy: always
     restart: unless-stopped
     depends_on:
-      bootstrap:
-        condition: service_completed_successfully
+      control:
+        condition: service_healthy
+      agent:
+        condition: service_healthy
     labels:
       io.runnerhub.component: scaleset
-      io.runnerhub.pool: ${RUNNERHUB_POOL_ID:-pool-docker}
-      io.runnerhub.scale-set: ${RUNNERHUB_SCALESET_NAME:-runnerhub}
     environment:
-      RUNNERHUB_GITHUB_URL: ${RUNNERHUB_GITHUB_URL:?required}
-      RUNNERHUB_SCALESET_NAME: ${RUNNERHUB_SCALESET_NAME:-runnerhub}
-      RUNNERHUB_POOL_ID: ${RUNNERHUB_POOL_ID:-pool-docker}
+      RUNNERHUB_DYNAMIC_CONFIG: "true"
       RUNNERHUB_CONTROL_URL: http://control:8080
       RUNNERHUB_CONTROL_TOKEN: ${RUNNERHUB_SCALESET_KEY:?required}
-      RUNNERHUB_MIN_RUNNERS: ${RUNNERHUB_MIN_RUNNERS:-0}
-      RUNNERHUB_MAX_RUNNERS: ${RUNNERHUB_MAX_RUNNERS:-2}
-      RUNNERHUB_RUNNER_GROUP: ${RUNNERHUB_RUNNER_GROUP:-}
       RUNNERHUB_GITHUB_APP_CLIENT_ID: ${RUNNERHUB_GITHUB_APP_ISSUER:?required}
-      RUNNERHUB_GITHUB_APP_INSTALLATION_ID: ${RUNNERHUB_GITHUB_APP_INSTALLATION_ID:?required}
       RUNNERHUB_GITHUB_APP_PRIVATE_KEY_FILE: /run/secrets/github_app_private_key
       RUNNERHUB_ALLOW_INSECURE_HTTP: "true"
     secrets:
@@ -124,3 +98,5 @@ volumes:
 secrets:
   github_app_private_key:
     file: ${RUNNERHUB_GITHUB_APP_PRIVATE_KEY_FILE:?required}
+  github_client_secret:
+    file: ${RUNNERHUB_GITHUB_CLIENT_SECRET_FILE:?required}

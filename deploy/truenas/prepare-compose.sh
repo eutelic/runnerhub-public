@@ -7,10 +7,10 @@ Usage:
   bash deploy/truenas/prepare-compose.sh \
     --root /mnt/POOL/runnerhub \
     --github-client-id Iv1.EXAMPLE \
-    --github-installation-id 12345678 \
-    --github-url https://github.com/OWNER/REPOSITORY \
+    --github-app-slug runnerhub-self-hosted-ci \
+    --public-url http://TRUENAS_HOST:8787 \
     [--github-app-key-path /mnt/POOL/runnerhub/secrets/github-app.pem] \
-    [--max-runners 2] \
+    [--github-client-secret-path /mnt/POOL/runnerhub/secrets/github-client-secret] \
     [--port 8787] \
     [--isolation container-trusted|container-dind] \
     [--runnerhub-tag latest|sha-...] \
@@ -18,11 +18,8 @@ Usage:
     [--dind-image IMAGE] \
     [--output FILE]
 
-By default the GitHub App key is read from ROOT/secrets/github-app.pem.
---github-app-key-path may point at another existing TrueNAS host file, such as
-a secret managed by Scale Secrets. The generated YAML contains only that host
-path; it never embeds the private-key contents, RunnerHub internal credentials,
-or a GHCR registry token.
+The GitHub App key and OAuth client secret are referenced as file-backed
+Compose secrets. Repository access is selected later in the RunnerHub web UI.
 EOF
 }
 
@@ -32,7 +29,7 @@ fail() {
 }
 
 escape_sed_replacement() {
-  printf '%s' "$1" | sed 's/[\\&|]/\\&/g'
+  printf '%s' "$1" | sed 's/[\&|]/\\&/g'
 }
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -40,10 +37,10 @@ template="$script_dir/compose.yaml"
 
 root=""
 github_client_id=""
-github_installation_id=""
-github_url=""
+github_app_slug=""
+public_url=""
 github_app_key_path=""
-max_runners="2"
+github_client_secret_path=""
 port="8787"
 isolation="container-trusted"
 runnerhub_tag="latest"
@@ -53,95 +50,49 @@ output=""
 
 while (($#)); do
   case "$1" in
-    --root)
-      (($# >= 2)) || fail '--root requires a value'
-      root="$2"
-      shift 2
-      ;;
-    --github-client-id)
-      (($# >= 2)) || fail '--github-client-id requires a value'
-      github_client_id="$2"
-      shift 2
-      ;;
-    --github-installation-id)
-      (($# >= 2)) || fail '--github-installation-id requires a value'
-      github_installation_id="$2"
-      shift 2
-      ;;
-    --github-url)
-      (($# >= 2)) || fail '--github-url requires a value'
-      github_url="$2"
-      shift 2
-      ;;
-    --github-app-key-path)
-      (($# >= 2)) || fail '--github-app-key-path requires a value'
-      github_app_key_path="$2"
-      shift 2
-      ;;
-    --max-runners)
-      (($# >= 2)) || fail '--max-runners requires a value'
-      max_runners="$2"
-      shift 2
-      ;;
-    --port)
-      (($# >= 2)) || fail '--port requires a value'
-      port="$2"
-      shift 2
-      ;;
-    --isolation)
-      (($# >= 2)) || fail '--isolation requires a value'
-      isolation="$2"
-      shift 2
-      ;;
-    --runnerhub-tag)
-      (($# >= 2)) || fail '--runnerhub-tag requires a value'
-      runnerhub_tag="$2"
-      shift 2
-      ;;
-    --runner-image)
-      (($# >= 2)) || fail '--runner-image requires a value'
-      runner_image="$2"
-      shift 2
-      ;;
-    --dind-image)
-      (($# >= 2)) || fail '--dind-image requires a value'
-      dind_image="$2"
-      shift 2
-      ;;
-    --output)
-      (($# >= 2)) || fail '--output requires a value'
-      output="$2"
-      shift 2
-      ;;
-    -h|--help)
-      usage
-      exit 0
-      ;;
-    *)
-      fail "unknown argument: $1"
-      ;;
+    --root) (($# >= 2)) || fail '--root requires a value'; root="$2"; shift 2 ;;
+    --github-client-id) (($# >= 2)) || fail '--github-client-id requires a value'; github_client_id="$2"; shift 2 ;;
+    --github-app-slug) (($# >= 2)) || fail '--github-app-slug requires a value'; github_app_slug="$2"; shift 2 ;;
+    --public-url) (($# >= 2)) || fail '--public-url requires a value'; public_url="$2"; shift 2 ;;
+    --github-app-key-path) (($# >= 2)) || fail '--github-app-key-path requires a value'; github_app_key_path="$2"; shift 2 ;;
+    --github-client-secret-path) (($# >= 2)) || fail '--github-client-secret-path requires a value'; github_client_secret_path="$2"; shift 2 ;;
+    --port) (($# >= 2)) || fail '--port requires a value'; port="$2"; shift 2 ;;
+    --isolation) (($# >= 2)) || fail '--isolation requires a value'; isolation="$2"; shift 2 ;;
+    --runnerhub-tag) (($# >= 2)) || fail '--runnerhub-tag requires a value'; runnerhub_tag="$2"; shift 2 ;;
+    --runner-image) (($# >= 2)) || fail '--runner-image requires a value'; runner_image="$2"; shift 2 ;;
+    --dind-image) (($# >= 2)) || fail '--dind-image requires a value'; dind_image="$2"; shift 2 ;;
+    --output) (($# >= 2)) || fail '--output requires a value'; output="$2"; shift 2 ;;
+    -h|--help) usage; exit 0 ;;
+    *) fail "unknown argument: $1" ;;
   esac
 done
 
 [[ -f "$template" ]] || fail "template not found: $template"
 [[ -n "$root" ]] || fail '--root is required'
 [[ -n "$github_client_id" ]] || fail '--github-client-id is required'
-[[ -n "$github_installation_id" ]] || fail '--github-installation-id is required'
-[[ -n "$github_url" ]] || fail '--github-url is required'
+[[ -n "$github_app_slug" ]] || fail '--github-app-slug is required'
+[[ -n "$public_url" ]] || fail '--public-url is required'
 
 root="${root%/}"
-github_url="${github_url%/}"
+public_url="${public_url%/}"
 if [[ -z "$github_app_key_path" ]]; then
   github_app_key_path="$root/secrets/github-app.pem"
+fi
+if [[ -z "$github_client_secret_path" ]]; then
+  github_client_secret_path="$root/secrets/github-client-secret"
 fi
 
 [[ "$root" =~ ^/mnt/[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*/runnerhub$ ]] || fail '--root must be an absolute TrueNAS dataset path ending in /runnerhub'
 [[ "$github_app_key_path" =~ ^/mnt/[A-Za-z0-9._/-]+$ ]] || fail '--github-app-key-path must be an absolute TrueNAS /mnt path without whitespace'
-[[ "$github_app_key_path" != */ ]] || fail '--github-app-key-path must name a file'
+[[ "$github_client_secret_path" =~ ^/mnt/[A-Za-z0-9._/-]+$ ]] || fail '--github-client-secret-path must be an absolute TrueNAS /mnt path without whitespace'
+[[ "$github_app_key_path" != */ && "$github_client_secret_path" != */ ]] || fail 'GitHub secret paths must name files'
 [[ "$github_client_id" =~ ^[A-Za-z0-9._-]+$ ]] || fail 'GitHub App client ID contains unsupported characters'
-[[ "$github_installation_id" =~ ^[0-9]+$ ]] || fail 'GitHub App installation ID must be numeric'
-[[ "$github_url" =~ ^https://github\.com/[^/[:space:]]+/[^/[:space:]]+$ ]] || fail '--github-url must be a GitHub repository URL'
-[[ "$max_runners" =~ ^[1-9][0-9]*$ ]] || fail '--max-runners must be a positive integer'
+[[ "$github_app_slug" =~ ^[A-Za-z0-9-]+$ ]] || fail 'GitHub App slug contains unsupported characters'
+case "$public_url" in
+  http://*|https://*) ;;
+  *) fail '--public-url must be an http(s) URL' ;;
+esac
+[[ "$public_url" != *[[:space:]]* ]] || fail '--public-url must not contain whitespace'
 [[ "$port" =~ ^[0-9]+$ ]] || fail '--port must be numeric'
 ((port >= 1 && port <= 65535)) || fail '--port must be between 1 and 65535'
 [[ "$runnerhub_tag" =~ ^[A-Za-z0-9_.-]+$ ]] || fail '--runnerhub-tag contains unsupported characters'
@@ -149,27 +100,28 @@ fi
 [[ "$dind_image" =~ ^[A-Za-z0-9./:_@-]+$ ]] || fail '--dind-image contains unsupported characters'
 
 case "$isolation" in
-  container-trusted)
-    allow_privileged="false"
-    ;;
-  container-dind)
-    allow_privileged="true"
-    ;;
-  *)
-    fail '--isolation must be container-trusted or container-dind'
-    ;;
+  container-trusted) allow_privileged="false" ;;
+  container-dind) allow_privileged="true" ;;
+  *) fail '--isolation must be container-trusted or container-dind' ;;
 esac
 
-for marker in '/mnt/POOL/runnerhub' '/mnt/POOL/runnerhub/secrets/github-app.pem' 'Iv1.CHANGE_ME' 'CHANGE_ME_INSTALLATION_ID' 'https://github.com/OWNER/REPOSITORY'; do
+for marker in \
+  '/mnt/POOL/runnerhub' \
+  '/mnt/POOL/runnerhub/secrets/github-app.pem' \
+  '/mnt/POOL/runnerhub/secrets/github-client-secret' \
+  'Iv1.CHANGE_ME' \
+  'CHANGE_ME_APP_SLUG' \
+  'http://TRUENAS_HOST:8787'
+do
   grep -Fq "$marker" "$template" || fail "template marker missing: $marker"
 done
 
 root_esc="$(escape_sed_replacement "$root")"
 key_path_esc="$(escape_sed_replacement "$github_app_key_path")"
+client_secret_path_esc="$(escape_sed_replacement "$github_client_secret_path")"
 client_esc="$(escape_sed_replacement "$github_client_id")"
-installation_esc="$(escape_sed_replacement "$github_installation_id")"
-github_url_esc="$(escape_sed_replacement "$github_url")"
-max_runners_esc="$(escape_sed_replacement "$max_runners")"
+slug_esc="$(escape_sed_replacement "$github_app_slug")"
+public_url_esc="$(escape_sed_replacement "$public_url")"
 port_esc="$(escape_sed_replacement "$port")"
 isolation_esc="$(escape_sed_replacement "$isolation")"
 allow_privileged_esc="$(escape_sed_replacement "$allow_privileged")"
@@ -181,15 +133,13 @@ work="$(mktemp -d)"
 tmp="$work/compose.yaml"
 trap 'rm -rf "$work"' EXIT
 
-# Rewrite the key path before the general root replacement so an explicitly
-# external key path is not accidentally forced back under ROOT/secrets.
 sed \
   -e "s|github-app-key-path: &github-app-key-path /mnt/POOL/runnerhub/secrets/github-app.pem|github-app-key-path: \&github-app-key-path $key_path_esc|" \
+  -e "s|github-client-secret-path: &github-client-secret-path /mnt/POOL/runnerhub/secrets/github-client-secret|github-client-secret-path: \&github-client-secret-path $client_secret_path_esc|" \
   -e "s|/mnt/POOL/runnerhub|$root_esc|g" \
   -e "s|Iv1.CHANGE_ME|$client_esc|g" \
-  -e "s|CHANGE_ME_INSTALLATION_ID|$installation_esc|g" \
-  -e "s|https://github.com/OWNER/REPOSITORY|$github_url_esc|g" \
-  -e "s|max-runners: &max-runners \"2\"|max-runners: \&max-runners \"$max_runners_esc\"|" \
+  -e "s|CHANGE_ME_APP_SLUG|$slug_esc|g" \
+  -e "s|http://TRUENAS_HOST:8787|$public_url_esc|g" \
   -e "s|published: \"8787\"|published: \"$port_esc\"|" \
   -e "s|pool-isolation: &pool-isolation container-trusted|pool-isolation: \&pool-isolation $isolation_esc|" \
   -e "s|allow-privileged-workers: &allow-privileged-workers \"false\"|allow-privileged-workers: \&allow-privileged-workers \"$allow_privileged_esc\"|" \
@@ -201,39 +151,40 @@ sed \
   -e "s|ghcr.io/eutelic/runnerhub-scaleset:latest|ghcr.io/eutelic/runnerhub-scaleset:$tag_esc|" \
   "$template" > "$tmp"
 
-if grep -Eq 'CHANGE_ME|/mnt/POOL/runnerhub|github\.com/OWNER/REPOSITORY' "$tmp"; then
+if grep -Eq 'CHANGE_ME|TRUENAS_HOST|/mnt/POOL/runnerhub' "$tmp"; then
   fail 'generated Compose still contains an installation placeholder'
 fi
 
-# Fail closed if the template changes and any requested rewrite silently stops
-# matching. This keeps the generator coupled to the checked-in Compose contract.
 grep -Fq "data-path: &data-path $root/data" "$tmp" || fail 'data path rewrite did not apply'
 grep -Fq "state-path: &state-path $root/agent" "$tmp" || fail 'state path rewrite did not apply'
 grep -Fq "secrets-path: &secrets-path $root/secrets" "$tmp" || fail 'secrets path rewrite did not apply'
 grep -Fq "github-app-key-path: &github-app-key-path $github_app_key_path" "$tmp" || fail 'GitHub App key path rewrite did not apply'
-grep -Fq "file: *github-app-key-path" "$tmp" || fail 'GitHub App Compose secret wiring is missing'
+grep -Fq "github-client-secret-path: &github-client-secret-path $github_client_secret_path" "$tmp" || fail 'GitHub client secret path rewrite did not apply'
 grep -Fq "github-client-id: &github-client-id $github_client_id" "$tmp" || fail 'GitHub client ID rewrite did not apply'
-grep -Fq "github-installation-id: &github-installation-id $github_installation_id" "$tmp" || fail 'GitHub installation ID rewrite did not apply'
-grep -Fq "github-url: &github-url $github_url" "$tmp" || fail 'GitHub repository rewrite did not apply'
-grep -Fq "max-runners: &max-runners \"$max_runners\"" "$tmp" || fail 'max-runners rewrite did not apply'
+grep -Fq "github-app-slug: &github-app-slug $github_app_slug" "$tmp" || fail 'GitHub App slug rewrite did not apply'
+grep -Fq "public-url: &public-url $public_url" "$tmp" || fail 'public URL rewrite did not apply'
 grep -Fq "published: \"$port\"" "$tmp" || fail 'dashboard port rewrite did not apply'
 grep -Fq "pool-isolation: &pool-isolation $isolation" "$tmp" || fail 'pool isolation rewrite did not apply'
 grep -Fq "allow-privileged-workers: &allow-privileged-workers \"$allow_privileged\"" "$tmp" || fail 'privileged-worker rewrite did not apply'
 grep -Fq "runner-image: &runner-image $runner_image" "$tmp" || fail 'runner image rewrite did not apply'
 grep -Fq "dind-image: &dind-image $dind_image" "$tmp" || fail 'DinD image rewrite did not apply'
+grep -Fq 'RUNNERHUB_DYNAMIC_CONFIG: "true"' "$tmp" || fail 'dynamic scale-set mode is missing'
 for image in control agent bootstrap scaleset; do
-  grep -Fq "ghcr.io/eutelic/runnerhub-${image}:$runnerhub_tag" "$tmp" || fail "RunnerHub ${image} image tag rewrite did not apply"
+  grep -Fq "ghcr.io/eutelic/runnerhub-${image}:$runnerhub_tag" "$tmp" || fail "RunnerHub $image image tag rewrite did not apply"
 done
 
-# Compose may read a file-backed secret while loading configuration. Lint a
-# copy that points the secret at harmless local content so validation never
-# opens the real GitHub App private key and can run away from the TrueNAS host.
 if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
-  validation_key="$work/compose-validation-secret"
+  validation_key="$work/compose-validation-key"
+  validation_client_secret="$work/compose-validation-client-secret"
   validation_compose="$work/compose-validation.yaml"
-  printf 'runnerhub-compose-validation-only\n' > "$validation_key"
+  printf '%s\n' 'runnerhub-compose-validation-only' > "$validation_key"
+  printf '%s\n' 'runnerhub-client-secret-validation-only' > "$validation_client_secret"
   validation_key_esc="$(escape_sed_replacement "$validation_key")"
-  sed "s|^    file: \*github-app-key-path$|    file: \"$validation_key_esc\"|" "$tmp" > "$validation_compose"
+  validation_client_secret_esc="$(escape_sed_replacement "$validation_client_secret")"
+  sed \
+    -e "s|^    file: \*github-app-key-path$|    file: \"$validation_key_esc\"|" \
+    -e "s|^    file: \*github-client-secret-path$|    file: \"$validation_client_secret_esc\"|" \
+    "$tmp" > "$validation_compose"
   docker compose -f "$validation_compose" config >/dev/null || fail 'generated Compose failed docker compose validation'
 fi
 

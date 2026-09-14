@@ -3,6 +3,7 @@ set -euo pipefail
 
 root="${1:-${RUNNERHUB_TRUENAS_ROOT:-/mnt/tank/runnerhub}}"
 key="${2:-${RUNNERHUB_GITHUB_APP_KEY_PATH:-$root/secrets/github-app.pem}}"
+client_secret="${3:-${RUNNERHUB_GITHUB_CLIENT_SECRET_PATH:-$root/secrets/github-client-secret}}"
 docker_socket="${RUNNERHUB_DOCKER_SOCKET:-/var/run/docker.sock}"
 
 fail() {
@@ -24,6 +25,7 @@ done
 
 [[ "$root" == /* ]] || fail "RunnerHub root must be an absolute path: $root"
 [[ "$key" == /* ]] || fail "GitHub App key path must be absolute: $key"
+[[ "$client_secret" == /* ]] || fail "GitHub client secret path must be absolute: $client_secret"
 if [[ "$root" != /mnt/* ]]; then
   note "RunnerHub root is outside /mnt; TrueNAS datasets normally mount beneath /mnt"
 fi
@@ -101,6 +103,24 @@ esac
 
 openssl pkey -in "$key" -noout >/dev/null 2>&1 || fail "GitHub App private key is not a valid private key: $key"
 ok "GitHub App private key is valid and protected: $key"
+
+[ ! -L "$client_secret" ] || fail "GitHub OAuth client secret must not be a symbolic link: $client_secret"
+[ -f "$client_secret" ] || fail "missing GitHub OAuth client secret: $client_secret"
+[ -r "$client_secret" ] || fail "GitHub OAuth client secret is not readable: $client_secret"
+client_secret_value="$(cat "$client_secret" 2>/dev/null || true)"
+[ -n "$client_secret_value" ] || fail "GitHub OAuth client secret is empty: $client_secret"
+unset client_secret_value
+client_mode="$(stat -c '%a' "$client_secret" 2>/dev/null)" || fail "cannot read permissions for $client_secret"
+case "$client_mode" in
+  400|600) ;;
+  444)
+    client_parent="$(dirname -- "$client_secret")"
+    client_parent_mode="$(stat -c '%a' "$client_parent" 2>/dev/null)" || fail "cannot read permissions for $client_parent"
+    [ "$client_parent_mode" = "700" ] || fail "mode-0444 client secrets require a mode-0700 parent directory; found $client_parent_mode"
+    ;;
+  *) fail "GitHub OAuth client secret mode must be 0400/0600, or 0444 inside a mode-0700 directory; found $client_mode" ;;
+esac
+ok "GitHub OAuth client secret is present and protected: $client_secret"
 
 if command -v docker >/dev/null 2>&1; then
   if DOCKER_HOST="unix://$docker_socket" docker version >/dev/null 2>&1; then

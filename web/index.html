@@ -8,29 +8,52 @@
 </head>
 <body>
   <header>
-    <h1>RunnerHub</h1>
-    <div>GitHub Actions on compute you own</div>
-    <input id="apitoken" type="password" autocomplete="off" placeholder="API token (if enabled)">
+    <div>
+      <h1>RunnerHub</h1>
+      <div class="muted">GitHub Actions on compute you own</div>
+    </div>
+    <div id="account"></div>
   </header>
   <main>
+    <section class="card onboarding">
+      <div class="section-head">
+        <div>
+          <h2>GitHub</h2>
+          <div id="authstatus" class="muted">Checking authentication…</div>
+        </div>
+        <div class="actions">
+          <a id="login" class="button hidden" href="/auth/github/login">Sign in with GitHub</a>
+          <a id="install" class="button secondary hidden" href="/auth/github/install">Install / manage repositories</a>
+          <button id="logout" class="secondary hidden">Sign out</button>
+        </div>
+      </div>
+      <div id="repos" class="repo-grid"></div>
+      <details id="legacy-auth">
+        <summary>Advanced: API token</summary>
+        <input id="apitoken" type="password" autocomplete="off" placeholder="API token">
+      </details>
+      <pre id="msg"></pre>
+    </section>
+
     <div class="grid">
       <section class="card"><h2>Hosts</h2><div id="hosts"></div></section>
       <section class="card"><h2>Pools</h2><div id="pools"></div></section>
       <section class="card"><h2>Workers</h2><div id="workers"></div></section>
       <section class="card">
-        <h2>Create pool</h2>
-        <input id="pname" placeholder="linux-small">
-        <input id="owner" placeholder="owner">
-        <input id="repo" placeholder="repo">
-        <input id="labels" placeholder="linux-small">
-        <input id="image" value="ghcr.io/actions/actions-runner:latest">
-        <select id="isolation" aria-label="Isolation mode">
-          <option value="container-trusted">Container (no Docker actions)</option>
-          <option value="container-dind">Container + private Docker daemon</option>
-        </select>
-        <input id="group" type="number" value="1">
-        <button id="create">Create</button>
-        <pre id="msg"></pre>
+        <details>
+          <summary>Advanced: create pool manually</summary>
+          <input id="pname" placeholder="linux-small">
+          <input id="owner" placeholder="owner">
+          <input id="repo" placeholder="repo">
+          <input id="labels" placeholder="linux-small">
+          <input id="image" value="ghcr.io/actions/actions-runner:latest">
+          <select id="isolation" aria-label="Isolation mode">
+            <option value="container-trusted">Container (no Docker actions)</option>
+            <option value="container-dind">Container + private Docker daemon</option>
+          </select>
+          <input id="group" type="number" value="1">
+          <button id="create">Create</button>
+        </details>
       </section>
     </div>
     <section class="card audit-card"><h2>Audit</h2><div id="audit"></div></section>

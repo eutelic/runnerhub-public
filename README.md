@@ -11,14 +11,15 @@ See [ROADMAP](ROADMAP.md), [security model](docs/SECURITY.md), [release guide](d
 ## Implemented
 
 - GitHub App + direct JIT runner backend and repository/org discovery
-- outbound GitHub Runner Scale Set listener for automatic demand-driven workers
+- GitHub browser sign-in, App installation validation, repository selection and one-click repository connection
+- dynamic multi-repository GitHub Runner Scale Set manager for automatic demand-driven workers
 - GitHub runner-group security posture checks against actual repository/workflow restrictions
 - SQLite state, audit, reconciliation and a durable leased command queue with encrypted JIT payloads
 - bootstrap enrollment followed by persisted, rotating per-host credentials
 - Docker provider with default `container-trusted` workers and administrator-gated per-worker Docker-in-Docker compatibility
 - separate experimental TrueNAS `midclt` provider for host-managed Custom Apps
 - multi-host resource/capability scheduler, global pool concurrency and draining
-- dashboard/API, API-key roles, a constrained scale-set API role, and trusted reverse-proxy identity-header integration
+- dashboard/API, GitHub owner sessions with CSRF protection, API-key roles, a constrained scale-set API role, and trusted reverse-proxy identity-header integration
 - scale-set restart recovery, per-demand active-worker resync and job/repository/workflow timing metadata
 - experimental Firecracker and Proxmox providers
 - trusted process provider for macOS/Windows/special hardware
@@ -26,7 +27,7 @@ See [ROADMAP](ROADMAP.md), [security model](docs/SECURITY.md), [release guide](d
 - 100-job simulated lifecycle soak exercising scheduler/store/agent/reconciler with zero simulated stale registrations
 - CI with tests, race detection, vet, `govulncheck`, macOS/Windows agent cross-builds and Docker/TrueNAS-shaped runtime smokes
 - source-free release Compose packaging plus multi-architecture GHCR images for control, agent, bootstrap and scale-set services
-- TrueNAS SCALE 24.10+ Custom App deployment with host/image preflights, deterministic YAML generation, persistent state, automatic internal-secret generation, automatic pool bootstrap, authenticated scale-set readiness health and post-install verification
+- TrueNAS SCALE 24.10+ Custom App deployment with host/image preflights, deterministic YAML generation, persistent state, automatic internal-secret generation, deploy-before-repository onboarding, dynamic scale-set readiness health and post-install verification
 
 ## Fastest local Docker install
 
@@ -44,13 +45,15 @@ No inbound GitHub webhook or public RunnerHub listener is required for this defa
 
 ## Image-based Docker / TrueNAS install
 
-RunnerHub publishes four runtime images to GHCR: `runnerhub-control`, `runnerhub-agent`, `runnerhub-bootstrap`, and `runnerhub-scaleset`. Immutable same-commit tags are published first; the moving `latest` tags advance only after all four images have built successfully and the promotion step verifies the supported platform manifests match the source commit. The one-shot bootstrap container waits for the Docker agent and creates/updates the repository pool before the scale-set listener starts.
+RunnerHub publishes four runtime images to GHCR: `runnerhub-control`, `runnerhub-agent`, `runnerhub-bootstrap`, and `runnerhub-scaleset`. Immutable same-commit tags are published first; `latest` advances only after the coherent image set is validated.
 
-For a normal Docker host, use `deploy/docker/compose.release.yaml` with the generated `.env`; it pulls prebuilt images and does not need a source checkout to build RunnerHub.
+The normal image-based deployment is repository-independent. Configure the GitHub App client ID, client secret, App slug, private key and RunnerHub public URL, then start the stack. Open the dashboard, sign in with GitHub, install/manage the App, select repositories, and click **Connect**. The dynamic scale-set manager starts or stops repository listeners as connected pools change; no Compose edit or restart is needed.
 
 For TrueNAS SCALE 24.10+, follow [deploy/truenas/README.md](deploy/truenas/README.md). The recommended path is:
 
 ```text
+create GitHub App
+    ↓
 preflight-host.sh
     ↓
 check-images.sh
@@ -61,10 +64,16 @@ TrueNAS Install via YAML
     ↓
 verify.sh
     ↓
+Sign in with GitHub
+    ↓
+Install/select repositories
+    ↓
+Connect
+    ↓
 real runs-on: runnerhub smoke job
 ```
 
-The TrueNAS stack stores control, agent and secret state in explicit datasets and generates RunnerHub's internal enrollment/API credentials on first boot instead of requiring them in YAML. The scale-set container becomes healthy only after its GitHub authentication/message-session setup reaches the listener readiness boundary. The post-install verifier checks credentials, API authorization, Docker-host registration, the expected pool, persistence, listener health when host Docker access is available, stale workers, and orphan DinD sidecars.
+The TrueNAS stack stores control, agent and secret state in explicit datasets and generates RunnerHub's internal enrollment/API credentials on first boot. A fresh installation is considered healthy with zero connected repositories. The post-install verifier checks GitHub browser-auth configuration, API authorization, Docker-host registration, persistence, scale-set-manager health, stale workers, and orphan DinD sidecars.
 
 The Docker agent intentionally mounts the host Docker socket and must be treated as trusted/root-equivalent infrastructure. Workflow containers never receive that host socket. The default `container-trusted` pool therefore does not support Docker container actions/service containers. Repositories that need those GitHub features can explicitly opt into `container-dind`, which gives each worker a private Docker daemon but uses a privileged sidecar and remains trusted-workload-only. See [docs/providers/docker.md](docs/providers/docker.md) and [docs/SECURITY.md](docs/SECURITY.md).
 

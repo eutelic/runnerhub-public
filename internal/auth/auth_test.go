@@ -52,6 +52,7 @@ func TestScalerRoleIsRestrictedToScaleSetEndpoints(t *testing.T) {
 	}{
 		{http.MethodGet, "/api/v1/pools"},
 		{http.MethodGet, "/api/v1/workers"},
+		{http.MethodGet, "/api/v1/scalesets/configs"},
 		{http.MethodPost, "/api/v1/pools/pool-docker/scale-workers"},
 		{http.MethodPost, "/api/v1/scale-events"},
 	}
@@ -84,5 +85,21 @@ func TestScalerRoleIsRestrictedToScaleSetEndpoints(t *testing.T) {
 		if w.Code != http.StatusForbidden {
 			t.Fatalf("denied %s %s returned %d", tc.method, tc.path, w.Code)
 		}
+	}
+}
+
+func TestBrowserSessionAuthenticatesRemoteAPI(t *testing.T) {
+	m := New(Config{SessionAuthenticator: func(r *http.Request) (Principal, bool) {
+		if r.Header.Get("X-Test-Session") != "ok" {
+			return Principal{}, false
+		}
+		return Principal{Name: "github:example-user", Role: RoleAdmin}, true
+	}})
+	r := httptest.NewRequest(http.MethodGet, "http://runnerhub/api/v1/hosts", nil)
+	r.RemoteAddr = "10.0.0.5:1234"
+	r.Header.Set("X-Test-Session", "ok")
+	p, err := m.Authenticate(r)
+	if err != nil || p.Name != "github:example-user" || p.Role != RoleAdmin {
+		t.Fatalf("browser auth=%+v err=%v", p, err)
 	}
 }

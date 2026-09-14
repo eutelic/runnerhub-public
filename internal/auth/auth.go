@@ -27,14 +27,18 @@ type Principal struct {
 	Role Role   `json:"role"`
 }
 
+type SessionAuthenticator func(*http.Request) (Principal, bool)
+
 type Config struct {
-	APIKeys          map[string]Principal
-	TrustOIDCHeaders bool
+	APIKeys              map[string]Principal
+	TrustOIDCHeaders     bool
+	SessionAuthenticator SessionAuthenticator
 }
 
 type Manager struct {
 	keys       map[[32]byte]Principal
 	trustOIDC  bool
+	browser    SessionAuthenticator
 	localAdmin bool
 }
 
@@ -44,7 +48,8 @@ func New(c Config) *Manager {
 	m := &Manager{
 		keys:       map[[32]byte]Principal{},
 		trustOIDC:  c.TrustOIDCHeaders,
-		localAdmin: len(c.APIKeys) == 0 && !c.TrustOIDCHeaders,
+		browser:    c.SessionAuthenticator,
+		localAdmin: len(c.APIKeys) == 0 && !c.TrustOIDCHeaders && c.SessionAuthenticator == nil,
 	}
 	for k, p := range c.APIKeys {
 		if strings.TrimSpace(k) == "" || p.Role == RoleNone {
@@ -69,6 +74,11 @@ func (m *Manager) Authenticate(r *http.Request) (Principal, error) {
 				role = RoleViewer
 			}
 			return Principal{Name: u, Role: role}, nil
+		}
+	}
+	if m.browser != nil {
+		if p, ok := m.browser(r); ok && p.Role != RoleNone {
+			return p, nil
 		}
 	}
 
@@ -122,7 +132,7 @@ func (m *Manager) Middleware(next http.Handler) http.Handler {
 
 func scalerAllowed(r *http.Request) bool {
 	path := r.URL.Path
-	if r.Method == http.MethodGet && (path == "/api/v1/pools" || path == "/api/v1/workers") {
+	if r.Method == http.MethodGet && (path == "/api/v1/pools" || path == "/api/v1/workers" || path == "/api/v1/scalesets/configs") {
 		return true
 	}
 	if r.Method != http.MethodPost {

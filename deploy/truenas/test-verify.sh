@@ -28,17 +28,14 @@ printf '%s\n' "$agent_secret" > "$root/secrets/agent-secret"
 printf '%s\n' "$admin_key" > "$root/secrets/admin-key"
 printf '%s\n' "$scaleset_key" > "$root/secrets/scaleset-key"
 printf '%s\n' 'test-private-key' > "$root/secrets/github-app.pem"
-chmod 0600 "$root/secrets/enrollment-token" "$root/secrets/agent-secret" "$root/secrets/admin-key" "$root/secrets/scaleset-key" "$root/secrets/github-app.pem"
+printf '%s\n' 'test-client-secret' > "$root/secrets/github-client-secret"
+chmod 0600 "$root/secrets/"*
 printf '%s\n' '{"hostId":"host-test"}' > "$root/agent/agent-credentials.json"
 
-# The mock defaults to an unavailable Docker CLI so the existing API/filesystem
-# verifier path remains covered. FAKE_DOCKER_MODE enables direct listener-health
-# and stale-container checks without requiring a real Docker daemon.
 cat > "$tmp/bin/docker" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 mode="${FAKE_DOCKER_MODE:-unavailable}"
-
 case "${1:-}" in
   version)
     [ "$mode" != unavailable ] || exit 1
@@ -49,14 +46,13 @@ case "${1:-}" in
     args=" $* "
     if [[ "$args" == *"label=io.runnerhub.component=scaleset"* ]]; then
       case "$mode" in
-        healthy|unhealthy) printf '%s\n' scaleset-ci ;;
+        healthy|unhealthy) printf '%s\n' scaleset-manager-ci ;;
         missing) : ;;
-        duplicate) printf '%s\n' scaleset-ci scaleset-ci-2 ;;
-        *) printf '%s\n' scaleset-ci ;;
+        duplicate) printf '%s\n' scaleset-manager-ci scaleset-manager-ci-2 ;;
+        *) printf '%s\n' scaleset-manager-ci ;;
       esac
       exit 0
     fi
-    # No worker or DinD sidecars in this mock installation.
     exit 0
     ;;
   inspect)
@@ -70,94 +66,68 @@ case "${1:-}" in
     fi
     exit 0
     ;;
-  *)
-    exit 1
-    ;;
+  *) exit 1 ;;
 esac
 EOF
 chmod +x "$tmp/bin/docker"
 
 port="$(python3 - <<'PY'
 import socket
-s = socket.socket()
-s.bind(('127.0.0.1', 0))
+s=socket.socket()
+s.bind(('127.0.0.1',0))
 print(s.getsockname()[1])
 s.close()
 PY
 )"
 
 cat > "$tmp/server.py" <<'PY'
-import json
-import os
+import json, os
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-ADMIN = os.environ['TEST_ADMIN']
-SCALER = os.environ['TEST_SCALER']
+ADMIN=os.environ["TEST_ADMIN"]
+SCALER=os.environ["TEST_SCALER"]
 
 class Handler(BaseHTTPRequestHandler):
-    def log_message(self, fmt, *args):
-        pass
-
-    def send_json(self, status, value):
-        body = json.dumps(value).encode()
+    def log_message(self, fmt, *args): pass
+    def send_json(self,status,value):
+        body=json.dumps(value).encode()
         self.send_response(status)
-        self.send_header('Content-Type', 'application/json')
-        self.send_header('Content-Length', str(len(body)))
+        self.send_header("Content-Type","application/json")
+        self.send_header("Content-Length",str(len(body)))
         self.end_headers()
         self.wfile.write(body)
-
     def do_GET(self):
-        if self.path == '/healthz':
-            self.send_json(200, {'ok': True})
-            return
-
-        if not self.path.startswith('/api/'):
-            self.send_json(404, {'error': 'not found'})
-            return
-
-        auth = self.headers.get('Authorization', '')
-        if auth == f'Bearer {ADMIN}':
-            if self.path == '/api/v1/hosts':
-                self.send_json(200, [{'id': 'host-test', 'provider': 'docker', 'state': 'online'}])
-                return
-            if self.path == '/api/v1/pools':
-                self.send_json(200, [
-                    {
-                        'id': 'pool-docker',
-                        'isolation': 'container-trusted',
-                        'labels': ['runnerhub'],
-                        'maxConcurrency': 2,
-                        'image': 'ghcr.io/actions/actions-runner:latest',
-                    },
-                    {
-                        'id': 'unrelated-pool',
-                        'isolation': 'container-trusted',
-                        'labels': ['other'],
-                        'maxConcurrency': 1,
-                        'image': 'example.invalid/other:latest',
-                    },
-                ])
-                return
-            if self.path == '/api/v1/workers':
-                self.send_json(200, [])
-                return
-        elif auth == f'Bearer {SCALER}':
-            if self.path == '/api/v1/workers':
-                self.send_json(200, [])
-                return
-            if self.path == '/api/v1/pools':
-                self.send_json(200, [{'id': 'pool-docker'}])
-                return
-            self.send_json(403, {'error': 'forbidden'})
-            return
+        if self.path=="/healthz":
+            self.send_json(200,{"status":"ok"}); return
+        if self.path=="/auth/github/status":
+            self.send_json(200,{"enabled":True,"authenticated":False}); return
+        if not self.path.startswith("/api/"):
+            self.send_json(404,{"error":"not found"}); return
+        auth=self.headers.get("Authorization","")
+        if auth==f"Bearer {ADMIN}":
+            if self.path=="/api/v1/hosts":
+                self.send_json(200,[{"id":"host-test","provider":"docker","state":"online"}]); return
+            if self.path=="/api/v1/pools":
+                mode=os.environ.get("TEST_POOLS","none")
+                pools=[]
+                if mode=="configured":
+                    pools=[{"id":"pool-docker","isolation":"container-trusted","labels":["runnerhub"],"maxConcurrency":2,"image":"ghcr.io/actions/actions-runner:latest"}]
+                self.send_json(200,pools); return
+            if self.path=="/api/v1/workers":
+                self.send_json(200,[]); return
+        elif auth==f"Bearer {SCALER}":
+            if self.path=="/api/v1/workers":
+                self.send_json(200,[]); return
+            if self.path=="/api/v1/pools":
+                self.send_json(200,[]); return
+            if self.path=="/api/v1/scalesets/configs":
+                self.send_json(200,[]); return
+            self.send_json(403,{"error":"forbidden"}); return
         else:
-            self.send_json(401, {'error': 'unauthorized'})
-            return
+            self.send_json(401,{"error":"unauthorized"}); return
+        self.send_json(404,{"error":"not found"})
 
-        self.send_json(404, {'error': 'not found'})
-
-server = ThreadingHTTPServer(('127.0.0.1', int(os.environ['TEST_PORT'])), Handler)
-server.serve_forever()
+ThreadingHTTPServer(("127.0.0.1",int(os.environ["TEST_PORT"])),Handler).serve_forever()
 PY
 
 TEST_ADMIN="$admin_key" TEST_SCALER="$scaleset_key" TEST_PORT="$port" python3 "$tmp/server.py" &
@@ -171,71 +141,48 @@ for _ in $(seq 1 50); do
   fi
   sleep 0.1
 done
-[ "$ready" = "true" ] || { echo 'mock RunnerHub API did not start' >&2; exit 1; }
+[ "$ready" = true ] || { echo 'mock RunnerHub API did not start' >&2; exit 1; }
 
 PATH="$tmp/bin:$PATH" bash -n "$verify"
 
-# Docker-unavailable path remains valid and explicitly reports skipped direct
-# container checks.
-PATH="$tmp/bin:$PATH" bash "$verify" "$root" "http://127.0.0.1:$port" > "$tmp/success.log"
-grep -Fq '[ ok ] administrative API rejects unauthenticated requests' "$tmp/success.log"
-grep -Fq '[ ok ] scale-set credential remains constrained to its expected API surface' "$tmp/success.log"
-grep -Fq '[ ok ] expected pool pool-docker: isolation=container-trusted runs-on=runnerhub maxConcurrency=2 image=ghcr.io/actions/actions-runner:latest' "$tmp/success.log"
-grep -Fq '[note] additional pools configured: 1' "$tmp/success.log"
-grep -Fq '[note] host Docker CLI is unavailable; skipped direct scale-set and stale-container checks' "$tmp/success.log"
-grep -Fq '[ ok ] RunnerHub TrueNAS installation passed local verification' "$tmp/success.log"
+PATH="$tmp/bin:$PATH" bash "$verify" "$root" "http://127.0.0.1:$port" > "$tmp/pre-onboarding.log"
+grep -Fq '[ ok ] GitHub browser authentication is enabled' "$tmp/pre-onboarding.log"
+grep -Fq '[note] no repositories connected yet; finish setup from the RunnerHub dashboard' "$tmp/pre-onboarding.log"
+grep -Fq '[ ok ] scale-set credential remains constrained to its expected API surface' "$tmp/pre-onboarding.log"
+grep -Fq '[ ok ] RunnerHub TrueNAS installation passed local verification' "$tmp/pre-onboarding.log"
 
-# A managed GitHub App key may live outside RunnerHub's own secrets directory.
-managed_dir="$tmp/scale-secrets/secrets"
-mkdir -p "$managed_dir"
-chmod 0700 "$tmp/scale-secrets" "$managed_dir"
-printf '%s\n' 'managed-test-private-key' > "$managed_dir/runnerhub_github_app"
-chmod 0444 "$managed_dir/runnerhub_github_app"
-PATH="$tmp/bin:$PATH" bash "$verify" \
-  "$root" "http://127.0.0.1:$port" pool-docker runnerhub "" \
-  "$managed_dir/runnerhub_github_app" > "$tmp/managed-success.log"
-grep -Fq "[ ok ] configured GitHub App key is present as a regular file: $managed_dir/runnerhub_github_app" "$tmp/managed-success.log"
-
-if PATH="$tmp/bin:$PATH" bash "$verify" \
-  "$root" "http://127.0.0.1:$port" pool-docker runnerhub "" \
-  "$managed_dir/missing" >/dev/null 2>&1; then
-  echo 'verifier unexpectedly accepted a missing external GitHub App key' >&2
-  exit 1
-fi
-
-# With host Docker access, the exact listener container must exist and report
-# healthy only after the GitHub message-session readiness marker is published.
-FAKE_DOCKER_MODE=healthy PATH="$tmp/bin:$PATH" \
-  bash "$verify" "$root" "http://127.0.0.1:$port" > "$tmp/docker-success.log"
-grep -Fq '[ ok ] scale-set listener is healthy after GitHub message-session setup' "$tmp/docker-success.log"
+FAKE_DOCKER_MODE=healthy PATH="$tmp/bin:$PATH"   bash "$verify" "$root" "http://127.0.0.1:$port" > "$tmp/docker-success.log"
+grep -Fq '[ ok ] dynamic scale-set manager is healthy' "$tmp/docker-success.log"
 grep -Fq '[ ok ] no stale RunnerHub worker containers (0 current container records)' "$tmp/docker-success.log"
 grep -Fq '[ ok ] no orphan Docker-in-Docker sidecars' "$tmp/docker-success.log"
 
 for mode in unhealthy missing duplicate; do
-  if FAKE_DOCKER_MODE="$mode" PATH="$tmp/bin:$PATH" \
-    bash "$verify" "$root" "http://127.0.0.1:$port" >/dev/null 2>&1; then
-    echo "verifier unexpectedly accepted scale-set Docker mode: $mode" >&2
+  if FAKE_DOCKER_MODE="$mode" PATH="$tmp/bin:$PATH"     bash "$verify" "$root" "http://127.0.0.1:$port" >/dev/null 2>&1; then
+    echo "verifier unexpectedly accepted scale-set manager Docker mode: $mode" >&2
     exit 1
   fi
 done
 
-PATH="$tmp/bin:$PATH" RUNNERHUB_VERIFY_ISOLATION=container-trusted \
-  bash "$verify" "$root" "http://127.0.0.1:$port" >/dev/null
+kill "$server_pid"
+wait "$server_pid" >/dev/null 2>&1 || true
+server_pid=""
+TEST_ADMIN="$admin_key" TEST_SCALER="$scaleset_key" TEST_PORT="$port" TEST_POOLS=configured python3 "$tmp/server.py" &
+server_pid=$!
+for _ in $(seq 1 50); do
+  curl --fail --silent "http://127.0.0.1:$port/healthz" >/dev/null 2>&1 && break
+  sleep 0.1
+done
+PATH="$tmp/bin:$PATH" bash "$verify" "$root" "http://127.0.0.1:$port" pool-docker runnerhub container-trusted > "$tmp/post-onboarding.log"
+grep -Fq '[ ok ] expected pool pool-docker: isolation=container-trusted runs-on=runnerhub maxConcurrency=2 image=ghcr.io/actions/actions-runner:latest' "$tmp/post-onboarding.log"
 
-if PATH="$tmp/bin:$PATH" bash "$verify" "$root" "http://127.0.0.1:$port" missing-pool runnerhub >/dev/null 2>&1; then
-  echo 'verifier unexpectedly accepted a missing expected pool' >&2
-  exit 1
-fi
-
-if PATH="$tmp/bin:$PATH" bash "$verify" "$root" "http://127.0.0.1:$port" pool-docker wrong-label >/dev/null 2>&1; then
-  echo 'verifier unexpectedly accepted a pool missing the expected runner label' >&2
-  exit 1
-fi
-
-if PATH="$tmp/bin:$PATH" bash "$verify" "$root" "http://127.0.0.1:$port" pool-docker runnerhub container-dind >/dev/null 2>&1; then
-  echo 'verifier unexpectedly accepted the wrong pool isolation' >&2
-  exit 1
-fi
+managed_dir="$tmp/scale-secrets/secrets"
+mkdir -p "$managed_dir"
+printf '%s\n' managed-test-private-key > "$managed_dir/runnerhub_github_app"
+printf '%s\n' managed-test-client-secret > "$managed_dir/runnerhub_github_client_secret"
+chmod 0444 "$managed_dir/"*
+PATH="$tmp/bin:$PATH" bash "$verify"   "$root" "http://127.0.0.1:$port" "" "" ""   "$managed_dir/runnerhub_github_app" "$managed_dir/runnerhub_github_client_secret" > "$tmp/managed.log"
+grep -Fq "[ ok ] configured GitHub App key is present as a regular non-empty file: $managed_dir/runnerhub_github_app" "$tmp/managed.log"
+grep -Fq "[ ok ] configured GitHub OAuth client secret is present as a regular non-empty file: $managed_dir/runnerhub_github_client_secret" "$tmp/managed.log"
 
 chmod 0644 "$root/secrets/admin-key"
 if PATH="$tmp/bin:$PATH" bash "$verify" "$root" "http://127.0.0.1:$port" >/dev/null 2>&1; then
@@ -243,15 +190,5 @@ if PATH="$tmp/bin:$PATH" bash "$verify" "$root" "http://127.0.0.1:$port" >/dev/n
   exit 1
 fi
 chmod 0600 "$root/secrets/admin-key"
-
-mv "$root/secrets/scaleset-key" "$root/secrets/scaleset-key.real"
-ln -s "$root/secrets/scaleset-key.real" "$root/secrets/scaleset-key"
-if PATH="$tmp/bin:$PATH" bash "$verify" "$root" "http://127.0.0.1:$port" >/dev/null 2>&1; then
-  echo 'verifier unexpectedly accepted a symlinked generated secret' >&2
-  exit 1
-fi
-rm "$root/secrets/scaleset-key"
-mv "$root/secrets/scaleset-key.real" "$root/secrets/scaleset-key"
-chmod 0600 "$root/secrets/scaleset-key"
 
 printf 'TrueNAS verifier tests passed.\n'

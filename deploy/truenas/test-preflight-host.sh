@@ -18,7 +18,8 @@ trap cleanup EXIT
 root="$tmp/runnerhub"
 mkdir -p "$root/data" "$root/agent" "$root/secrets" "$tmp/bin"
 openssl genrsa -out "$root/secrets/github-app.pem" 2048 >/dev/null 2>&1
-chmod 0600 "$root/secrets/github-app.pem"
+printf '%s\n' 'test-github-client-secret' > "$root/secrets/github-client-secret"
+chmod 0600 "$root/secrets/github-app.pem" "$root/secrets/github-client-secret"
 
 socket="$tmp/docker.sock"
 python3 - "$socket" <<'PY' &
@@ -92,6 +93,7 @@ grep -Fq '[ ok ] TrueNAS version is supported: 25.10.1' "$tmp/success.log"
 grep -Fq '[ ok ] TrueNAS Apps/Docker service is RUNNING' "$tmp/success.log"
 grep -Fq '[ ok ] TrueNAS Apps storage pool is configured: tank' "$tmp/success.log"
 grep -Fq '[ ok ] GitHub App private key is valid and protected:' "$tmp/success.log"
+grep -Fq '[ ok ] GitHub OAuth client secret is present and protected:' "$tmp/success.log"
 grep -Fq '[ ok ] RunnerHub TrueNAS host preflight passed' "$tmp/success.log"
 
 # Scale Secrets publishes secret files as 0444 inside its protected 0700
@@ -100,14 +102,16 @@ managed_dir="$tmp/scale-secrets/secrets"
 mkdir -p "$managed_dir"
 chmod 0700 "$tmp/scale-secrets" "$managed_dir"
 openssl genrsa -out "$managed_dir/runnerhub_github_app" 2048 >/dev/null 2>&1
-chmod 0444 "$managed_dir/runnerhub_github_app"
+printf '%s\n' 'managed-github-client-secret' > "$managed_dir/runnerhub_github_client_secret"
+chmod 0444 "$managed_dir/runnerhub_github_app" "$managed_dir/runnerhub_github_client_secret"
 RUNNERHUB_DOCKER_SOCKET="$socket" PATH="$tmp/bin:$PATH" \
-  bash "$preflight" "$root" "$managed_dir/runnerhub_github_app" > "$tmp/managed.log"
+  bash "$preflight" "$root" "$managed_dir/runnerhub_github_app" "$managed_dir/runnerhub_github_client_secret" > "$tmp/managed.log"
 grep -Fq '[ ok ] GitHub App private key is valid and protected:' "$tmp/managed.log"
+grep -Fq '[ ok ] GitHub OAuth client secret is present and protected:' "$tmp/managed.log"
 
 chmod 0755 "$managed_dir"
 if RUNNERHUB_DOCKER_SOCKET="$socket" PATH="$tmp/bin:$PATH" \
-  bash "$preflight" "$root" "$managed_dir/runnerhub_github_app" >/dev/null 2>&1; then
+  bash "$preflight" "$root" "$managed_dir/runnerhub_github_app" "$managed_dir/runnerhub_github_client_secret" >/dev/null 2>&1; then
   echo 'host preflight unexpectedly accepted a mode-0444 key in a broad directory' >&2
   exit 1
 fi

@@ -16,36 +16,36 @@ bash -n "$prepare"
 bash "$prepare" \
   --root /mnt/tank/runnerhub \
   --github-client-id Iv1.test \
-  --github-installation-id 12345678 \
-  --github-url https://github.com/acme/private-repo \
+  --github-app-slug runnerhub-test \
+  --public-url http://runnerhub.example.test:8787 \
   --output "$trusted"
 
 grep -Fq '/mnt/tank/runnerhub/data' "$trusted"
 grep -Fq '/mnt/tank/runnerhub/agent' "$trusted"
 grep -Fq '/mnt/tank/runnerhub/secrets' "$trusted"
 grep -Fq 'github-app-key-path: &github-app-key-path /mnt/tank/runnerhub/secrets/github-app.pem' "$trusted"
+grep -Fq 'github-client-secret-path: &github-client-secret-path /mnt/tank/runnerhub/secrets/github-client-secret' "$trusted"
 grep -Fq 'file: *github-app-key-path' "$trusted"
+grep -Fq 'file: *github-client-secret-path' "$trusted"
 grep -Fq 'RUNNERHUB_GITHUB_APP_PRIVATE_KEY_FILE: /run/secrets/runnerhub-github-app' "$trusted"
+grep -Fq 'RUNNERHUB_GITHUB_CLIENT_SECRET_FILE: /run/secrets/runnerhub-github-client-secret' "$trusted"
 grep -Fq 'github-client-id: &github-client-id Iv1.test' "$trusted"
-grep -Fq 'github-installation-id: &github-installation-id 12345678' "$trusted"
-grep -Fq 'github-url: &github-url https://github.com/acme/private-repo' "$trusted"
-grep -Fq 'max-runners: &max-runners "2"' "$trusted"
+grep -Fq 'github-app-slug: &github-app-slug runnerhub-test' "$trusted"
+grep -Fq 'public-url: &public-url http://runnerhub.example.test:8787' "$trusted"
 grep -Fq 'published: "8787"' "$trusted"
 grep -Fq 'pool-isolation: &pool-isolation container-trusted' "$trusted"
 grep -Fq 'allow-privileged-workers: &allow-privileged-workers "false"' "$trusted"
 grep -Fq 'ghcr.io/eutelic/runnerhub-control:latest' "$trusted"
 grep -Fq 'io.runnerhub.component: scaleset' "$trusted"
-grep -Fq 'io.runnerhub.pool: *pool-id' "$trusted"
-grep -Fq 'io.runnerhub.scale-set: *scaleset-name' "$trusted"
+grep -Fq 'RUNNERHUB_DYNAMIC_CONFIG: "true"' "$trusted"
 grep -Fq 'test -s /run/runnerhub/scaleset-ready' "$trusted"
-! grep -Eq 'CHANGE_ME|/mnt/POOL/runnerhub|github\.com/OWNER/REPOSITORY' "$trusted"
+! grep -Eq 'CHANGE_ME|TRUENAS_HOST|/mnt/POOL/runnerhub|github-installation-id|github-url:' "$trusted"
 
 bash "$prepare" \
   --root /mnt/fast/apps/runnerhub \
   --github-client-id Iv1.dind \
-  --github-installation-id 87654321 \
-  --github-url https://github.com/acme/docker-heavy \
-  --max-runners 4 \
+  --github-app-slug runnerhub-dind \
+  --public-url https://runnerhub.example.com \
   --port 9876 \
   --isolation container-dind \
   --runnerhub-tag sha-deadbeef \
@@ -53,35 +53,38 @@ bash "$prepare" \
   --dind-image docker:28-dind \
   --output "$dind"
 
-grep -Fq 'max-runners: &max-runners "4"' "$dind"
 grep -Fq 'published: "9876"' "$dind"
 grep -Fq 'pool-isolation: &pool-isolation container-dind' "$dind"
 grep -Fq 'allow-privileged-workers: &allow-privileged-workers "true"' "$dind"
 grep -Fq 'runner-image: &runner-image ghcr.io/actions/actions-runner:2.328.0' "$dind"
 grep -Fq 'dind-image: &dind-image docker:28-dind' "$dind"
+grep -Fq 'public-url: &public-url https://runnerhub.example.com' "$dind"
 for image in control agent bootstrap scaleset; do
   grep -Fq "ghcr.io/eutelic/runnerhub-${image}:sha-deadbeef" "$dind"
 done
 
-# External managed keys must not alter RunnerHub's own data/secrets locations.
 managed_key='/mnt/Databases/apps_n_stuff/scale-secrets/secrets/runnerhub_github_app'
+managed_client_secret='/mnt/Databases/apps_n_stuff/scale-secrets/secrets/runnerhub_github_client_secret'
 bash "$prepare" \
   --root /mnt/Databases/apps_n_stuff/runnerhub \
   --github-client-id Iv1.managed \
-  --github-installation-id 11223344 \
-  --github-url https://github.com/acme/managed-key \
+  --github-app-slug runnerhub-managed \
+  --public-url http://TRUENAS_HOST:8787 \
   --github-app-key-path "$managed_key" \
+  --github-client-secret-path "$managed_client_secret" \
   --output "$managed"
+
 grep -Fq "github-app-key-path: &github-app-key-path $managed_key" "$managed"
+grep -Fq "github-client-secret-path: &github-client-secret-path $managed_client_secret" "$managed"
 grep -Fq 'secrets-path: &secrets-path /mnt/Databases/apps_n_stuff/runnerhub/secrets' "$managed"
-grep -Fq 'file: *github-app-key-path' "$managed"
 ! grep -Fq 'runnerhub/secrets/github-app.pem' "$managed"
+! grep -Fq 'runnerhub/secrets/github-client-secret' "$managed"
 
 if bash "$prepare" \
   --root /srv/runnerhub \
   --github-client-id Iv1.test \
-  --github-installation-id 1 \
-  --github-url https://github.com/acme/repo >/dev/null 2>&1; then
+  --github-app-slug runnerhub-test \
+  --public-url http://localhost:8787 >/dev/null 2>&1; then
   echo 'invalid non-/mnt TrueNAS root unexpectedly succeeded' >&2
   exit 1
 fi
@@ -89,26 +92,26 @@ fi
 if bash "$prepare" \
   --root /mnt/tank/runnerhub \
   --github-client-id Iv1.test \
-  --github-installation-id not-a-number \
-  --github-url https://github.com/acme/repo >/dev/null 2>&1; then
-  echo 'invalid installation ID unexpectedly succeeded' >&2
+  --github-app-slug 'bad slug' \
+  --public-url http://localhost:8787 >/dev/null 2>&1; then
+  echo 'invalid GitHub App slug unexpectedly succeeded' >&2
   exit 1
 fi
 
 if bash "$prepare" \
   --root /mnt/tank/runnerhub \
   --github-client-id Iv1.test \
-  --github-installation-id 1 \
-  --github-url https://example.com/acme/repo >/dev/null 2>&1; then
-  echo 'non-GitHub repository URL unexpectedly succeeded' >&2
+  --github-app-slug runnerhub-test \
+  --public-url ftp://runnerhub.example.com >/dev/null 2>&1; then
+  echo 'invalid public URL unexpectedly succeeded' >&2
   exit 1
 fi
 
 if bash "$prepare" \
   --root /mnt/tank/runnerhub \
   --github-client-id Iv1.test \
-  --github-installation-id 1 \
-  --github-url https://github.com/acme/repo \
+  --github-app-slug runnerhub-test \
+  --public-url http://localhost:8787 \
   --github-app-key-path /srv/not-truenas/key.pem >/dev/null 2>&1; then
   echo 'non-/mnt GitHub App key path unexpectedly succeeded' >&2
   exit 1
@@ -117,8 +120,18 @@ fi
 if bash "$prepare" \
   --root /mnt/tank/runnerhub \
   --github-client-id Iv1.test \
-  --github-installation-id 1 \
-  --github-url https://github.com/acme/repo \
+  --github-app-slug runnerhub-test \
+  --public-url http://localhost:8787 \
+  --github-client-secret-path /srv/not-truenas/client-secret >/dev/null 2>&1; then
+  echo 'non-/mnt GitHub client secret path unexpectedly succeeded' >&2
+  exit 1
+fi
+
+if bash "$prepare" \
+  --root /mnt/tank/runnerhub \
+  --github-client-id Iv1.test \
+  --github-app-slug runnerhub-test \
+  --public-url http://localhost:8787 \
   --port 70000 >/dev/null 2>&1; then
   echo 'invalid dashboard port unexpectedly succeeded' >&2
   exit 1

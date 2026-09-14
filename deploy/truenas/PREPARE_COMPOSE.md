@@ -1,93 +1,83 @@
 # Prepare the TrueNAS Compose file
 
-`deploy/truenas/compose.yaml` remains the canonical TrueNAS SCALE 24.10+ Custom App template. `prepare-compose.sh` turns that template into installation-ready YAML without placing RunnerHub internal credentials, the GitHub App private-key contents, or a GHCR registry token in the generated file.
+`deploy/truenas/compose.yaml` is the canonical TrueNAS SCALE 24.10+ template. The generator produces installation-ready YAML without embedding RunnerHub internal credentials, GitHub App private-key bytes, the OAuth client secret, or a GHCR token.
 
 ## Basic usage
 
-From a RunnerHub checkout:
-
 ```bash
 bash deploy/truenas/prepare-compose.sh \
   --root /mnt/POOL/runnerhub \
   --github-client-id Iv1.EXAMPLE \
-  --github-installation-id 12345678 \
-  --github-url https://github.com/OWNER/REPOSITORY \
+  --github-app-slug runnerhub-self-hosted-ci \
+  --public-url http://TRUENAS_HOST:8787 \
   --output runnerhub-truenas.yaml
 ```
 
-The generated file uses:
+Repository access is intentionally **not** configured here. After deployment, sign in to RunnerHub, install/manage the GitHub App, select repositories, and click **Connect**.
 
-- `/mnt/POOL/runnerhub/data`
-- `/mnt/POOL/runnerhub/agent`
-- `/mnt/POOL/runnerhub/secrets`
-- `/mnt/POOL/runnerhub/secrets/github-app.pem` as the default/manual GitHub App key source
-- dashboard/API port `8787`
-- two maximum concurrent runners
-- `container-trusted` isolation
-- the coherent `latest` RunnerHub image set
+Default secret files:
 
-For the manual flow, create the three datasets and place `github-app.pem` in the secrets dataset before installing the generated YAML in TrueNAS.
+```text
+/mnt/POOL/runnerhub/secrets/github-app.pem
+/mnt/POOL/runnerhub/secrets/github-client-secret
+```
 
-## Use a key managed by Scale Secrets
-
-RunnerHub can reference an existing secret-manager file instead of copying the PEM into its own secrets directory:
+## External/Scale Secrets files
 
 ```bash
 bash deploy/truenas/prepare-compose.sh \
   --root /mnt/POOL/runnerhub \
   --github-client-id Iv1.EXAMPLE \
-  --github-installation-id 12345678 \
-  --github-url https://github.com/OWNER/REPOSITORY \
+  --github-app-slug runnerhub-self-hosted-ci \
+  --public-url http://TRUENAS_HOST:8787 \
   --github-app-key-path /mnt/POOL/app-secrets/secrets/runnerhub_github_app \
+  --github-client-secret-path /mnt/POOL/app-secrets/secrets/runnerhub_github_client_secret \
   --output runnerhub-truenas.yaml
 ```
 
-Use the actual host path reported by Scale Secrets. The generated YAML stores only the path and mounts that file as a Compose secret into the RunnerHub services that require it. See `SCALE_SECRETS.md` for the complete upload, preflight, deployment, and rotation flow.
+The generated YAML stores only the host paths.
 
-## Pin a release or rollback
-
-Pass the same immutable RunnerHub tag to all four services with one option:
+## Release pinning
 
 ```bash
-bash deploy/truenas/prepare-compose.sh \
-  --root /mnt/POOL/runnerhub \
-  --github-client-id Iv1.EXAMPLE \
-  --github-installation-id 12345678 \
-  --github-url https://github.com/OWNER/REPOSITORY \
-  --runnerhub-tag sha-FULL_COMMIT_SHA \
-  --output runnerhub-truenas.yaml
+--runnerhub-tag sha-FULL_COMMIT_SHA
 ```
 
-This prevents a mixed-version control/agent/bootstrap/scale-set stack.
+The same tag is applied to control, agent, bootstrap, and scale-set images.
 
-## Docker workflow compatibility
+## Docker compatibility
 
-For trusted repositories that require Docker container actions, service containers, or `container:` jobs, use:
+Default:
 
-```bash
+```text
+--isolation container-trusted
+```
+
+For trusted workflows that require Docker actions/services/job containers:
+
+```text
 --isolation container-dind
 ```
 
-The generator automatically changes both the pool isolation and `RUNNERHUB_ALLOW_PRIVILEGED_WORKERS` gate together. The DinD sidecar is privileged; do not use this mode for untrusted workflow code.
+The generator enables the required privileged-worker gate at the same time.
 
-You can also pin the DinD image:
-
-```bash
---dind-image docker:28-dind
-```
-
-## Other options
+## Options
 
 ```text
+--root PATH
+--github-client-id ID
+--github-app-slug SLUG
+--public-url URL
 --github-app-key-path /mnt/.../FILE
---max-runners N
+--github-client-secret-path /mnt/.../FILE
 --port PORT
---runner-image IMAGE
+--isolation container-trusted|container-dind
 --runnerhub-tag TAG
+--runner-image IMAGE
 --dind-image IMAGE
 --output FILE
 ```
 
-Without `--output`, the generated Compose YAML is written to stdout.
+There is no `--github-installation-id` or `--github-url` in the normal TrueNAS flow. Those values are discovered after GitHub browser onboarding.
 
-The helper validates all required identifiers and paths, rejects unsupported isolation modes and invalid ports, removes all installation placeholders, verifies every requested rewrite actually applied, and runs `docker compose config` automatically when Docker Compose is available locally.
+When Docker Compose is available locally, the generator validates a temporary copy of the generated YAML using harmless temporary secret files.

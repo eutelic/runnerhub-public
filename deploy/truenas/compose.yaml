@@ -1,10 +1,7 @@
 # RunnerHub TrueNAS SCALE 24.10+ Custom App template.
-# Replace the installation identifiers and /mnt/POOL paths before installing.
-# RunnerHub's internal credentials are generated automatically and persisted
-# beneath the configured secrets path.
+# GitHub App credentials are configured once; repositories are connected later
+# from the RunnerHub dashboard after signing in with GitHub.
 
-# Keep these four RunnerHub images on the same release/commit when pinning or
-# rolling back. init-secrets intentionally reuses the bootstrap image.
 x-runnerhub-images:
   control: &control-image ghcr.io/eutelic/runnerhub-control:latest
   agent: &agent-image ghcr.io/eutelic/runnerhub-agent:latest
@@ -15,30 +12,21 @@ x-runnerhub-config:
   data-path: &data-path /mnt/POOL/runnerhub/data
   state-path: &state-path /mnt/POOL/runnerhub/agent
   secrets-path: &secrets-path /mnt/POOL/runnerhub/secrets
-  # Manual/default: place github-app.pem in the RunnerHub secrets directory.
-  # Scale Secrets users can point this at its managed host file instead.
   github-app-key-path: &github-app-key-path /mnt/POOL/runnerhub/secrets/github-app.pem
+  github-client-secret-path: &github-client-secret-path /mnt/POOL/runnerhub/secrets/github-client-secret
   github-client-id: &github-client-id Iv1.CHANGE_ME
-  github-installation-id: &github-installation-id CHANGE_ME_INSTALLATION_ID
-  github-url: &github-url https://github.com/OWNER/REPOSITORY
-  pool-id: &pool-id pool-docker
-  scaleset-name: &scaleset-name runnerhub
-  max-runners: &max-runners "2"
+  github-app-slug: &github-app-slug CHANGE_ME_APP_SLUG
+  public-url: &public-url http://TRUENAS_HOST:8787
   runner-image: &runner-image ghcr.io/actions/actions-runner:latest
-  # Keep container-trusted unless workflows require Docker container actions,
-  # service containers, or job containers. container-dind starts a privileged
-  # per-worker Docker daemon and therefore also requires the next flag = "true".
   pool-isolation: &pool-isolation container-trusted
   allow-privileged-workers: &allow-privileged-workers "false"
   dind-image: &dind-image docker:dind
 
-# The GitHub App key is intentionally modeled as a Compose file secret instead
-# of requiring it to live beside RunnerHub's generated internal credentials.
-# This preserves the manual path while allowing secret managers such as Scale
-# Secrets to provide the exact same file from another TrueNAS dataset.
 secrets:
   runnerhub-github-app:
     file: *github-app-key-path
+  runnerhub-github-client-secret:
+    file: *github-client-secret-path
 
 services:
   init-secrets:
@@ -77,11 +65,15 @@ services:
       RUNNERHUB_SCALESET_KEY_FILE: /run/runnerhub-secrets/scaleset-key
       RUNNERHUB_ALLOW_PRIVILEGED_WORKERS: *allow-privileged-workers
       RUNNERHUB_GITHUB_APP_ISSUER: *github-client-id
+      RUNNERHUB_GITHUB_CLIENT_SECRET_FILE: /run/secrets/runnerhub-github-client-secret
+      RUNNERHUB_GITHUB_APP_SLUG: *github-app-slug
+      RUNNERHUB_PUBLIC_URL: *public-url
       RUNNERHUB_GITHUB_APP_PRIVATE_KEY_FILE: /run/secrets/runnerhub-github-app
       RUNNERHUB_GITHUB_API_URL: https://api.github.com
       RUNNERHUB_ALLOWED_IMAGES: *runner-image
     secrets:
       - runnerhub-github-app
+      - runnerhub-github-client-secret
     volumes:
       - type: bind
         source: *data-path
@@ -111,8 +103,6 @@ services:
       RUNNERHUB_ALLOW_INSECURE_HTTP: "true"
       RUNNERHUB_ENROLLMENT_TOKEN_FILE: /run/runnerhub-secrets/enrollment-token
       RUNNERHUB_PROVIDER: docker
-      # This must be the same absolute path inside the agent and on TrueNAS.
-      # The host Docker daemon uses it when mounting per-job JIT/DinD state.
       RUNNERHUB_STATE_DIR: *state-path
       RUNNERHUB_HOST_NAME: truenas-host
       RUNNERHUB_RUNNER_IMAGE: *runner-image
@@ -120,7 +110,6 @@ services:
       RUNNERHUB_DIND_IMAGE: *dind-image
       RUNNERHUB_ALLOW_PRIVILEGED_WORKERS: *allow-privileged-workers
     volumes:
-      # The agent is trusted infrastructure. Job containers never receive this socket.
       - type: bind
         source: /var/run/docker.sock
         target: /var/run/docker.sock
@@ -138,59 +127,22 @@ services:
       retries: 20
       start_period: 5s
 
-  bootstrap:
-    image: *bootstrap-image
-    pull_policy: always
-    restart: "no"
-    depends_on:
-      init-secrets:
-        condition: service_completed_successfully
-      control:
-        condition: service_healthy
-      agent:
-        condition: service_healthy
-    environment:
-      RUNNERHUB_CONTROL_URL: http://control:8080
-      RUNNERHUB_ADMIN_KEY_FILE: /run/runnerhub-secrets/admin-key
-      RUNNERHUB_GITHUB_URL: *github-url
-      RUNNERHUB_POOL_ID: *pool-id
-      RUNNERHUB_SCALESET_NAME: *scaleset-name
-      RUNNERHUB_MAX_RUNNERS: *max-runners
-      RUNNERHUB_RUNNER_GROUP_ID: "1"
-      RUNNERHUB_RUNNER_IMAGE: *runner-image
-      RUNNERHUB_POOL_ISOLATION: *pool-isolation
-      RUNNERHUB_POOL_CPU_MILLIS: "4000"
-      RUNNERHUB_POOL_MEMORY_BYTES: "8589934592"
-      RUNNERHUB_POOL_DISK_BYTES: "21474836480"
-      RUNNERHUB_BOOTSTRAP_TIMEOUT_SECONDS: "180"
-    volumes:
-      - type: bind
-        source: *secrets-path
-        target: /run/runnerhub-secrets
-        read_only: true
-
   scaleset:
     image: *scaleset-image
     pull_policy: always
     restart: unless-stopped
     depends_on:
-      bootstrap:
-        condition: service_completed_successfully
+      control:
+        condition: service_healthy
+      agent:
+        condition: service_healthy
     labels:
       io.runnerhub.component: scaleset
-      io.runnerhub.pool: *pool-id
-      io.runnerhub.scale-set: *scaleset-name
     environment:
-      RUNNERHUB_GITHUB_URL: *github-url
-      RUNNERHUB_SCALESET_NAME: *scaleset-name
-      RUNNERHUB_POOL_ID: *pool-id
+      RUNNERHUB_DYNAMIC_CONFIG: "true"
       RUNNERHUB_CONTROL_URL: http://control:8080
       RUNNERHUB_CONTROL_TOKEN_FILE: /run/runnerhub-secrets/scaleset-key
-      RUNNERHUB_MIN_RUNNERS: "0"
-      RUNNERHUB_MAX_RUNNERS: *max-runners
-      RUNNERHUB_RUNNER_GROUP: ""
       RUNNERHUB_GITHUB_APP_CLIENT_ID: *github-client-id
-      RUNNERHUB_GITHUB_APP_INSTALLATION_ID: *github-installation-id
       RUNNERHUB_GITHUB_APP_PRIVATE_KEY_FILE: /run/secrets/runnerhub-github-app
       RUNNERHUB_ALLOW_INSECURE_HTTP: "true"
     secrets:

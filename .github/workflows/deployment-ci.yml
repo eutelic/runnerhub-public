@@ -48,7 +48,9 @@ jobs:
           trap 'rm -rf "$tmp"' EXIT
           envfile="$tmp/runnerhub.env"
           keyfile="$tmp/github-app.pem"
+          client_secret_file="$tmp/github-client-secret"
           openssl genrsa -out "$keyfile" 2048 >/dev/null 2>&1
+          printf '%s\n' 'ci-github-client-secret' > "$client_secret_file"
 
           printf '%s\n' \
             'RUNNERHUB_ENROLLMENT_TOKEN=ci-enrollment' \
@@ -58,6 +60,9 @@ jobs:
             'RUNNERHUB_API_KEYS=ci-admin:admin:local-admin,ci-scaler:scaler:scaleset-listener' \
             'RUNNERHUB_GITHUB_APP_ISSUER=Iv1.ci' \
             'RUNNERHUB_GITHUB_APP_INSTALLATION_ID=12345678' \
+            'RUNNERHUB_GITHUB_APP_SLUG=runnerhub-ci' \
+            'RUNNERHUB_PUBLIC_URL=http://127.0.0.1:8080' \
+            "RUNNERHUB_GITHUB_CLIENT_SECRET_FILE=$client_secret_file" \
             "RUNNERHUB_GITHUB_APP_PRIVATE_KEY_FILE=$keyfile" \
             'RUNNERHUB_GITHUB_URL=https://github.com/acme/app' > "$envfile"
 
@@ -145,7 +150,8 @@ jobs:
 
           mkdir -p "$root/data" "$root/agent" "$root/secrets"
           openssl genrsa -out "$root/secrets/github-app.pem" 2048 >/dev/null 2>&1
-          chmod 0600 "$root/secrets/github-app.pem"
+          printf '%s\n' 'ci-github-client-secret' > "$root/secrets/github-client-secret"
+          chmod 0600 "$root/secrets/github-app.pem" "$root/secrets/github-client-secret"
 
           sed \
             -e "s|/mnt/POOL/runnerhub|$root|g" \
@@ -155,8 +161,8 @@ jobs:
             -e 's|ghcr.io/eutelic/runnerhub-scaleset:latest|runnerhub-ci-scaleset|g' \
             -e 's|pull_policy: always|pull_policy: never|g' \
             -e 's|Iv1.CHANGE_ME|Iv1.ci|g' \
-            -e 's|CHANGE_ME_INSTALLATION_ID|12345678|g' \
-            -e 's|https://github.com/OWNER/REPOSITORY|https://github.com/acme/app|g' \
+            -e 's|CHANGE_ME_APP_SLUG|runnerhub-ci|g' \
+            -e "s|http://TRUENAS_HOST:8787|http://127.0.0.1:$port|g" \
             -e "s|published: \"8787\"|published: \"$port\"|g" \
             deploy/truenas/compose.yaml > "$compose_file"
 

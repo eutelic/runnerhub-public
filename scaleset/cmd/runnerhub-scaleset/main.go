@@ -321,27 +321,207 @@ func (s *scaler) HandleJobCompleted(ctx context.Context, info *scaleset.JobCompl
 	return nil
 }
 
+type managedConfig struct {
+	RegistrationURL   string   `json:"registrationUrl"`
+	Name              string   `json:"name"`
+	Labels            []string `json:"labels,omitempty"`
+	RunnerGroup       string   `json:"runnerGroup,omitempty"`
+	PoolID            string   `json:"poolId"`
+	MinRunners        int      `json:"minRunners"`
+	MaxRunners        int      `json:"maxRunners"`
+	AppInstallationID int64    `json:"appInstallationId"`
+}
+
+type managedListener struct {
+	cancel      context.CancelFunc
+	fingerprint string
+}
+
+type listenerResult struct {
+	key         string
+	fingerprint string
+	err         error
+}
+
 func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
+
+	dynamic, err := boolEnv("RUNNERHUB_DYNAMIC_CONFIG", false)
+	if err != nil {
+		slog.Error("configuration", "error", err)
+		os.Exit(2)
+	}
+	if dynamic {
+		base, err := loadManagerConfig()
+		if err != nil {
+			slog.Error("configuration", "error", err)
+			os.Exit(2)
+		}
+		if err := runDynamicManager(ctx, base); err != nil && !errors.Is(err, context.Canceled) {
+			slog.Error("scale-set manager stopped", "error", err)
+			os.Exit(1)
+		}
+		return
+	}
 
 	c, err := loadConfig()
 	if err != nil {
 		slog.Error("configuration", "error", err)
 		os.Exit(2)
 	}
+	if err := runListener(ctx, c); err != nil && !errors.Is(err, context.Canceled) {
+		slog.Error("listener stopped", "error", err)
+		os.Exit(1)
+	}
+}
+
+func loadManagerConfig() (config, error) {
+	c := config{
+		ControlURL:   strings.TrimRight(os.Getenv("RUNNERHUB_CONTROL_URL"), "/"),
+		ControlToken: os.Getenv("RUNNERHUB_CONTROL_TOKEN"),
+		PAT:          os.Getenv("RUNNERHUB_GITHUB_TOKEN"),
+		AppClientID:  os.Getenv("RUNNERHUB_GITHUB_APP_CLIENT_ID"),
+	}
+	var err error
+	if c.AllowInsecureHTTP, err = boolEnv("RUNNERHUB_ALLOW_INSECURE_HTTP", false); err != nil {
+		return c, err
+	}
+	if path := os.Getenv("RUNNERHUB_GITHUB_APP_PRIVATE_KEY_FILE"); path != "" {
+		b, err := os.ReadFile(path)
+		if err != nil {
+			return c, fmt.Errorf("read github app key: %w", err)
+		}
+		c.AppPrivateKey = string(b)
+	}
+	if c.ControlURL == "" {
+		return c, errors.New("RUNNERHUB_CONTROL_URL is required in dynamic mode")
+	}
+	if err := requireProtectedURL(c.ControlURL, c.AllowInsecureHTTP, "RunnerHub control"); err != nil {
+		return c, err
+	}
+	if c.ControlToken == "" && !loopbackURL(c.ControlURL) {
+		return c, errors.New("RUNNERHUB_CONTROL_TOKEN is required for a non-loopback control URL")
+	}
+	app := scaleset.GitHubAppAuth{ClientID: c.AppClientID, InstallationID: 1, PrivateKey: c.AppPrivateKey}
+	if app.Validate() != nil && c.PAT == "" {
+		return c, errors.New("github app client id/private key or RUNNERHUB_GITHUB_TOKEN are required")
+	}
+	return c, nil
+}
+
+func runDynamicManager(ctx context.Context, base config) error {
+	hub := runnerHubClient{
+		base:  base.ControlURL,
+		token: base.ControlToken,
+		http:  &http.Client{Timeout: 30 * time.Second},
+	}
+	active := map[string]managedListener{}
+	results := make(chan listenerResult, 32)
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
+	ready := false
+
+	reconcile := func() {
+		var remote []managedConfig
+		if err := hub.do(ctx, http.MethodGet, "/api/v1/scalesets/configs", nil, &remote); err != nil {
+			slog.Error("load dynamic scale-set configs", "error", err)
+			return
+		}
+		desired := map[string]managedConfig{}
+		for _, item := range remote {
+			if item.PoolID == "" || item.RegistrationURL == "" || item.Name == "" || item.AppInstallationID <= 0 {
+				slog.Error("ignoring invalid dynamic scale-set config", "pool", item.PoolID, "registrationURL", item.RegistrationURL)
+				continue
+			}
+			desired[item.PoolID] = item
+		}
+		for key, running := range active {
+			item, ok := desired[key]
+			if !ok || configFingerprint(item) != running.fingerprint {
+				running.cancel()
+				delete(active, key)
+			}
+		}
+		for key, item := range desired {
+			if _, ok := active[key]; ok {
+				continue
+			}
+			c := configFromManaged(base, item)
+			childCtx, childCancel := context.WithCancel(ctx)
+			fingerprint := configFingerprint(item)
+			active[key] = managedListener{cancel: childCancel, fingerprint: fingerprint}
+			go func(key, fingerprint string, cfg config) {
+				err := runListener(childCtx, cfg)
+				results <- listenerResult{key: key, fingerprint: fingerprint, err: err}
+			}(key, fingerprint, c)
+		}
+		if !ready {
+			ready = true
+			slog.Info("scale-set manager ready", "listeners", len(active))
+		}
+	}
+
+	reconcile()
+	for {
+		select {
+		case <-ctx.Done():
+			for _, running := range active {
+				running.cancel()
+			}
+			return ctx.Err()
+		case <-ticker.C:
+			reconcile()
+		case result := <-results:
+			running, ok := active[result.key]
+			if ok && running.fingerprint == result.fingerprint {
+				delete(active, result.key)
+			}
+			if result.err != nil && !errors.Is(result.err, context.Canceled) {
+				slog.Error("managed scale-set listener stopped", "pool", result.key, "error", result.err)
+			}
+		}
+	}
+}
+
+func configFingerprint(c managedConfig) string {
+	b, _ := json.Marshal(c)
+	return string(b)
+}
+
+func configFromManaged(base config, remote managedConfig) config {
+	c := base
+	c.RegistrationURL = remote.RegistrationURL
+	c.Name = remote.Name
+	c.Labels = remote.Labels
+	c.RunnerGroup = remote.RunnerGroup
+	c.PoolID = remote.PoolID
+	c.MinRunners = remote.MinRunners
+	c.MaxRunners = remote.MaxRunners
+	c.AppInstallationID = remote.AppInstallationID
+	if c.RunnerGroup == "" {
+		c.RunnerGroup = scaleset.DefaultRunnerGroup
+	}
+	return c
+}
+
+func runListener(ctx context.Context, c config) error {
+	if c.MaxRunners < 1 || c.MinRunners < 0 || c.MinRunners > c.MaxRunners {
+		return errors.New("invalid min/max runner values")
+	}
+	if err := requireProtectedURL(c.RegistrationURL, c.AllowInsecureHTTP, "GitHub registration"); err != nil {
+		return err
+	}
 	gh, err := c.client()
 	if err != nil {
-		slog.Error("github client", "error", err)
-		os.Exit(2)
+		return fmt.Errorf("github client: %w", err)
 	}
 
 	groupID := 1
 	if c.RunnerGroup != scaleset.DefaultRunnerGroup {
 		g, err := gh.GetRunnerGroupByName(ctx, c.RunnerGroup)
 		if err != nil {
-			slog.Error("runner group", "error", err)
-			os.Exit(1)
+			return fmt.Errorf("runner group: %w", err)
 		}
 		groupID = g.ID
 	}
@@ -356,8 +536,7 @@ func main() {
 
 	set, err := gh.GetRunnerScaleSet(ctx, groupID, c.Name)
 	if err != nil {
-		slog.Error("get scale set", "error", err)
-		os.Exit(1)
+		return fmt.Errorf("get scale set: %w", err)
 	}
 	if set == nil {
 		set, err = gh.CreateRunnerScaleSet(ctx, &scaleset.RunnerScaleSet{
@@ -367,12 +546,10 @@ func main() {
 			RunnerSetting: scaleset.RunnerSetting{DisableUpdate: true},
 		})
 		if err != nil {
-			slog.Error("create scale set", "error", err)
-			os.Exit(1)
+			return fmt.Errorf("create scale set: %w", err)
 		}
 	} else if err := validateExistingScaleSet(set, groupID, labels); err != nil {
-		slog.Error("existing scale set", "error", err)
-		os.Exit(1)
+		return fmt.Errorf("existing scale set: %w", err)
 	}
 
 	gh.SetSystemInfo(scaleset.SystemInfo{
@@ -391,22 +568,19 @@ func main() {
 	}
 	limit, err := hub.poolLimit(ctx)
 	if err != nil {
-		slog.Error("runnerhub pool", "error", err)
-		os.Exit(1)
+		return fmt.Errorf("runnerhub pool: %w", err)
 	}
 	if limit > 0 && c.MaxRunners > limit {
-		slog.Warn("clamping scale-set max runners to pool max concurrency", "configured", c.MaxRunners, "poolMax", limit)
+		slog.Warn("clamping scale-set max runners to pool max concurrency", "configured", c.MaxRunners, "poolMax", limit, "pool", c.PoolID)
 		c.MaxRunners = limit
 	}
 	if c.MinRunners > c.MaxRunners {
-		slog.Error("min runners exceeds effective pool maximum")
-		os.Exit(2)
+		return errors.New("min runners exceeds effective pool maximum")
 	}
 
 	names, err := hub.activeWorkers(ctx)
 	if err != nil {
-		slog.Error("recover active workers", "error", err)
-		os.Exit(1)
+		return fmt.Errorf("recover active workers: %w", err)
 	}
 
 	hostname, _ := os.Hostname()
@@ -415,15 +589,13 @@ func main() {
 	}
 	sessions, err := gh.MessageSessionClient(ctx, set.ID, hostname)
 	if err != nil {
-		slog.Error("message session", "error", err)
-		os.Exit(1)
+		return fmt.Errorf("message session: %w", err)
 	}
 	defer sessions.Close(context.Background())
 
 	l, err := listener.New(sessions, listener.Config{ScaleSetID: set.ID, MaxRunners: c.MaxRunners, Logger: slog.Default()})
 	if err != nil {
-		slog.Error("listener", "error", err)
-		os.Exit(1)
+		return fmt.Errorf("listener: %w", err)
 	}
 	sc := &scaler{
 		names:      names,
@@ -435,14 +607,11 @@ func main() {
 		logger:     slog.Default(),
 	}
 
-	// start-docker.sh waits for this signal. Everything that can fail during
-	// configuration, authentication, scale-set lookup, pool lookup and message
-	// session creation has succeeded by this point.
 	slog.Info("scale-set listener ready", "name", c.Name, "scaleSetID", set.ID, "pool", c.PoolID, "maxRunners", c.MaxRunners)
 	if err := l.Run(ctx, sc); err != nil && !errors.Is(err, context.Canceled) {
-		slog.Error("listener stopped", "error", err)
-		os.Exit(1)
+		return err
 	}
+	return ctx.Err()
 }
 
 func validateExistingScaleSet(set *scaleset.RunnerScaleSet, groupID int, want []scaleset.Label) error {
