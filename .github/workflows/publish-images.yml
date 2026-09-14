@@ -19,6 +19,7 @@ on:
       - 'go.mod'
       - 'go.sum'
       - 'scaleset/**'
+      - 'scripts/validate-release-local.sh'
   workflow_dispatch:
 
 permissions:

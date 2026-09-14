@@ -121,7 +121,10 @@ bash deploy/truenas/test-verify-image-set.sh
 step 'Validate Compose configurations'
 envfile="$tmp/runnerhub.env"
 keyfile="$tmp/github-app.pem"
+clientsecretfile="$tmp/github-client-secret"
 openssl genrsa -out "$keyfile" 2048 >/dev/null 2>&1
+printf '%s\n' 'local-github-client-secret' > "$clientsecretfile"
+chmod 0600 "$clientsecretfile"
 printf '%s\n' \
   'RUNNERHUB_ENROLLMENT_TOKEN=local-enrollment' \
   'RUNNERHUB_AGENT_SECRET=local-agent-secret-012345678901234567890123456789' \
@@ -131,6 +134,9 @@ printf '%s\n' \
   'RUNNERHUB_GITHUB_APP_ISSUER=Iv1.local' \
   'RUNNERHUB_GITHUB_APP_INSTALLATION_ID=12345678' \
   "RUNNERHUB_GITHUB_APP_PRIVATE_KEY_FILE=$keyfile" \
+  "RUNNERHUB_GITHUB_CLIENT_SECRET_FILE=$clientsecretfile" \
+  'RUNNERHUB_GITHUB_APP_SLUG=runnerhub-local' \
+  'RUNNERHUB_PUBLIC_URL=http://127.0.0.1:8080' \
   'RUNNERHUB_GITHUB_URL=https://github.com/acme/app' > "$envfile"
 chmod 0600 "$envfile"
 
