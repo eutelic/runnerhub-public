@@ -148,3 +148,51 @@ func TestHelpers(t *testing.T) {
 		t.Fatal("remote HTTP accepted")
 	}
 }
+
+
+func TestAllDesiredListenersReady(t *testing.T) {
+	if !allDesiredListenersReady(map[string]managedConfig{}, map[string]managedListener{}) {
+		t.Fatal("zero desired listeners should be ready")
+	}
+	desired := map[string]managedConfig{"pool-a": {PoolID: "pool-a"}}
+	if allDesiredListenersReady(desired, map[string]managedListener{}) {
+		t.Fatal("missing listener reported ready")
+	}
+	active := map[string]managedListener{"pool-a": {ready: false}}
+	if allDesiredListenersReady(desired, active) {
+		t.Fatal("starting listener reported ready")
+	}
+	active["pool-a"] = managedListener{ready: true}
+	if !allDesiredListenersReady(desired, active) {
+		t.Fatal("ready listener was not recognized")
+	}
+	desired["pool-b"] = managedConfig{PoolID: "pool-b"}
+	if allDesiredListenersReady(desired, active) {
+		t.Fatal("partially ready listener set reported ready")
+	}
+}
+
+func TestScaleSetStatusPostsPoolState(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/api/v1/scalesets/status" {
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer admin" {
+			t.Fatalf("authorization=%q", got)
+		}
+		var body map[string]string
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		if body["poolId"] != "pool-a" || body["state"] != "error" || body["detail"] != "boom" {
+			t.Fatalf("body=%v", body)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+
+	client := runnerHubClient{base: srv.URL, token: "admin", http: srv.Client()}
+	if err := client.scaleSetStatus(context.Background(), "pool-a", "error", "boom"); err != nil {
+		t.Fatal(err)
+	}
+}

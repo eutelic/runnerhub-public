@@ -82,32 +82,51 @@ async function refresh(){
       j('/api/v1/hosts'),
       j('/api/v1/pools'),
       j('/api/v1/workers'),
-      j('/api/v1/audit?limit=20')
+      j('/api/v1/audit?limit=20'),
+      j('/api/v1/scalesets/status')
     ];
     if(auth.authenticated)requests.push(j('/api/v1/github/connected-repositories'));
     const results=await Promise.all(requests);
-    const [h,p,w,a,repos]=results;
+    const [h,p,w,a,statuses,repos]=results;
+    const runtime=new Map((statuses||[]).map(x=>[x.poolId,x]));
     els.hosts.innerHTML=tab(h,[['Name',x=>x.name],['State',x=>x.state],['Provider',x=>x.provider],['CPU',x=>x.capacity?.cpuMillis?x.capacity.cpuMillis/1000+' cores':'unknown']]);
-    els.pools.innerHTML=tab(p,[['Name',x=>x.name],['Repository',x=>x.scope?.repository?x.scope.owner+'/'+x.scope.repository:x.scope?.owner||''],['runs-on',x=>(x.labels||[]).join(', ')],['Max',x=>x.maxConcurrency]]);
+    els.pools.innerHTML=tab(p,[['Name',x=>x.name],['Repository',x=>x.scope?.repository?x.scope.owner+'/'+x.scope.repository:x.scope?.owner||''],['runs-on',x=>(x.labels||[]).join(', ')],['Listener',x=>runtime.get(x.id)?.state||'pending'],['Max',x=>x.maxConcurrency]]);
     els.workers.innerHTML=tab(w,[['Runner',x=>x.runnerName],['State',x=>x.state],['Host',x=>x.hostId],['Repo',x=>x.repository||''],['Job',x=>x.jobName||'']]);
     els.audit.innerHTML=tab(a,[['When',x=>x.createdAt],['Action',x=>x.action],['Result',x=>x.result],['Detail',x=>x.safeDetail||'']]);
-    if(auth.authenticated)renderRepos(repos||[],p||[]);
+    if(auth.authenticated)renderRepos(repos||[],p||[],statuses||[]);
   }catch(e){message(e.message,'error')}
 }
 
-function renderRepos(repos,pools){
-  const connected=new Set((pools||[]).filter(p=>p.scope?.kind==='repository').map(p=>(p.scope.owner+'/'+p.scope.repository).toLowerCase()));
+function renderRepos(repos,pools,statuses){
+  const poolsByRepo=new Map((pools||[])
+    .filter(p=>p.scope?.kind==='repository')
+    .map(p=>[(p.scope.owner+'/'+p.scope.repository).toLowerCase(),p]));
+  const statusByPool=new Map((statuses||[]).map(s=>[s.poolId,s]));
   if(!repos.length){
     els.repos.innerHTML='<div class="empty">No repositories are available through the GitHub App installation. Use <strong>Install / manage repositories</strong> to grant access.</div>';
     return;
   }
   els.repos.innerHTML=repos.map(repo=>{
-    const isConnected=connected.has(repo.fullName.toLowerCase());
+    const pool=poolsByRepo.get(repo.fullName.toLowerCase());
+    const status=pool?statusByPool.get(pool.id):null;
     const privacy=repo.private?'Private':'Public';
+    let action='';
+    let detail='';
+    if(pool){
+      const state=status?.state||'pending';
+      if(state==='ready')action='<span class="badge">Ready</span>';
+      else if(state==='error')action='<span class="badge warn">Error</span>';
+      else if(state==='starting')action='<span class="badge warn">Starting</span>';
+      else action='<span class="badge warn">Pending</span>';
+      if(status?.detail)detail='<div class="muted">'+esc(status.detail)+'</div>';
+    }else if(repo.private){
+      action='<button data-repo="'+esc(repo.fullName)+'" data-installation="'+esc(repo.installationId)+'">Connect</button>';
+    }else{
+      action='<span class="badge warn">Public unsupported</span>';
+    }
     return '<article class="repo">'+
-      '<div><strong>'+esc(repo.fullName)+'</strong><div class="muted">'+esc(privacy)+' · '+esc(repo.defaultBranch||'')+'</div></div>'+
-      (isConnected?'<span class="badge">Connected</span>':
-        repo.private?'<button data-repo="'+esc(repo.fullName)+'" data-installation="'+esc(repo.installationId)+'">Connect</button>':'<span class="badge warn">Public unsupported</span>')+
+      '<div><strong>'+esc(repo.fullName)+'</strong><div class="muted">'+esc(privacy)+' · '+esc(repo.defaultBranch||'')+'</div>'+detail+'</div>'+
+      action+
       '</article>';
   }).join('');
 }
@@ -121,7 +140,7 @@ async function connectRepository(button){
       headers:{'content-type':'application/json'},
       body:JSON.stringify({installationId:Number(button.dataset.installation),repository:button.dataset.repo,scaleSetName:'runnerhub',maxConcurrency:2})
     });
-    message(button.dataset.repo+' connected. Use runs-on: runnerhub in that repository.','success');
+    message(button.dataset.repo+' connection requested. Waiting for the GitHub scale-set listener to become ready.','success');
     await refresh();
   }catch(e){message(e.message,'error');button.disabled=false}
 }

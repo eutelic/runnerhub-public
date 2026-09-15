@@ -115,6 +115,13 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json(200,pools); return
             if self.path=="/api/v1/workers":
                 self.send_json(200,[]); return
+            if self.path=="/api/v1/scalesets/status":
+                mode=os.environ.get("TEST_POOLS","none")
+                if mode=="configured":
+                    state=os.environ.get("TEST_LISTENER_STATE","ready")
+                    detail="" if state=="ready" else "simulated listener failure"
+                    self.send_json(200,[{"poolId":"pool-docker","state":state,"detail":detail}]); return
+                self.send_json(200,[]); return
         elif auth==f"Bearer {SCALER}":
             if self.path=="/api/v1/workers":
                 self.send_json(200,[]); return
@@ -174,6 +181,7 @@ for _ in $(seq 1 50); do
 done
 PATH="$tmp/bin:$PATH" bash "$verify" "$root" "http://127.0.0.1:$port" pool-docker runnerhub container-trusted > "$tmp/post-onboarding.log"
 grep -Fq '[ ok ] expected pool pool-docker: isolation=container-trusted runs-on=runnerhub maxConcurrency=2 image=ghcr.io/actions/actions-runner:latest' "$tmp/post-onboarding.log"
+grep -Fq '[ ok ] scale-set listener for pool-docker is ready' "$tmp/post-onboarding.log"
 
 managed_dir="$tmp/scale-secrets/secrets"
 mkdir -p "$managed_dir"

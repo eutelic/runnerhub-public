@@ -77,7 +77,7 @@ The release Compose stack starts:
 - Docker host agent;
 - dynamic scale-set manager.
 
-The manager can be healthy with zero connected repositories.
+The manager can be healthy with zero connected repositories. After repositories are connected, manager health requires every configured repository listener to be ready; a failed listener makes the manager unhealthy until reconciliation recovers it.
 
 ## 3. Sign in
 
@@ -117,7 +117,10 @@ RunnerHub:
 2. creates a repository-scoped RunnerHub pool;
 3. associates the GitHub installation ID with the pool;
 4. exposes the pool to the dynamic scale-set manager;
-5. starts an outbound listener for that repository.
+5. starts an outbound listener for that repository;
+6. marks the repository **Ready** only after GitHub scale-set creation/discovery and message-session setup succeed.
+
+The dashboard reports **Pending**, **Starting**, **Ready**, or **Error**. A saved RunnerHub pool alone is not presented as a successful GitHub connection, and listener failures remain visible while the manager retries them.
 
 No Compose edit or service restart is required.
 

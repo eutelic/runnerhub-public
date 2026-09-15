@@ -1,31 +1,18 @@
 package main
 
 import (
-	"bytes"
-	"context"
-	"io"
-	"log/slog"
 	"os"
 	"path/filepath"
 	"testing"
 )
 
-func TestReadinessHandlerMarksOnlyReadyBoundary(t *testing.T) {
-	t.Parallel()
-
+func TestSetReadinessWritesAndClearsMarker(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "scaleset-ready")
-	h := &readinessHandler{
-		next: slog.NewTextHandler(io.Discard, nil),
-		path: path,
-	}
-	logger := slog.New(h).With("test", true)
+	t.Setenv("RUNNERHUB_READY_FILE", path)
 
-	logger.Info("listener starting")
-	if _, err := os.Stat(path); !os.IsNotExist(err) {
-		t.Fatalf("readiness file exists before ready boundary: %v", err)
+	if err := setReadiness(true); err != nil {
+		t.Fatal(err)
 	}
-
-	logger.Info(scaleSetReadyMessage, "scaleSetID", 42)
 	got, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("read readiness file: %v", err)
@@ -40,51 +27,35 @@ func TestReadinessHandlerMarksOnlyReadyBoundary(t *testing.T) {
 	if info.Mode().Perm() != 0o600 {
 		t.Fatalf("readiness mode = %o, want 600", info.Mode().Perm())
 	}
+
+	if err := setReadiness(false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("readiness marker still exists after clearing: %v", err)
+	}
 }
 
-func TestReadinessHandlerSupportsGroups(t *testing.T) {
-	t.Parallel()
-
-	path := filepath.Join(t.TempDir(), "ready")
-	base := &readinessHandler{next: slog.NewTextHandler(io.Discard, nil), path: path}
-	logger := slog.New(base).WithGroup("listener").With("component", "scaleset")
-	logger.Info(scaleSetReadyMessage)
-	if _, err := os.Stat(path); err != nil {
-		t.Fatalf("grouped logger did not create readiness file: %v", err)
+func TestSetReadinessWithoutConfiguredPathIsNoop(t *testing.T) {
+	t.Setenv("RUNNERHUB_READY_FILE", "")
+	if err := setReadiness(true); err != nil {
+		t.Fatal(err)
+	}
+	if err := setReadiness(false); err != nil {
+		t.Fatal(err)
 	}
 }
 
 func TestWriteReadinessFileFailure(t *testing.T) {
-	t.Parallel()
-
 	path := filepath.Join(t.TempDir(), "missing", "ready")
 	if err := writeReadinessFile(path); err == nil {
 		t.Fatal("writeReadinessFile unexpectedly succeeded without parent directory")
 	}
 }
 
-func TestMainStillEmitsReadinessBoundary(t *testing.T) {
-	t.Parallel()
-
-	source, err := os.ReadFile("main.go")
-	if err != nil {
-		t.Fatalf("read main.go: %v", err)
-	}
-	want := []byte(`slog.Info("scale-set listener ready"`)
-	if !bytes.Contains(source, want) {
-		t.Fatalf("main.go no longer emits readiness boundary %q; update the readiness health contract deliberately", scaleSetReadyMessage)
-	}
-}
-
-func TestReadinessHandlerKeepsInfoObservable(t *testing.T) {
-	t.Parallel()
-
-	next := slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelWarn})
-	h := &readinessHandler{next: next, path: filepath.Join(t.TempDir(), "ready")}
-	if !h.Enabled(context.Background(), slog.LevelInfo) {
-		t.Fatal("readiness handler must keep Info records observable for the readiness boundary")
-	}
-	if !h.Enabled(context.Background(), slog.LevelError) {
-		t.Fatal("readiness handler should preserve enabled downstream levels")
+func TestClearReadinessFileMissingIsNoop(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "missing")
+	if err := clearReadinessFile(path); err != nil {
+		t.Fatalf("clear missing readiness file: %v", err)
 	}
 }

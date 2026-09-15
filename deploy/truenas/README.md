@@ -219,7 +219,7 @@ agent
 dynamic scale-set manager
 ```
 
-The scale-set manager is healthy even when zero repositories are connected. When a repo is connected from the dashboard, it automatically starts a listener for that repo.
+The scale-set manager is healthy with zero repositories connected. Once repositories are connected, it reports healthy only when every configured repository listener has reached GitHub scale-set/message-session readiness. A listener failure clears readiness until reconciliation succeeds again.
 
 No bootstrap container needs to create a repository pool before the UI can start.
 
@@ -286,7 +286,10 @@ RunnerHub then:
 3. stores the GitHub installation ID with that pool;
 4. exposes it to the dynamic scale-set manager;
 5. starts an outbound GitHub scale-set listener;
-6. creates/resolves the `runnerhub` scale set.
+6. creates/resolves the `runnerhub` scale set;
+7. reports **Ready** only after the GitHub scale-set listener and message session are established.
+
+The dashboard shows **Pending/Starting/Ready/Error** per repository. Creating the local pool is not treated as a successful GitHub connection. Listener failures are surfaced in the dashboard and retried by the dynamic manager.
 
 No Compose edit or container restart is required.
 
@@ -329,7 +332,7 @@ sudo bash deploy/truenas/verify.sh \
   container-trusted
 ```
 
-The pool ID is visible through the RunnerHub API/dashboard.
+The pool ID is visible through the RunnerHub API/dashboard. When a pool ID is supplied, the verifier also requires that pool's runtime scale-set listener status to be `ready`.
 
 ## Docker workflow compatibility
 

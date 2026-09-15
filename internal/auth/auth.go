@@ -138,7 +138,7 @@ func scalerAllowed(r *http.Request) bool {
 	if r.Method != http.MethodPost {
 		return false
 	}
-	if path == "/api/v1/scale-events" {
+	if path == "/api/v1/scale-events" || path == "/api/v1/scalesets/status" {
 		return true
 	}
 	const prefix = "/api/v1/pools/"

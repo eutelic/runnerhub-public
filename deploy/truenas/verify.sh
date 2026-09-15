@@ -125,7 +125,8 @@ unset admin_key scaleset_key unauth_status
 curl --config "$tmp/curl-admin.conf" --fail --silent --show-error "$control_url/api/v1/hosts" > "$tmp/hosts.json" || fail "authenticated hosts API failed"
 curl --config "$tmp/curl-admin.conf" --fail --silent --show-error "$control_url/api/v1/pools" > "$tmp/pools.json" || fail "authenticated pools API failed"
 curl --config "$tmp/curl-admin.conf" --fail --silent --show-error "$control_url/api/v1/workers" > "$tmp/workers.json" || fail "authenticated workers API failed"
-ok "admin credential can read hosts, pools, and workers"
+curl --config "$tmp/curl-admin.conf" --fail --silent --show-error "$control_url/api/v1/scalesets/status" > "$tmp/scaleset-status.json" || fail "authenticated scale-set status API failed"
+ok "admin credential can read hosts, pools, workers, and scale-set status"
 
 curl --config "$tmp/curl-scaleset.conf" --fail --silent --show-error "$control_url/api/v1/workers" >/dev/null || fail "scale-set credential cannot read workers"
 curl --config "$tmp/curl-scaleset.conf" --fail --silent --show-error "$control_url/api/v1/scalesets/configs" >/dev/null || fail "scale-set credential cannot read dynamic listener configs"
@@ -133,12 +134,13 @@ scaleset_hosts_status="$(curl --config "$tmp/curl-scaleset.conf" --silent --outp
 [ "$scaleset_hosts_status" = "403" ] || fail "scale-set credential should be forbidden from reading hosts, got ${scaleset_hosts_status:-no status}"
 ok "scale-set credential remains constrained to its expected API surface"
 
-python3 - "$tmp/hosts.json" "$tmp/pools.json" "$tmp/workers.json" "$expected_pool_id" "$expected_label" "$expected_isolation" <<'PY'
+python3 - "$tmp/hosts.json" "$tmp/pools.json" "$tmp/workers.json" "$tmp/scaleset-status.json" "$expected_pool_id" "$expected_label" "$expected_isolation" <<'PY'
 import json, sys
 hosts=json.load(open(sys.argv[1]))
 pools=json.load(open(sys.argv[2]))
 workers=json.load(open(sys.argv[3]))
-pool_id,label,isolation=sys.argv[4:7]
+statuses=json.load(open(sys.argv[4]))
+pool_id,label,isolation=sys.argv[5:8]
 online=[h for h in hosts if h.get("provider")=="docker" and h.get("state")=="online"]
 if not online:
     raise SystemExit("[fail] no online Docker host is registered")
@@ -154,8 +156,16 @@ if pool_id:
     if isolation and pool.get("isolation")!=isolation:
         raise SystemExit(f"[fail] expected pool {pool_id!r} isolation {isolation!r}; found {pool.get('isolation')!r}")
     print(f"[ ok ] expected pool {pool_id}: isolation={pool.get('isolation')} runs-on={','.join(labels)} maxConcurrency={pool.get('maxConcurrency')} image={pool.get('image')}")
+    runtime=[s for s in statuses if s.get("poolId")==pool_id]
+    if len(runtime)!=1:
+        raise SystemExit(f"[fail] expected one scale-set runtime status for {pool_id!r}, found {len(runtime)}")
+    if runtime[0].get("state")!="ready":
+        raise SystemExit(f"[fail] scale-set listener for {pool_id!r} is not ready: state={runtime[0].get('state')!r} detail={runtime[0].get('detail','')!r}")
+    print(f"[ ok ] scale-set listener for {pool_id} is ready")
 elif pools:
-    print(f"[note] repositories already connected: {len(pools)} pool(s)")
+    by_pool={s.get("poolId"):s for s in statuses}
+    summary=", ".join(f"{p.get('id')}={by_pool.get(p.get('id'),{}).get('state','unknown')}" for p in pools)
+    print(f"[note] repositories already connected: {len(pools)} pool(s); listener states: {summary}")
 else:
     print("[note] no repositories connected yet; finish setup from the RunnerHub dashboard")
 print(f"[note] workers recorded by control plane: {len(workers)}")

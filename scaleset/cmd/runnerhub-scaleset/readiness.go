@@ -1,59 +1,24 @@
 package main
 
 import (
-	"context"
 	"fmt"
-	"log/slog"
 	"os"
 	"strings"
 )
 
-const (
-	scaleSetReadyMessage = "scale-set listener ready"
-	scaleSetManagerReadyMessage = "scale-set manager ready"
-)
+func readinessPath() string {
+	return strings.TrimSpace(os.Getenv("RUNNERHUB_READY_FILE"))
+}
 
-func init() {
-	path := strings.TrimSpace(os.Getenv("RUNNERHUB_READY_FILE"))
+func setReadiness(ready bool) error {
+	path := readinessPath()
 	if path == "" {
-		return
-	}
-	slog.SetDefault(slog.New(&readinessHandler{next: slog.Default().Handler(), path: path}))
-}
-
-type readinessHandler struct {
-	next slog.Handler
-	path string
-}
-
-func (h *readinessHandler) Enabled(ctx context.Context, level slog.Level) bool {
-	// The readiness boundary is currently emitted at Info. Keep Info records
-	// observable by this wrapper even if a future downstream logger suppresses
-	// them; Handle still honors downstream filtering for normal log output.
-	return level == slog.LevelInfo || h.next.Enabled(ctx, level)
-}
-
-func (h *readinessHandler) Handle(ctx context.Context, record slog.Record) error {
-	if record.Message == scaleSetReadyMessage || record.Message == scaleSetManagerReadyMessage {
-		if err := writeReadinessFile(h.path); err != nil {
-			// Do not mask the original log record or alter listener process
-			// supervision. The missing marker intentionally leaves the container
-			// unhealthy, while this diagnostic explains why.
-			fmt.Fprintf(os.Stderr, "RunnerHub scale-set readiness marker: %v\n", err)
-		}
-	}
-	if !h.next.Enabled(ctx, record.Level) {
 		return nil
 	}
-	return h.next.Handle(ctx, record)
-}
-
-func (h *readinessHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
-	return &readinessHandler{next: h.next.WithAttrs(attrs), path: h.path}
-}
-
-func (h *readinessHandler) WithGroup(name string) slog.Handler {
-	return &readinessHandler{next: h.next.WithGroup(name), path: h.path}
+	if ready {
+		return writeReadinessFile(path)
+	}
+	return clearReadinessFile(path)
 }
 
 func writeReadinessFile(path string) error {
@@ -66,4 +31,12 @@ func writeReadinessFile(path string) error {
 		return fmt.Errorf("publish %s: %w", path, err)
 	}
 	return nil
+}
+
+func clearReadinessFile(path string) error {
+	err := os.Remove(path)
+	if err == nil || os.IsNotExist(err) {
+		return nil
+	}
+	return fmt.Errorf("remove %s: %w", path, err)
 }

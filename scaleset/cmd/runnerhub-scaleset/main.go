@@ -192,6 +192,14 @@ func (c runnerHubClient) poolLimit(ctx context.Context) (int, error) {
 	return 0, fmt.Errorf("runnerhub pool %q not found", c.poolID)
 }
 
+func (c runnerHubClient) scaleSetStatus(ctx context.Context, poolID, state, detail string) error {
+	return c.do(ctx, http.MethodPost, "/api/v1/scalesets/status", map[string]string{
+		"poolId": poolID,
+		"state":  state,
+		"detail": detail,
+	}, nil)
+}
+
 func (c runnerHubClient) do(ctx context.Context, method, path string, body any, out any) error {
 	var rd io.Reader
 	if body != nil {
@@ -335,11 +343,13 @@ type managedConfig struct {
 type managedListener struct {
 	cancel      context.CancelFunc
 	fingerprint string
+	ready       bool
 }
 
 type listenerResult struct {
 	key         string
 	fingerprint string
+	ready       bool
 	err         error
 }
 
@@ -370,7 +380,11 @@ func main() {
 		slog.Error("configuration", "error", err)
 		os.Exit(2)
 	}
-	if err := runListener(ctx, c); err != nil && !errors.Is(err, context.Canceled) {
+	if err := runListener(ctx, c, func() {
+		if err := setReadiness(true); err != nil {
+			slog.Error("publish scale-set readiness", "error", err)
+		}
+	}); err != nil && !errors.Is(err, context.Canceled) {
 		slog.Error("listener stopped", "error", err)
 		os.Exit(1)
 	}
@@ -417,51 +431,72 @@ func runDynamicManager(ctx context.Context, base config) error {
 		http:  &http.Client{Timeout: 30 * time.Second},
 	}
 	active := map[string]managedListener{}
-	results := make(chan listenerResult, 32)
+	desired := map[string]managedConfig{}
+	results := make(chan listenerResult, 64)
 	ticker := time.NewTicker(10 * time.Second)
 	defer ticker.Stop()
-	ready := false
+
+	updateReadiness := func() {
+		ready := allDesiredListenersReady(desired, active)
+		if err := setReadiness(ready); err != nil {
+			slog.Error("update scale-set manager readiness", "ready", ready, "error", err)
+		}
+	}
 
 	reconcile := func() {
 		var remote []managedConfig
 		if err := hub.do(ctx, http.MethodGet, "/api/v1/scalesets/configs", nil, &remote); err != nil {
+			_ = setReadiness(false)
 			slog.Error("load dynamic scale-set configs", "error", err)
 			return
 		}
-		desired := map[string]managedConfig{}
+		nextDesired := map[string]managedConfig{}
 		for _, item := range remote {
 			if item.PoolID == "" || item.RegistrationURL == "" || item.Name == "" || item.AppInstallationID <= 0 {
 				slog.Error("ignoring invalid dynamic scale-set config", "pool", item.PoolID, "registrationURL", item.RegistrationURL)
 				continue
 			}
-			desired[item.PoolID] = item
+			nextDesired[item.PoolID] = item
 		}
+		desired = nextDesired
+
 		for key, running := range active {
 			item, ok := desired[key]
 			if !ok || configFingerprint(item) != running.fingerprint {
 				running.cancel()
 				delete(active, key)
+				continue
 			}
+			state := "starting"
+			if running.ready {
+				state = "ready"
+			}
+			_ = hub.scaleSetStatus(ctx, key, state, "")
 		}
 		for key, item := range desired {
 			if _, ok := active[key]; ok {
 				continue
 			}
-			c := configFromManaged(base, item)
+			cfg := configFromManaged(base, item)
 			childCtx, childCancel := context.WithCancel(ctx)
 			fingerprint := configFingerprint(item)
 			active[key] = managedListener{cancel: childCancel, fingerprint: fingerprint}
+			_ = hub.scaleSetStatus(ctx, key, "starting", "")
+			slog.Info("starting managed scale-set listener", "pool", key, "repository", item.RegistrationURL, "name", item.Name)
 			go func(key, fingerprint string, cfg config) {
-				err := runListener(childCtx, cfg)
+				err := runListener(childCtx, cfg, func() {
+					results <- listenerResult{key: key, fingerprint: fingerprint, ready: true}
+				})
 				results <- listenerResult{key: key, fingerprint: fingerprint, err: err}
-			}(key, fingerprint, c)
+			}(key, fingerprint, cfg)
 		}
-		if !ready {
-			ready = true
-			slog.Info("scale-set manager ready", "listeners", len(active))
-		}
+		updateReadiness()
+		slog.Info("scale-set manager reconciled", "desired", len(desired), "active", len(active), "ready", allDesiredListenersReady(desired, active))
 	}
 
+	if err := setReadiness(false); err != nil {
+		slog.Error("clear initial scale-set readiness", "error", err)
+	}
 	reconcile()
 	for {
 		select {
@@ -469,19 +504,44 @@ func runDynamicManager(ctx context.Context, base config) error {
 			for _, running := range active {
 				running.cancel()
 			}
+			_ = setReadiness(false)
 			return ctx.Err()
 		case <-ticker.C:
 			reconcile()
 		case result := <-results:
 			running, ok := active[result.key]
-			if ok && running.fingerprint == result.fingerprint {
-				delete(active, result.key)
+			if !ok || running.fingerprint != result.fingerprint {
+				continue
 			}
+			if result.ready {
+				running.ready = true
+				active[result.key] = running
+				_ = hub.scaleSetStatus(ctx, result.key, "ready", "")
+				updateReadiness()
+				continue
+			}
+
+			delete(active, result.key)
 			if result.err != nil && !errors.Is(result.err, context.Canceled) {
+				_ = hub.scaleSetStatus(ctx, result.key, "error", result.err.Error())
 				slog.Error("managed scale-set listener stopped", "pool", result.key, "error", result.err)
 			}
+			updateReadiness()
 		}
 	}
+}
+
+func allDesiredListenersReady(desired map[string]managedConfig, active map[string]managedListener) bool {
+	if len(desired) == 0 {
+		return true
+	}
+	for key := range desired {
+		listener, ok := active[key]
+		if !ok || !listener.ready {
+			return false
+		}
+	}
+	return true
 }
 
 func configFingerprint(c managedConfig) string {
@@ -505,7 +565,7 @@ func configFromManaged(base config, remote managedConfig) config {
 	return c
 }
 
-func runListener(ctx context.Context, c config) error {
+func runListener(ctx context.Context, c config, onReady func()) error {
 	if c.MaxRunners < 1 || c.MinRunners < 0 || c.MinRunners > c.MaxRunners {
 		return errors.New("invalid min/max runner values")
 	}
@@ -608,6 +668,9 @@ func runListener(ctx context.Context, c config) error {
 	}
 
 	slog.Info("scale-set listener ready", "name", c.Name, "scaleSetID", set.ID, "pool", c.PoolID, "maxRunners", c.MaxRunners)
+	if onReady != nil {
+		onReady()
+	}
 	if err := l.Run(ctx, sc); err != nil && !errors.Is(err, context.Canceled) {
 		return err
 	}
