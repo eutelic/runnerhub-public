@@ -20,3 +20,31 @@ func TestUnexpectedProviderDeletionMarksWorkerFailed(t *testing.T){ctx:=context.
 
 func TestScaleSetStatusRoundTrip(t *testing.T){ctx:=context.Background();st,err:=store.OpenSQLite(":memory:");if err!=nil{t.Fatal(err)};defer st.Close();pool:=core.RunnerPool{ID:"pool-status",Name:"status",Scope:core.GitHubScope{Kind:core.ScopeRepository,Owner:"acme",Repository:"app"},Labels:[]string{"runnerhub"},Isolation:core.IsolationContainerTrusted,Resources:core.Resources{CPUMillis:1000,MemoryBytes:1<<30},MaxConcurrency:1,RunnerGroupID:1,GitHubInstallationID:123,ScaleSetName:"runnerhub",Image:"img"};if err:=st.UpsertPool(ctx,pool);err!=nil{t.Fatal(err)};svc:=&Service{Store:st};req:=httptest.NewRequest(http.MethodPost,"/api/v1/scalesets/status",bytes.NewBufferString(`{"poolId":"pool-status","state":"ready"}`));req.Header.Set("Content-Type","application/json");rr:=httptest.NewRecorder();svc.Handler().ServeHTTP(rr,req);if rr.Code!=http.StatusOK{t.Fatalf("post status=%d body=%s",rr.Code,rr.Body.String())};req=httptest.NewRequest(http.MethodGet,"/api/v1/scalesets/status",nil);rr=httptest.NewRecorder();svc.Handler().ServeHTTP(rr,req);if rr.Code!=http.StatusOK{t.Fatalf("get status=%d body=%s",rr.Code,rr.Body.String())};var got []scaleSetStatusResponse;if err:=json.NewDecoder(rr.Body).Decode(&got);err!=nil{t.Fatal(err)};if len(got)!=1||got[0].PoolID!="pool-status"||got[0].State!="ready"{t.Fatalf("statuses=%+v",got)}}
 func TestScaleSetStatusRejectsUnknownPool(t *testing.T){st,err:=store.OpenSQLite(":memory:");if err!=nil{t.Fatal(err)};defer st.Close();svc:=&Service{Store:st};req:=httptest.NewRequest(http.MethodPost,"/api/v1/scalesets/status",bytes.NewBufferString(`{"poolId":"missing","state":"error","detail":"boom"}`));req.Header.Set("Content-Type","application/json");rr:=httptest.NewRecorder();svc.Handler().ServeHTTP(rr,req);if rr.Code!=http.StatusNotFound{t.Fatalf("status=%d body=%s",rr.Code,rr.Body.String())}}
+
+
+func TestNormalizeConnectResourcesDefaultsAndOverrides(t *testing.T){
+	got:=normalizeConnectResources(core.Resources{},core.Resources{})
+	if got.CPUMillis!=2500||got.MemoryBytes!=4<<30||got.DiskBytes!=20<<30{t.Fatalf("defaults=%+v",got)}
+	fallback:=core.Resources{CPUMillis:1000,MemoryBytes:2<<30,DiskBytes:10<<30}
+	got=normalizeConnectResources(core.Resources{CPUMillis:3000,MemoryBytes:6<<30},fallback)
+	if got.CPUMillis!=3000||got.MemoryBytes!=6<<30||got.DiskBytes!=10<<30{t.Fatalf("override=%+v",got)}
+}
+
+
+func TestUpdatePoolResources(t *testing.T){
+	ctx:=context.Background()
+	st,err:=store.OpenSQLite(":memory:")
+	if err!=nil{t.Fatal(err)}
+	defer st.Close()
+	pool:=core.RunnerPool{ID:"pool-resources",Name:"resources",Scope:core.GitHubScope{Kind:core.ScopeRepository,Owner:"acme",Repository:"app"},Labels:[]string{"runnerhub"},Isolation:core.IsolationContainerTrusted,Resources:core.Resources{CPUMillis:1000,MemoryBytes:1<<30,DiskBytes:20<<30},MaxConcurrency:1,RunnerGroupID:1}
+	if err:=st.UpsertPool(ctx,pool);err!=nil{t.Fatal(err)}
+	svc:=&Service{Store:st}
+	req:=httptest.NewRequest(http.MethodPatch,"/api/v1/pools/pool-resources/resources",bytes.NewBufferString(`{"resources":{"cpuMillis":2500,"memoryBytes":4294967296},"maxConcurrency":2}`))
+	req.Header.Set("Content-Type","application/json")
+	rr:=httptest.NewRecorder()
+	svc.Handler().ServeHTTP(rr,req)
+	if rr.Code!=http.StatusOK{t.Fatalf("status=%d body=%s",rr.Code,rr.Body.String())}
+	got,err:=st.GetPool(ctx,"pool-resources")
+	if err!=nil{t.Fatal(err)}
+	if got.Resources.CPUMillis!=2500||got.Resources.MemoryBytes!=4<<30||got.Resources.DiskBytes!=20<<30||got.MaxConcurrency!=2{t.Fatalf("pool=%+v",got)}
+}
