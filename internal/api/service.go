@@ -58,7 +58,59 @@ func(s *Service)scaleSetConfigs(w http.ResponseWriter,r *http.Request){pools,err
 func(s *Service)runnerGroups(w http.ResponseWriter,r *http.Request){if s.Catalog==nil{problem(w,503,errors.New("github catalog is not configured"));return};v,err:=s.Catalog.ListRunnerGroups(r.Context(),r.URL.Query().Get("org"));if err!=nil{problem(w,502,err);return};writeJSON(w,200,v)}
 func(s *Service)audit(w http.ResponseWriter,r *http.Request){limit,_:=strconv.Atoi(r.URL.Query().Get("limit"));v,err:=s.Store.ListAudit(r.Context(),limit);if err!=nil{problem(w,500,err);return};writeJSON(w,200,v)}
 func(s *Service)metrics(w http.ResponseWriter,_ *http.Request){if s.Metrics==nil{writeJSON(w,200,map[string]int{});return};writeJSON(w,200,s.Metrics.Snapshot())}
-func(s *Service)HandleAgentResult(ctx context.Context,hostID string,res agent.CommandResult)error{wk,err:=s.Store.GetWorker(ctx,res.WorkerID);if err!=nil{return err};wk.UpdatedAt=time.Now().UTC();if !res.OK{wk.State=core.WorkerFailed;wk.FailureReason=truncate(res.SafeError);_=s.Store.AppendAudit(ctx,core.AuditEvent{Actor:"agent:"+hostID,Action:"command_result",ResourceType:"worker",ResourceID:wk.ID,Result:"error",SafeDetail:wk.FailureReason});return s.Store.UpsertWorker(ctx,wk)};if res.Handle!=nil{wk.ProviderHandle=res.Handle.ProviderID;if core.CanTransitionWorker(wk.State,core.WorkerStarting){wk.State=core.WorkerStarting};if core.CanTransitionWorker(wk.State,core.WorkerRegistering){wk.State=core.WorkerRegistering}};if res.State!=nil{switch res.State.State{case core.WorkerCompleted:if core.CanTransitionWorker(wk.State,core.WorkerCompleted){wk.State=core.WorkerCompleted}else if wk.State!=core.WorkerCompleted{wk.State=core.WorkerFailed;wk.FailureReason="provider exited before worker reached a runnable state"};case core.WorkerFailed:wk.State=core.WorkerFailed;wk.FailureReason=truncate(res.State.SafeDetail);if res.State.ExitCode!=nil{wk.FailureReason=truncate(fmt.Sprintf("%s (exit code %d)",wk.FailureReason,*res.State.ExitCode))};case core.WorkerDeleted:if wk.State==core.WorkerCleanupPending||wk.State==core.WorkerDeleting{wk.State=core.WorkerDeleted;wk.ProviderHandle=""}else{wk.State=core.WorkerFailed;wk.FailureReason="provider worker disappeared before cleanup"}}};if res.Handle==nil&&res.State==nil&&wk.State==core.WorkerCleanupPending{wk.State=core.WorkerDeleted;wk.ProviderHandle=""};return s.Store.UpsertWorker(ctx,wk)}
+func(s *Service)HandleAgentResult(ctx context.Context,hostID string,res agent.CommandResult)error{
+	wk,err:=s.Store.GetWorker(ctx,res.WorkerID)
+	if err!=nil{return err}
+	now:=time.Now().UTC()
+	wk.UpdatedAt=now
+	if !res.OK{
+		wk.State=core.WorkerFailed
+		wk.FailureReason=truncate(res.SafeError)
+		_=s.Store.AppendAudit(ctx,core.AuditEvent{Actor:"agent:"+hostID,Action:"command_result",ResourceType:"worker",ResourceID:wk.ID,Result:"error",SafeDetail:wk.FailureReason})
+		if err:=s.Store.UpsertWorker(ctx,wk);err!=nil{return err}
+		return s.enqueueTerminalCleanup(ctx,&wk)
+	}
+	if res.Handle!=nil{
+		wk.ProviderHandle=res.Handle.ProviderID
+		if core.CanTransitionWorker(wk.State,core.WorkerStarting){wk.State=core.WorkerStarting}
+		if core.CanTransitionWorker(wk.State,core.WorkerRegistering){wk.State=core.WorkerRegistering}
+		if wk.State==core.WorkerRegistering&&wk.RegistrationStartedAt.IsZero(){wk.RegistrationStartedAt=now}
+	}
+	terminal:=false
+	if res.State!=nil{
+		wk.ProviderExitCode=res.State.ExitCode
+		wk.ProviderOOMKilled=res.State.OOMKilled
+		switch res.State.State{
+		case core.WorkerCompleted:
+			if core.CanTransitionWorker(wk.State,core.WorkerCompleted){wk.State=core.WorkerCompleted}else if wk.State!=core.WorkerCompleted{wk.State=core.WorkerFailed;wk.FailureReason="provider exited before worker reached a runnable state"}
+			terminal=true
+		case core.WorkerFailed:
+			wk.State=core.WorkerFailed
+			wk.FailureReason=truncate(res.State.SafeDetail)
+			if res.State.ExitCode!=nil{wk.FailureReason=truncate(fmt.Sprintf("%s (exit code %d)",wk.FailureReason,*res.State.ExitCode))}
+			terminal=true
+		case core.WorkerDeleted:
+			if wk.State==core.WorkerCleanupPending||wk.State==core.WorkerDeleting{wk.State=core.WorkerDeleted;wk.ProviderHandle=""}else{wk.State=core.WorkerFailed;wk.FailureReason="provider worker disappeared before cleanup";terminal=true}
+		}
+	}
+	if res.Handle==nil&&res.State==nil&&wk.State==core.WorkerCleanupPending{wk.State=core.WorkerDeleted;wk.ProviderHandle=""}
+	if err:=s.Store.UpsertWorker(ctx,wk);err!=nil{return err}
+	if terminal{return s.enqueueTerminalCleanup(ctx,&wk)}
+	return nil
+}
+func(s *Service)enqueueTerminalCleanup(ctx context.Context,wk *core.Worker)error{
+	if wk==nil||strings.TrimSpace(wk.ProviderHandle)==""||s.Hub==nil{return nil}
+	if wk.State!=core.WorkerCleanupPending{
+		if !core.CanTransitionWorker(wk.State,core.WorkerCleanupPending){return nil}
+		wk.State=core.WorkerCleanupPending
+		wk.UpdatedAt=time.Now().UTC()
+		if err:=s.Store.UpsertWorker(ctx,*wk);err!=nil{return err}
+	}
+	h:=provider.WorkerHandle{ProviderID:wk.ProviderHandle,HostID:wk.HostID}
+	if err:=s.Hub.Enqueue(wk.HostID,agent.Command{Type:agent.CommandDelete,WorkerID:wk.ID,Provider:wk.ProviderID,Handle:&h});err!=nil{return err}
+	_=s.Store.AppendAudit(ctx,core.AuditEvent{Actor:"control",Action:"cleanup_worker",ResourceType:"worker",ResourceID:wk.ID,Result:"queued",SafeDetail:wk.FailureReason})
+	return nil
+}
 func(s *Service)inspectSecurity(ctx context.Context,p core.RunnerPool)(githubrunner.PoolSecurityPosture,error){if s.Catalog==nil{return githubrunner.PoolSecurityPosture{},errors.New("github catalog is not configured")};return githubrunner.InspectPoolSecurity(ctx,s.Catalog,p)}
 func(s *Service)requireSafeSecurity(ctx context.Context,p core.RunnerPool)(githubrunner.PoolSecurityPosture,error){posture,err:=s.inspectSecurity(ctx,p);if err!=nil{return posture,err};if !posture.Safe{return posture,errors.New(strings.Join(posture.Reasons,"; "))};return posture,nil}
 func decode(w http.ResponseWriter,r *http.Request,v any)bool{defer r.Body.Close();d:=json.NewDecoder(io.LimitReader(r.Body,1<<20));d.DisallowUnknownFields();if err:=d.Decode(v);err!=nil{problem(w,400,err);return false};var extra any;if err:=d.Decode(&extra);err!=io.EOF{if err==nil{err=errors.New("request body must contain exactly one JSON value")};problem(w,400,err);return false};return true}

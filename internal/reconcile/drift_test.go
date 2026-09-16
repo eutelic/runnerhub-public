@@ -90,6 +90,41 @@ func TestRegisteringRunnerGetsShortNotFoundGrace(t *testing.T) {
 	}
 }
 
+
+func TestRegisteringRunnerGraceUsesStableRegistrationStart(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.OpenSQLite(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	now := time.Now().UTC()
+	w := core.Worker{
+		ID:                    "w-stable-grace",
+		RunnerName:            "runner-w",
+		GitHubRunnerID:        8,
+		State:                 core.WorkerRegistering,
+		RegistrationStartedAt: now.Add(-2 * time.Minute),
+		UpdatedAt:             now,
+	}
+	if err := st.UpsertWorker(ctx, w); err != nil {
+		t.Fatal(err)
+	}
+
+	r := &Reconciler{Store: st, GitHub: missingGH{}, Now: func() time.Time { return now }}
+	if err := r.Once(ctx); err != nil {
+		t.Fatal(err)
+	}
+	got, err := st.GetWorker(ctx, w.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.State != core.WorkerDeleted {
+		t.Fatalf("fresh UpdatedAt incorrectly extended registration grace, state=%s", got.State)
+	}
+}
+
 func TestProviderBackedCleanupWaitsForAgentHub(t *testing.T) {
 	ctx := context.Background()
 	st, err := store.OpenSQLite(":memory:")

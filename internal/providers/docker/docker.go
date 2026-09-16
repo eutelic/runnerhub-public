@@ -362,16 +362,25 @@ func (p *Provider) Inspect(ctx context.Context, h provider.WorkerHandle) (provid
 		return provider.WorkerState{State: core.WorkerReady, SafeDetail: "container running"}, nil
 	}
 	code := state.ExitCode
-	if state.Status == "exited" && state.ExitCode == 0 {
-		return provider.WorkerState{State: core.WorkerCompleted, ExitCode: &code, SafeDetail: "container exited successfully"}, nil
+	detail := "container exited"
+	if state.OOMKilled {
+		detail += "; OOM killed"
 	}
-	return provider.WorkerState{State: core.WorkerFailed, ExitCode: &code, SafeDetail: "container exited"}, nil
+	if msg := sanitize(state.Error); msg != "" {
+		detail += "; docker error: " + msg
+	}
+	if state.Status == "exited" && state.ExitCode == 0 {
+		return provider.WorkerState{State: core.WorkerCompleted, ExitCode: &code, OOMKilled: state.OOMKilled, SafeDetail: "container exited successfully"}, nil
+	}
+	return provider.WorkerState{State: core.WorkerFailed, ExitCode: &code, OOMKilled: state.OOMKilled, SafeDetail: detail}, nil
 }
 
 type containerState struct {
-	Running  bool   `json:"Running"`
-	ExitCode int    `json:"ExitCode"`
-	Status   string `json:"Status"`
+	Running   bool   `json:"Running"`
+	ExitCode  int    `json:"ExitCode"`
+	Status    string `json:"Status"`
+	OOMKilled bool   `json:"OOMKilled"`
+	Error     string `json:"Error"`
 }
 
 func (p *Provider) inspectContainer(ctx context.Context, id string) (containerState, error) {

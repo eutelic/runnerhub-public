@@ -149,7 +149,14 @@ func (r *Reconciler) reconcileWorker(ctx context.Context, w *core.Worker) error 
 			}
 
 		case errors.Is(err, githubrunner.ErrNotFound):
-			if w.State != core.WorkerRegistering || now.Sub(w.UpdatedAt) >= registrationGrace {
+			registrationStarted := w.RegistrationStartedAt
+			if registrationStarted.IsZero() {
+				registrationStarted = w.CreatedAt
+			}
+			if registrationStarted.IsZero() {
+				registrationStarted = w.UpdatedAt
+			}
+			if w.State != core.WorkerRegistering || now.Sub(registrationStarted) >= registrationGrace {
 				w.State = core.WorkerFailed
 				w.FailureReason = "exact GitHub runner registration disappeared"
 				w.UpdatedAt = now.UTC()

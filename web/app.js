@@ -91,10 +91,10 @@ async function refresh(){
     const results=await Promise.all(requests);
     const [h,p,w,a,statuses,repos]=results;
     const runtime=new Map((statuses||[]).map(x=>[x.poolId,x]));
-    els.hosts.innerHTML=tab(h,[['Name',x=>x.name],['State',x=>x.state],['Provider',x=>x.provider],['CPU',x=>x.capacity?.cpuMillis?cpuCores(x.capacity.cpuMillis)+' cores':'unknown'],['Memory',x=>x.capacity?.memoryBytes?gib(x.capacity.memoryBytes)+' GiB':'unknown']]);
-    els.pools.innerHTML=tab(p,[['Name',x=>x.name],['Repository',x=>x.scope?.repository?x.scope.owner+'/'+x.scope.repository:x.scope?.owner||''],['runs-on',x=>(x.labels||[]).join(', ')],['CPU',x=>cpuCores(x.resources?.cpuMillis)+' cores'],['Memory',x=>gib(x.resources?.memoryBytes)+' GiB'],['Listener',x=>runtime.get(x.id)?.state||'pending'],['Max',x=>x.maxConcurrency]]);
+    els.hosts.innerHTML=tab(h,[['Name',x=>x.name],['State',x=>x.state],['Provider',x=>x.provider],['CPU',x=>x.capacity?.cpuMillis?cpuCores(x.capacity.cpuMillis)+' cores':'unknown'],['Memory',x=>x.capacity?.memoryBytes?gib(x.capacity.memoryBytes)+' GiB':'unknown'],['Disk free',x=>x.capacity?.diskBytes?gib(x.capacity.diskBytes)+' GiB':'unknown']]);
+    els.pools.innerHTML=tab(p,[['Name',x=>x.name],['Repository',x=>x.scope?.repository?x.scope.owner+'/'+x.scope.repository:x.scope?.owner||''],['runs-on',x=>(x.labels||[]).join(', ')],['CPU',x=>cpuCores(x.resources?.cpuMillis)+' cores'],['Memory',x=>gib(x.resources?.memoryBytes)+' GiB'],['Disk',x=>gib(x.resources?.diskBytes)+' GiB'],['Listener',x=>runtime.get(x.id)?.state||'pending'],['Max',x=>x.maxConcurrency]]);
     const visibleWorkers=(w||[]).filter(x=>x.state!=='deleted');
-    els.workers.innerHTML=tab(visibleWorkers,[['Runner',x=>x.runnerName],['State',x=>x.state],['Host',x=>x.hostId],['Repo',x=>x.repository||''],['Job',x=>x.jobName||'']]);
+    els.workers.innerHTML=tab(visibleWorkers,[['Runner',x=>x.runnerName],['State',x=>x.state],['Exit',x=>x.providerExitCode??''],['OOM',x=>x.providerOomKilled?'yes':''],['Failure',x=>x.failureReason||''],['Host',x=>x.hostId],['Repo',x=>x.repository||''],['Job',x=>x.jobName||'']]);
     els.audit.innerHTML=tab(a,[['When',x=>x.createdAt],['Action',x=>x.action],['Result',x=>x.result],['Detail',x=>x.safeDetail||'']]);
     if(auth.authenticated&&!els.repos.querySelector('.repo-config[open]'))renderRepos(repos||[],p||[],statuses||[]);
   }catch(e){message(e.message,'error')}
@@ -138,7 +138,7 @@ function renderRepos(repos,pools,statuses){
     let detail='';
     if(pool){
       const current=status?.state||'pending';
-      if(current==='ready')state='<span class="badge">Ready</span>';
+      if(current==='ready')state='<span class="badge">Listener ready</span>';
       else if(current==='error')state='<span class="badge warn">Error</span>';
       else if(current==='starting')state='<span class="badge warn">Starting</span>';
       else state='<span class="badge warn">Pending</span>';
