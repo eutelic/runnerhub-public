@@ -50,6 +50,7 @@ Generate:
 
 Record:
 
+- numeric App ID;
 - client ID;
 - client secret;
 - App slug;
@@ -64,7 +65,8 @@ For TrueNAS SCALE, follow [the TrueNAS guide](../deploy/truenas/README.md).
 For image-based Docker, configure:
 
 ```dotenv
-RUNNERHUB_GITHUB_APP_ISSUER=Iv1.your-client-id
+RUNNERHUB_GITHUB_APP_ID=123456789
+RUNNERHUB_GITHUB_APP_CLIENT_ID=Iv1.your-client-id
 RUNNERHUB_GITHUB_APP_SLUG=your-app-slug
 RUNNERHUB_PUBLIC_URL=http://runnerhub-host:8080
 RUNNERHUB_GITHUB_APP_PRIVATE_KEY_FILE=/absolute/path/github-app.pem
@@ -180,7 +182,9 @@ That mode creates a private privileged Docker-in-Docker daemon for each worker. 
 The source-development Compose path retains the existing static environment configuration for tests and manual deployments:
 
 ```dotenv
-RUNNERHUB_GITHUB_APP_ISSUER=Iv1...
+RUNNERHUB_GITHUB_APP_ID=123456789
+RUNNERHUB_GITHUB_APP_CLIENT_ID=Iv1...
+RUNNERHUB_GITHUB_APP_SLUG=your-app-slug
 RUNNERHUB_GITHUB_APP_INSTALLATION_ID=12345678
 RUNNERHUB_GITHUB_APP_PRIVATE_KEY_FILE=/path/app.pem
 RUNNERHUB_GITHUB_URL=https://github.com/OWNER/REPOSITORY

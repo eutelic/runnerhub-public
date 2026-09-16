@@ -1,0 +1,143 @@
+name: hardening-validation
+
+# This workflow never builds or publishes RunnerHub container images.
+# Rerun marker: numeric GitHub App ID configured for live JIT validation.
+
+on:
+  push:
+    branches:
+      - fix/complete-runner-runtime-hardening
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: hardening-validation
+  cancel-in-progress: true
+
+jobs:
+  unit:
+    name: Source and unit validation
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v7
+        with:
+          go-version: '1.26.6'
+          cache: true
+      - name: Validate acceptance and deployment scripts
+        run: |
+          bash -n scripts/jit-acceptance-host.sh
+          bash -n scripts/init-docker-env.sh
+          bash -n scripts/start-docker.sh
+          bash -n deploy/truenas/prepare-compose.sh
+          bash -n deploy/truenas/test-prepare-compose.sh
+          bash deploy/truenas/test-prepare-compose.sh
+
+      - name: Validate Docker Compose configuration without building images
+        run: |
+          set -euo pipefail
+          tmp="$(mktemp -d)"
+          trap 'rm -rf "$tmp"' EXIT
+          key="$tmp/app.pem"
+          client_secret="$tmp/client-secret"
+          envfile="$tmp/runnerhub.env"
+          openssl genrsa -out "$key" 2048 >/dev/null 2>&1
+          printf '%s\n' ci-client-secret > "$client_secret"
+          printf '%s\n' \
+            'RUNNERHUB_ENROLLMENT_TOKEN=ci-enrollment' \
+            'RUNNERHUB_AGENT_SECRET=ci-agent-secret-012345678901234567890123456789' \
+            'RUNNERHUB_ADMIN_KEY=ci-admin' \
+            'RUNNERHUB_SCALESET_KEY=ci-scaler' \
+            'RUNNERHUB_API_KEYS=ci-admin:admin:local-admin,ci-scaler:scaler:listener' \
+            'RUNNERHUB_GITHUB_APP_ID=123456789' \
+            'RUNNERHUB_GITHUB_APP_CLIENT_ID=Iv1.ci' \
+            'RUNNERHUB_GITHUB_APP_SLUG=runnerhub-ci' \
+            'RUNNERHUB_GITHUB_APP_INSTALLATION_ID=12345678' \
+            "RUNNERHUB_GITHUB_APP_PRIVATE_KEY_FILE=$key" \
+            "RUNNERHUB_GITHUB_CLIENT_SECRET_FILE=$client_secret" \
+            'RUNNERHUB_PUBLIC_URL=http://127.0.0.1:8080' \
+            'RUNNERHUB_GITHUB_URL=https://github.com/acme/app' > "$envfile"
+          docker compose --env-file "$envfile" -f deploy/docker/compose.yaml --profile autoscale config >/dev/null
+          docker compose --env-file "$envfile" -f deploy/docker/compose.release.yaml config >/dev/null
+
+      - name: Core tests
+        run: |
+          go test ./...
+          go test -race ./internal/...
+          go vet ./...
+      - name: Scale-set tests
+        working-directory: scaleset
+        run: |
+          go test ./...
+          go vet ./...
+
+  acceptance-config:
+    name: Check acceptance credentials
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      configured: ${{ steps.check.outputs.configured }}
+    steps:
+      - name: Detect dedicated GitHub App acceptance credentials
+        id: check
+        env:
+          APP_ISSUER: ${{ secrets.RUNNERHUB_ACCEPTANCE_GITHUB_APP_ISSUER }}
+          APP_PRIVATE_KEY: ${{ secrets.RUNNERHUB_ACCEPTANCE_GITHUB_APP_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          normalized_issuer="$(printf '%s' "$APP_ISSUER" | tr -d '[:space:]')"
+          if [[ "$normalized_issuer" =~ ^[0-9]+$ ]] && [ -n "$APP_PRIVATE_KEY" ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+            echo "Live JIT acceptance credentials are configured."
+          else
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "Live JIT acceptance requires the numeric GitHub App ID plus private key; source validation will continue and live JIT jobs will be skipped."
+          fi
+
+  acceptance-host:
+    name: Provision real JIT acceptance runner
+    needs: acceptance-config
+    if: needs.acceptance-config.outputs.configured == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      RUNNERHUB_ACCEPTANCE_GITHUB_APP_ISSUER: ${{ secrets.RUNNERHUB_ACCEPTANCE_GITHUB_APP_ISSUER }}
+      RUNNERHUB_ACCEPTANCE_REPOSITORY: ${{ github.repository }}
+      RUNNERHUB_ACCEPTANCE_RUNNER_IMAGE: ghcr.io/actions/actions-runner:2.337.0@sha256:e5496277be5d09bc968b3d64911b74e219ac4a3f2edce956a3ecf9271bea1ef4
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v7
+        with:
+          go-version: '1.26.6'
+          cache: true
+      - name: Materialize acceptance GitHub App key
+        env:
+          APP_PRIVATE_KEY: ${{ secrets.RUNNERHUB_ACCEPTANCE_GITHUB_APP_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          umask 077
+          printf '%s' "$APP_PRIVATE_KEY" > "$RUNNER_TEMP/runnerhub-acceptance-app.pem"
+          test -s "$RUNNER_TEMP/runnerhub-acceptance-app.pem"
+      - name: Run real JIT lifecycle host
+        env:
+          RUNNERHUB_ACCEPTANCE_GITHUB_APP_PRIVATE_KEY_FILE: ${{ runner.temp }}/runnerhub-acceptance-app.pem
+          RUNNERHUB_ACCEPTANCE_GITHUB_TOKEN: ${{ github.token }}
+        run: bash scripts/jit-acceptance-host.sh
+
+  jit-smoke:
+    name: Execute real JIT acceptance job
+    needs: acceptance-config
+    if: needs.acceptance-config.outputs.configured == 'true'
+    runs-on: runnerhub-release-acceptance
+    timeout-minutes: 12
+    steps:
+      - name: Prove job execution
+        run: |
+          set -euo pipefail
+          echo "RunnerHub real JIT acceptance job started"
+          uname -a
+          sleep 30
+          echo "RunnerHub real JIT acceptance job completed"

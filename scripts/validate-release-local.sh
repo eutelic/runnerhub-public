@@ -131,7 +131,8 @@ printf '%s\n' \
   'RUNNERHUB_ADMIN_KEY=local-admin' \
   'RUNNERHUB_SCALESET_KEY=local-scaler' \
   'RUNNERHUB_API_KEYS=local-admin:admin:local-admin,local-scaler:scaler:scaleset-listener' \
-  'RUNNERHUB_GITHUB_APP_ISSUER=Iv1.local' \
+  'RUNNERHUB_GITHUB_APP_ID=123456789' \
+  'RUNNERHUB_GITHUB_APP_CLIENT_ID=Iv1.local' \
   'RUNNERHUB_GITHUB_APP_INSTALLATION_ID=12345678' \
   "RUNNERHUB_GITHUB_APP_PRIVATE_KEY_FILE=$keyfile" \
   "RUNNERHUB_GITHUB_CLIENT_SECRET_FILE=$clientsecretfile" \

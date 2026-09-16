@@ -29,7 +29,9 @@ required=(
   RUNNERHUB_ADMIN_KEY
   RUNNERHUB_SCALESET_KEY
   RUNNERHUB_API_KEYS
-  RUNNERHUB_GITHUB_APP_ISSUER
+  RUNNERHUB_GITHUB_APP_ID
+  RUNNERHUB_GITHUB_APP_CLIENT_ID
+  RUNNERHUB_GITHUB_APP_SLUG
   RUNNERHUB_GITHUB_APP_INSTALLATION_ID
   RUNNERHUB_GITHUB_APP_PRIVATE_KEY_FILE
   RUNNERHUB_GITHUB_URL
@@ -38,9 +40,17 @@ for name in "${required[@]}"; do
   [ -n "${!name:-}" ] || fail "$name is required in $envfile"
 done
 
-case "$RUNNERHUB_GITHUB_APP_ISSUER" in
-  REPLACE_*|Iv1.replace-*) fail "set RUNNERHUB_GITHUB_APP_ISSUER in $envfile" ;;
+case "$RUNNERHUB_GITHUB_APP_ID" in
+  REPLACE_*|"") fail "set RUNNERHUB_GITHUB_APP_ID in $envfile" ;;
 esac
+[[ "$RUNNERHUB_GITHUB_APP_ID" =~ ^[1-9][0-9]*$ ]] || fail "RUNNERHUB_GITHUB_APP_ID must be a positive integer"
+case "$RUNNERHUB_GITHUB_APP_CLIENT_ID" in
+  REPLACE_*|Iv1.replace-*|"") fail "set RUNNERHUB_GITHUB_APP_CLIENT_ID in $envfile" ;;
+esac
+case "$RUNNERHUB_GITHUB_APP_SLUG" in
+  REPLACE_*|"") fail "set RUNNERHUB_GITHUB_APP_SLUG in $envfile" ;;
+esac
+[[ "$RUNNERHUB_GITHUB_APP_SLUG" =~ ^[A-Za-z0-9-]+$ ]] || fail "RUNNERHUB_GITHUB_APP_SLUG contains unsupported characters"
 [[ "$RUNNERHUB_GITHUB_APP_INSTALLATION_ID" =~ ^[0-9]+$ ]] || fail "RUNNERHUB_GITHUB_APP_INSTALLATION_ID must be numeric"
 [ -r "$RUNNERHUB_GITHUB_APP_PRIVATE_KEY_FILE" ] || fail "GitHub App private key is not readable: $RUNNERHUB_GITHUB_APP_PRIVATE_KEY_FILE"
 
@@ -64,7 +74,7 @@ pool_id="${RUNNERHUB_POOL_ID:-pool-docker}"
 scale_name="${RUNNERHUB_SCALESET_NAME:-runnerhub}"
 max_runners="${RUNNERHUB_MAX_RUNNERS:-2}"
 runner_group_id="${RUNNERHUB_RUNNER_GROUP_ID:-1}"
-runner_image="${RUNNERHUB_RUNNER_IMAGE:-ghcr.io/actions/actions-runner:latest}"
+runner_image="${RUNNERHUB_RUNNER_IMAGE:-ghcr.io/actions/actions-runner:2.337.0@sha256:e5496277be5d09bc968b3d64911b74e219ac4a3f2edce956a3ecf9271bea1ef4}"
 pool_isolation="${RUNNERHUB_POOL_ISOLATION:-container-trusted}"
 [[ "$max_runners" =~ ^[1-9][0-9]*$ ]] || fail "RUNNERHUB_MAX_RUNNERS must be a positive integer"
 [[ "$runner_group_id" =~ ^[1-9][0-9]*$ ]] || fail "RUNNERHUB_RUNNER_GROUP_ID must be a positive integer"

@@ -14,10 +14,11 @@ x-runnerhub-config:
   secrets-path: &secrets-path /mnt/POOL/runnerhub/secrets
   github-app-key-path: &github-app-key-path /mnt/POOL/runnerhub/secrets/github-app.pem
   github-client-secret-path: &github-client-secret-path /mnt/POOL/runnerhub/secrets/github-client-secret
+  github-app-id: &github-app-id 123456789
   github-client-id: &github-client-id Iv1.CHANGE_ME
   github-app-slug: &github-app-slug CHANGE_ME_APP_SLUG
   public-url: &public-url http://TRUENAS_HOST:8787
-  runner-image: &runner-image ghcr.io/actions/actions-runner:latest
+  runner-image: &runner-image ghcr.io/actions/actions-runner:2.337.0@sha256:e5496277be5d09bc968b3d64911b74e219ac4a3f2edce956a3ecf9271bea1ef4
   pool-isolation: &pool-isolation container-trusted
   allow-privileged-workers: &allow-privileged-workers "false"
   dind-image: &dind-image docker:dind
@@ -64,13 +65,15 @@ services:
       RUNNERHUB_ADMIN_KEY_FILE: /run/runnerhub-secrets/admin-key
       RUNNERHUB_SCALESET_KEY_FILE: /run/runnerhub-secrets/scaleset-key
       RUNNERHUB_ALLOW_PRIVILEGED_WORKERS: *allow-privileged-workers
-      RUNNERHUB_GITHUB_APP_ISSUER: *github-client-id
+      RUNNERHUB_GITHUB_APP_ID: *github-app-id
+      RUNNERHUB_GITHUB_APP_CLIENT_ID: *github-client-id
       RUNNERHUB_GITHUB_CLIENT_SECRET_FILE: /run/secrets/runnerhub-github-client-secret
       RUNNERHUB_GITHUB_APP_SLUG: *github-app-slug
       RUNNERHUB_PUBLIC_URL: *public-url
       RUNNERHUB_GITHUB_APP_PRIVATE_KEY_FILE: /run/secrets/runnerhub-github-app
       RUNNERHUB_GITHUB_API_URL: https://api.github.com
       RUNNERHUB_ALLOWED_IMAGES: *runner-image
+      RUNNERHUB_REQUIRE_PINNED_IMAGES: "true"
     secrets:
       - runnerhub-github-app
       - runnerhub-github-client-secret

@@ -20,10 +20,12 @@ on:
       - 'go.sum'
       - 'scaleset/**'
       - 'scripts/validate-release-local.sh'
+      - 'scripts/jit-acceptance-host.sh'
   workflow_dispatch:
 
 permissions:
   contents: read
+  actions: read
   packages: write
 
 concurrency:
@@ -31,8 +33,69 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  acceptance-config:
+    name: Verify live JIT acceptance configuration
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require dedicated GitHub App acceptance credentials
+        env:
+          APP_ISSUER: ${{ secrets.RUNNERHUB_ACCEPTANCE_GITHUB_APP_ISSUER }}
+          APP_PRIVATE_KEY: ${{ secrets.RUNNERHUB_ACCEPTANCE_GITHUB_APP_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          [[ "$APP_ISSUER" =~ ^[0-9]+$ ]] || { echo "RUNNERHUB_ACCEPTANCE_GITHUB_APP_ISSUER must be the numeric GitHub App ID" >&2; exit 1; }
+          test -n "$APP_PRIVATE_KEY" || { echo "Missing RUNNERHUB_ACCEPTANCE_GITHUB_APP_PRIVATE_KEY" >&2; exit 1; }
+
+  acceptance-host:
+    name: Provision real JIT acceptance runner
+    needs: acceptance-config
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      RUNNERHUB_ACCEPTANCE_GITHUB_APP_ISSUER: ${{ secrets.RUNNERHUB_ACCEPTANCE_GITHUB_APP_ISSUER }}
+      RUNNERHUB_ACCEPTANCE_REPOSITORY: ${{ github.repository }}
+      RUNNERHUB_ACCEPTANCE_RUNNER_IMAGE: ghcr.io/actions/actions-runner:2.337.0@sha256:e5496277be5d09bc968b3d64911b74e219ac4a3f2edce956a3ecf9271bea1ef4
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version: '1.26.6'
+          cache: true
+
+      - name: Materialize acceptance GitHub App key
+        env:
+          APP_PRIVATE_KEY: ${{ secrets.RUNNERHUB_ACCEPTANCE_GITHUB_APP_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          umask 077
+          printf '%s' "$APP_PRIVATE_KEY" > "$RUNNER_TEMP/runnerhub-acceptance-app.pem"
+          test -s "$RUNNER_TEMP/runnerhub-acceptance-app.pem"
+
+      - name: Run real JIT lifecycle host
+        env:
+          RUNNERHUB_ACCEPTANCE_GITHUB_APP_PRIVATE_KEY_FILE: ${{ runner.temp }}/runnerhub-acceptance-app.pem
+          RUNNERHUB_ACCEPTANCE_GITHUB_TOKEN: ${{ github.token }}
+        run: bash scripts/jit-acceptance-host.sh
+
+  jit-smoke:
+    name: Execute real JIT acceptance job
+    needs: acceptance-config
+    runs-on: runnerhub-release-acceptance
+    timeout-minutes: 12
+    steps:
+      - name: Prove job execution
+        run: |
+          set -euo pipefail
+          echo "RunnerHub real JIT acceptance job started"
+          uname -a
+          sleep 30
+          echo "RunnerHub real JIT acceptance job completed"
+
   verify-release:
     name: Validate release candidate
+    needs: [acceptance-host, jit-smoke]
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:

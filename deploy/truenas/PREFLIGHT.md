@@ -63,6 +63,7 @@ Or pin a release SHA.
 ```bash
 bash deploy/truenas/prepare-compose.sh \
   --root /mnt/POOL/runnerhub \
+  --github-app-id 123456789 \
   --github-client-id Iv1.EXAMPLE \
   --github-app-slug runnerhub-self-hosted-ci \
   --public-url http://TRUENAS_HOST:8787 \

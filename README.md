@@ -35,13 +35,13 @@ The default single-host setup keeps the control API on loopback and uses an outb
 
 ```bash
 bash scripts/init-docker-env.sh
-# Fill in the four GitHub values in deploy/docker/.env.
+# Fill in the GitHub App ID, Client ID, slug, installation ID, PEM path, and repository URL in deploy/docker/.env.
 bash scripts/start-docker.sh
 ```
 
 The initializer generates independent enrollment, agent, admin and constrained scale-set credentials and writes the local `.env` with mode `0600`. The start script builds the control plane and Docker agent, waits for enrollment, creates a repository-scoped pool, starts the scale-set listener, and does not report success until GitHub authentication/message-session setup completes. Use the configured scale-set name (default `runnerhub`) directly in `runs-on`.
 
-No inbound GitHub webhook or public RunnerHub listener is required for this default path. Ephemeral Docker workers refresh the configured runner image by default so a locally cached moving tag does not silently age out. The `.env`, private keys, and RunnerHub database are excluded by `.gitignore`. See the [alpha quickstart](docs/QUICKSTART.md) for GitHub App permissions and the first workflow.
+No inbound GitHub webhook or public RunnerHub listener is required for this default path. The default Actions runner is an immutable digest-pinned image; RunnerHub refreshes that exact identity rather than following a moving tag. Runner image upgrades are explicit release changes gated by a real JIT acceptance run. The `.env`, private keys, and RunnerHub database are excluded by `.gitignore`. See the [alpha quickstart](docs/QUICKSTART.md) for GitHub App permissions and the first workflow.
 
 ## Image-based Docker / TrueNAS install
 

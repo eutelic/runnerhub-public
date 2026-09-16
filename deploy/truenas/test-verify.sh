@@ -111,7 +111,7 @@ class Handler(BaseHTTPRequestHandler):
                 mode=os.environ.get("TEST_POOLS","none")
                 pools=[]
                 if mode=="configured":
-                    pools=[{"id":"pool-docker","isolation":"container-trusted","labels":["runnerhub"],"maxConcurrency":2,"image":"ghcr.io/actions/actions-runner:latest"}]
+                    pools=[{"id":"pool-docker","isolation":"container-trusted","labels":["runnerhub"],"maxConcurrency":2,"image":"ghcr.io/actions/actions-runner:2.337.0@sha256:e5496277be5d09bc968b3d64911b74e219ac4a3f2edce956a3ecf9271bea1ef4"}]
                 self.send_json(200,pools); return
             if self.path=="/api/v1/workers":
                 self.send_json(200,[]); return
@@ -180,7 +180,7 @@ for _ in $(seq 1 50); do
   sleep 0.1
 done
 PATH="$tmp/bin:$PATH" bash "$verify" "$root" "http://127.0.0.1:$port" pool-docker runnerhub container-trusted > "$tmp/post-onboarding.log"
-grep -Fq '[ ok ] expected pool pool-docker: isolation=container-trusted runs-on=runnerhub maxConcurrency=2 image=ghcr.io/actions/actions-runner:latest' "$tmp/post-onboarding.log"
+grep -Fq '[ ok ] expected pool pool-docker: isolation=container-trusted runs-on=runnerhub maxConcurrency=2 image=ghcr.io/actions/actions-runner:2.337.0@sha256:e5496277be5d09bc968b3d64911b74e219ac4a3f2edce956a3ecf9271bea1ef4' "$tmp/post-onboarding.log"
 grep -Fq '[ ok ] scale-set listener for pool-docker is ready' "$tmp/post-onboarding.log"
 
 managed_dir="$tmp/scale-secrets/secrets"

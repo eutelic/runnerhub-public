@@ -8,14 +8,32 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
 
 	"github.com/eutelic/runnerhub/internal/core"
 	"github.com/eutelic/runnerhub/internal/hostinfo"
+	"github.com/eutelic/runnerhub/internal/images"
 	"github.com/eutelic/runnerhub/internal/provider"
 )
+
+const maxDiagnosticsBytes = 4096
+
+var detachedContainerIDPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
+
+var diagnosticSecretPatterns = []struct {
+	re   *regexp.Regexp
+	repl string
+}{
+	{regexp.MustCompile(`(?i)(authorization\s*:\s*(?:bearer|token|basic)\s+)\S+`), "$1[REDACTED]"},
+	{regexp.MustCompile(`(?i)(bearer\s+)[A-Za-z0-9._~+/=-]+`), "$1[REDACTED]"},
+	{regexp.MustCompile(`(?i)(github_pat_|gh[pousr]_)[A-Za-z0-9_]{12,}`), "$1[REDACTED]"},
+	{regexp.MustCompile(`\beyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{10,}\b`), "[REDACTED-JWT]"},
+	{regexp.MustCompile(`(?i)((?:token|secret|password|jitconfig)\s*[=:]\s*)\S+`), "$1[REDACTED]"},
+	{regexp.MustCompile(`[A-Za-z0-9_-]{96,}`), "[REDACTED-LONG-TOKEN]"},
+}
 
 type CommandRunner interface {
 	Run(context.Context, string, ...string) (string, error)
@@ -61,7 +79,7 @@ func newWithRunner(cfg Config, r CommandRunner) (*Provider, error) {
 		cfg.DefaultWorkdirBytes = 20 << 30
 	}
 	if len(cfg.AllowedImages) == 0 {
-		cfg.AllowedImages = []string{"ghcr.io/actions/actions-runner:latest"}
+		cfg.AllowedImages = []string{images.DefaultRunnerImage}
 	}
 	if cfg.PullPolicy == "" {
 		cfg.PullPolicy = "always"
@@ -137,7 +155,7 @@ func (p *Provider) Validate(_ context.Context, s provider.WorkerSpec) error {
 
 func (p *Provider) Create(ctx context.Context, s provider.WorkerSpec) (provider.WorkerHandle, error) {
 	if s.Image == "" {
-		s.Image = "ghcr.io/actions/actions-runner:latest"
+		s.Image = images.DefaultRunnerImage
 	}
 	if err := p.Validate(ctx, s); err != nil {
 		return provider.WorkerHandle{}, err
@@ -195,10 +213,11 @@ func (p *Provider) createTrustedWorker(ctx context.Context, s provider.WorkerSpe
 		_ = os.RemoveAll(secretDir)
 		return "", err
 	}
-	id := strings.TrimSpace(out)
-	if id == "" {
+	id, resolveErr := p.resolveRunContainerID(ctx, name, out)
+	if resolveErr != nil {
+		_, _ = p.run.Run(ctx, p.cfg.DockerBinary, "rm", "-f", name)
 		_ = os.RemoveAll(secretDir)
-		return "", errors.New("docker returned empty container id")
+		return "", resolveErr
 	}
 	return id, nil
 }
@@ -259,10 +278,11 @@ func (p *Provider) createDinDWorker(ctx context.Context, s provider.WorkerSpec, 
 			return "", err
 		}
 	}
-	runnerID := strings.TrimSpace(runnerOut)
-	if runnerID == "" {
+	runnerID, resolveErr := p.resolveRunContainerID(ctx, name, runnerOut)
+	if resolveErr != nil {
+		_, _ = p.run.Run(ctx, p.cfg.DockerBinary, "rm", "-f", name)
 		_ = os.RemoveAll(secretDir)
-		return "", errors.New("docker returned empty runner container id")
+		return "", resolveErr
 	}
 
 	dindName := name + "-dind"
@@ -319,6 +339,36 @@ func (p *Provider) runnerArgs(s provider.WorkerSpec, name, jitPath string) []str
 
 func workerContainerName(workerID string) string { return "runnerhub-" + safeID(workerID) }
 
+func (p *Provider) resolveRunContainerID(ctx context.Context, name, out string) (string, error) {
+	lines := strings.Split(out, "\n")
+	nonEmpty := make([]string, 0, len(lines))
+	var candidates []string
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		nonEmpty = append(nonEmpty, line)
+		if detachedContainerIDPattern.MatchString(line) {
+			candidates = append(candidates, line)
+		}
+	}
+	if len(candidates) == 1 {
+		return candidates[0], nil
+	}
+	if len(nonEmpty) == 1 {
+		return nonEmpty[0], nil
+	}
+	id, err := p.findExact(ctx, name)
+	if err != nil {
+		return "", fmt.Errorf("resolve Docker container id for %q: %w", name, err)
+	}
+	if strings.TrimSpace(id) == "" {
+		return "", fmt.Errorf("docker created %q but returned no unambiguous container id", name)
+	}
+	return strings.TrimSpace(id), nil
+}
+
 func (p *Provider) findExact(ctx context.Context, name string) (string, error) {
 	out, err := p.run.Run(ctx, p.cfg.DockerBinary, "inspect", name, "--format", "{{.ID}}")
 	if err != nil {
@@ -356,7 +406,7 @@ func (p *Provider) Inspect(ctx context.Context, h provider.WorkerHandle) (provid
 			}
 			if !dindState.Running {
 				code := dindState.ExitCode
-				return provider.WorkerState{State: core.WorkerFailed, ExitCode: &code, SafeDetail: "Docker-in-Docker sidecar exited"}, nil
+				return provider.WorkerState{State: core.WorkerFailed, ExitCode: &code, OOMKilled: dindState.OOMKilled, SafeDetail: "Docker-in-Docker sidecar exited", Diagnostics: p.collectDiagnostics(ctx, sidecar)}, nil
 			}
 		}
 		return provider.WorkerState{State: core.WorkerReady, SafeDetail: "container running"}, nil
@@ -372,7 +422,8 @@ func (p *Provider) Inspect(ctx context.Context, h provider.WorkerHandle) (provid
 	if state.Status == "exited" && state.ExitCode == 0 {
 		return provider.WorkerState{State: core.WorkerCompleted, ExitCode: &code, OOMKilled: state.OOMKilled, SafeDetail: "container exited successfully"}, nil
 	}
-	return provider.WorkerState{State: core.WorkerFailed, ExitCode: &code, OOMKilled: state.OOMKilled, SafeDetail: detail}, nil
+	diagnostics := p.collectDiagnostics(ctx, h.ProviderID)
+	return provider.WorkerState{State: core.WorkerFailed, ExitCode: &code, OOMKilled: state.OOMKilled, SafeDetail: detail, Diagnostics: diagnostics}, nil
 }
 
 type containerState struct {
@@ -381,6 +432,39 @@ type containerState struct {
 	Status    string `json:"Status"`
 	OOMKilled bool   `json:"OOMKilled"`
 	Error     string `json:"Error"`
+}
+
+func (p *Provider) collectDiagnostics(ctx context.Context, id string) string {
+	if strings.TrimSpace(id) == "" {
+		return ""
+	}
+	out, _ := p.run.Run(ctx, p.cfg.DockerBinary, "logs", "--tail", "80", id)
+	return sanitizeDiagnostics(out)
+}
+
+func sanitizeDiagnostics(s string) string {
+	s = strings.ReplaceAll(s, "\x00", "")
+	lines := strings.Split(s, "\n")
+	safeLines := make([]string, 0, len(lines))
+	for _, line := range lines {
+		lower := strings.ToLower(line)
+		if strings.Contains(lower, "running job:") ||
+			strings.Contains(lower, "runner.worker") ||
+			strings.Contains(lower, "job execution started") {
+			safeLines = append(safeLines, "[job output omitted]")
+			break
+		}
+		safeLines = append(safeLines, line)
+	}
+	s = strings.Join(safeLines, "\n")
+	for _, pattern := range diagnosticSecretPatterns {
+		s = pattern.re.ReplaceAllString(s, pattern.repl)
+	}
+	s = strings.TrimSpace(s)
+	if len(s) > maxDiagnosticsBytes {
+		s = "[truncated]\n" + s[len(s)-maxDiagnosticsBytes:]
+	}
+	return s
 }
 
 func (p *Provider) inspectContainer(ctx context.Context, id string) (containerState, error) {

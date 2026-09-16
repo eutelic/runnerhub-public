@@ -58,7 +58,8 @@ jobs:
             'RUNNERHUB_ADMIN_KEY=ci-admin' \
             'RUNNERHUB_SCALESET_KEY=ci-scaler' \
             'RUNNERHUB_API_KEYS=ci-admin:admin:local-admin,ci-scaler:scaler:scaleset-listener' \
-            'RUNNERHUB_GITHUB_APP_ISSUER=Iv1.ci' \
+            'RUNNERHUB_GITHUB_APP_ID=123456789' \
+            'RUNNERHUB_GITHUB_APP_CLIENT_ID=Iv1.ci' \
             'RUNNERHUB_GITHUB_APP_INSTALLATION_ID=12345678' \
             'RUNNERHUB_GITHUB_APP_SLUG=runnerhub-ci' \
             'RUNNERHUB_PUBLIC_URL=http://127.0.0.1:8080' \
@@ -160,6 +161,7 @@ jobs:
             -e 's|ghcr.io/eutelic/runnerhub-bootstrap:latest|runnerhub-ci-bootstrap|g' \
             -e 's|ghcr.io/eutelic/runnerhub-scaleset:latest|runnerhub-ci-scaleset|g' \
             -e 's|pull_policy: always|pull_policy: never|g' \
+            -e 's|github-app-id: &github-app-id 123456789|github-app-id: \&github-app-id 123456789|g' \
             -e 's|Iv1.CHANGE_ME|Iv1.ci|g' \
             -e 's|CHANGE_ME_APP_SLUG|runnerhub-ci|g' \
             -e "s|http://TRUENAS_HOST:8787|http://127.0.0.1:$port|g" \

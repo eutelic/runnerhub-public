@@ -5,7 +5,7 @@ This is the supported image-based deployment path for TrueNAS SCALE 24.10+.
 RunnerHub now uses a **deploy first, connect repositories from the browser later** flow:
 
 1. create one GitHub App;
-2. deploy RunnerHub with the App's client ID, client secret and private key;
+2. deploy RunnerHub with the App's numeric App ID, client ID, client secret and private key;
 3. open the RunnerHub dashboard;
 4. sign in with GitHub;
 5. install/manage the RunnerHub GitHub App and choose repositories;
@@ -78,6 +78,7 @@ RunnerHub performs the GitHub sign-in explicitly, so it does not require "Reques
 Record:
 
 ```text
+App ID          numeric ID from the GitHub App settings
 Client ID       Iv1...
 Client secret   generated in the GitHub App settings
 App slug        the URL slug from github.com/apps/<slug>
@@ -166,6 +167,7 @@ Example using a Tailscale/LAN URL:
 ```bash
 bash deploy/truenas/prepare-compose.sh \
   --root /mnt/POOL/runnerhub \
+  --github-app-id 123456789 \
   --github-client-id Iv1.EXAMPLE \
   --github-app-slug runnerhub-self-hosted-ci \
   --public-url http://TRUENAS_HOST:8787 \
@@ -177,6 +179,7 @@ With external secret files:
 ```bash
 bash deploy/truenas/prepare-compose.sh \
   --root /mnt/POOL/runnerhub \
+  --github-app-id 123456789 \
   --github-client-id Iv1.EXAMPLE \
   --github-app-slug runnerhub-self-hosted-ci \
   --public-url http://TRUENAS_HOST:8787 \
@@ -191,7 +194,7 @@ Useful options:
 --port 8787
 --isolation container-trusted
 --runnerhub-tag sha-FULL_COMMIT_SHA
---runner-image ghcr.io/actions/actions-runner:latest
+--runner-image ghcr.io/actions/actions-runner:2.337.0@sha256:e5496277be5d09bc968b3d64911b74e219ac4a3f2edce956a3ecf9271bea1ef4
 --dind-image docker:dind
 ```
 

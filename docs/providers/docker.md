@@ -8,6 +8,8 @@ This is the default and preferred mode when workflows do not require Docker cont
 
 It uses exact container IDs, an image allowlist, resource limits, a tmpfs work directory, `no-new-privileges`, no published ports, and **no Docker socket inside the workflow runner**. JIT configuration is stored under a host-private `0700` worker directory; the JIT file itself is `0444` because the official runner image executes as a non-root user and must be able to read the read-only bind mount. `run.sh --jitconfig` consumes it inside the isolated worker container.
 
+The pool's `diskBytes` value is the **maximum tmpfs workdir size** in this mode. It is not charged against host filesystem capacity by the scheduler because Docker backs tmpfs with memory/swap and the runner container's memory cgroup remains the hard memory envelope. Disk-backed isolation modes continue to reserve host disk normally.
+
 Because the workflow runner has no Docker daemon, shell, JavaScript, and composite actions work but GitHub workflow features that require Docker do not.
 
 ## `container-dind` — explicit trusted-workload opt-in
@@ -64,9 +66,9 @@ That live fixture complements provider unit tests for host gating, socket non-ex
 
 ## Runner image refresh
 
-Ephemeral Docker workers use `docker run --pull always` by default. This is deliberate: the default GitHub runner image uses the moving `latest` tag while scale-set JIT runners disable in-process runner updates, so reusing a stale local image indefinitely can eventually make the runner ineligible for new jobs.
+Ephemeral Docker workers use `docker run --pull always` by default, but the default runner reference is an **immutable digest pin**. Pulling `always` therefore refreshes the local cache without changing the selected runner identity. RunnerHub release validation advances that digest deliberately only after a real JIT acceptance run succeeds.
 
-Override the behavior only when image lifecycle is managed separately:
+Override the pull behavior only when image lifecycle is managed separately:
 
 ```dotenv
 RUNNERHUB_DOCKER_PULL_POLICY=always   # default
@@ -74,7 +76,7 @@ RUNNERHUB_DOCKER_PULL_POLICY=always   # default
 # RUNNERHUB_DOCKER_PULL_POLICY=never
 ```
 
-For reproducible installations, use RunnerHub's image allowlist/digest-pin policy together with an explicit image rollout process rather than silently disabling refresh on a moving tag.
+Production policy requires a digest-pinned runner image. Do not replace the default with a moving tag such as `:latest`; advance the tested digest through the release process documented in [../RELEASE.md](../RELEASE.md).
 
 ## Single-host Docker Compose
 

@@ -6,6 +6,7 @@ usage() {
 Usage:
   bash deploy/truenas/prepare-compose.sh \
     --root /mnt/POOL/runnerhub \
+    --github-app-id 123456789 \
     --github-client-id Iv1.EXAMPLE \
     --github-app-slug runnerhub-self-hosted-ci \
     --public-url http://TRUENAS_HOST:8787 \
@@ -36,6 +37,7 @@ script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 template="$script_dir/compose.yaml"
 
 root=""
+github_app_id=""
 github_client_id=""
 github_app_slug=""
 public_url=""
@@ -44,13 +46,14 @@ github_client_secret_path=""
 port="8787"
 isolation="container-trusted"
 runnerhub_tag="latest"
-runner_image="ghcr.io/actions/actions-runner:latest"
+runner_image="ghcr.io/actions/actions-runner:2.337.0@sha256:e5496277be5d09bc968b3d64911b74e219ac4a3f2edce956a3ecf9271bea1ef4"
 dind_image="docker:dind"
 output=""
 
 while (($#)); do
   case "$1" in
     --root) (($# >= 2)) || fail '--root requires a value'; root="$2"; shift 2 ;;
+    --github-app-id) (($# >= 2)) || fail '--github-app-id requires a value'; github_app_id="$2"; shift 2 ;;
     --github-client-id) (($# >= 2)) || fail '--github-client-id requires a value'; github_client_id="$2"; shift 2 ;;
     --github-app-slug) (($# >= 2)) || fail '--github-app-slug requires a value'; github_app_slug="$2"; shift 2 ;;
     --public-url) (($# >= 2)) || fail '--public-url requires a value'; public_url="$2"; shift 2 ;;
@@ -69,6 +72,7 @@ done
 
 [[ -f "$template" ]] || fail "template not found: $template"
 [[ -n "$root" ]] || fail '--root is required'
+[[ -n "$github_app_id" ]] || fail '--github-app-id is required'
 [[ -n "$github_client_id" ]] || fail '--github-client-id is required'
 [[ -n "$github_app_slug" ]] || fail '--github-app-slug is required'
 [[ -n "$public_url" ]] || fail '--public-url is required'
@@ -86,6 +90,7 @@ fi
 [[ "$github_app_key_path" =~ ^/mnt/[A-Za-z0-9._/-]+$ ]] || fail '--github-app-key-path must be an absolute TrueNAS /mnt path without whitespace'
 [[ "$github_client_secret_path" =~ ^/mnt/[A-Za-z0-9._/-]+$ ]] || fail '--github-client-secret-path must be an absolute TrueNAS /mnt path without whitespace'
 [[ "$github_app_key_path" != */ && "$github_client_secret_path" != */ ]] || fail 'GitHub secret paths must name files'
+[[ "$github_app_id" =~ ^[1-9][0-9]*$ ]] || fail 'GitHub App ID must be a positive integer'
 [[ "$github_client_id" =~ ^[A-Za-z0-9._-]+$ ]] || fail 'GitHub App client ID contains unsupported characters'
 [[ "$github_app_slug" =~ ^[A-Za-z0-9-]+$ ]] || fail 'GitHub App slug contains unsupported characters'
 case "$public_url" in
@@ -109,6 +114,7 @@ for marker in \
   '/mnt/POOL/runnerhub' \
   '/mnt/POOL/runnerhub/secrets/github-app.pem' \
   '/mnt/POOL/runnerhub/secrets/github-client-secret' \
+  'github-app-id: &github-app-id 123456789' \
   'Iv1.CHANGE_ME' \
   'CHANGE_ME_APP_SLUG' \
   'http://TRUENAS_HOST:8787'
@@ -119,6 +125,7 @@ done
 root_esc="$(escape_sed_replacement "$root")"
 key_path_esc="$(escape_sed_replacement "$github_app_key_path")"
 client_secret_path_esc="$(escape_sed_replacement "$github_client_secret_path")"
+app_id_esc="$(escape_sed_replacement "$github_app_id")"
 client_esc="$(escape_sed_replacement "$github_client_id")"
 slug_esc="$(escape_sed_replacement "$github_app_slug")"
 public_url_esc="$(escape_sed_replacement "$public_url")"
@@ -137,13 +144,14 @@ sed \
   -e "s|github-app-key-path: &github-app-key-path /mnt/POOL/runnerhub/secrets/github-app.pem|github-app-key-path: \&github-app-key-path $key_path_esc|" \
   -e "s|github-client-secret-path: &github-client-secret-path /mnt/POOL/runnerhub/secrets/github-client-secret|github-client-secret-path: \&github-client-secret-path $client_secret_path_esc|" \
   -e "s|/mnt/POOL/runnerhub|$root_esc|g" \
+  -e "s|github-app-id: &github-app-id 123456789|github-app-id: \&github-app-id $app_id_esc|" \
   -e "s|Iv1.CHANGE_ME|$client_esc|g" \
   -e "s|CHANGE_ME_APP_SLUG|$slug_esc|g" \
   -e "s|http://TRUENAS_HOST:8787|$public_url_esc|g" \
   -e "s|published: \"8787\"|published: \"$port_esc\"|" \
   -e "s|pool-isolation: &pool-isolation container-trusted|pool-isolation: \&pool-isolation $isolation_esc|" \
   -e "s|allow-privileged-workers: &allow-privileged-workers \"false\"|allow-privileged-workers: \&allow-privileged-workers \"$allow_privileged_esc\"|" \
-  -e "s|runner-image: &runner-image ghcr.io/actions/actions-runner:latest|runner-image: \&runner-image $runner_image_esc|" \
+  -e "s|runner-image: &runner-image ghcr.io/actions/actions-runner:2.337.0@sha256:e5496277be5d09bc968b3d64911b74e219ac4a3f2edce956a3ecf9271bea1ef4|runner-image: \&runner-image $runner_image_esc|" \
   -e "s|dind-image: &dind-image docker:dind|dind-image: \&dind-image $dind_image_esc|" \
   -e "s|ghcr.io/eutelic/runnerhub-control:latest|ghcr.io/eutelic/runnerhub-control:$tag_esc|" \
   -e "s|ghcr.io/eutelic/runnerhub-agent:latest|ghcr.io/eutelic/runnerhub-agent:$tag_esc|" \
@@ -160,6 +168,7 @@ grep -Fq "state-path: &state-path $root/agent" "$tmp" || fail 'state path rewrit
 grep -Fq "secrets-path: &secrets-path $root/secrets" "$tmp" || fail 'secrets path rewrite did not apply'
 grep -Fq "github-app-key-path: &github-app-key-path $github_app_key_path" "$tmp" || fail 'GitHub App key path rewrite did not apply'
 grep -Fq "github-client-secret-path: &github-client-secret-path $github_client_secret_path" "$tmp" || fail 'GitHub client secret path rewrite did not apply'
+grep -Fq "github-app-id: &github-app-id $github_app_id" "$tmp" || fail 'GitHub App ID rewrite did not apply'
 grep -Fq "github-client-id: &github-client-id $github_client_id" "$tmp" || fail 'GitHub client ID rewrite did not apply'
 grep -Fq "github-app-slug: &github-app-slug $github_app_slug" "$tmp" || fail 'GitHub App slug rewrite did not apply'
 grep -Fq "public-url: &public-url $public_url" "$tmp" || fail 'public URL rewrite did not apply'

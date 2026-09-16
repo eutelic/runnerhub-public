@@ -15,6 +15,7 @@ bash -n "$prepare"
 
 bash "$prepare" \
   --root /mnt/tank/runnerhub \
+  --github-app-id 42424242 \
   --github-client-id Iv1.test \
   --github-app-slug runnerhub-test \
   --public-url http://runnerhub.example.test:8787 \
@@ -29,6 +30,7 @@ grep -Fq 'file: *github-app-key-path' "$trusted"
 grep -Fq 'file: *github-client-secret-path' "$trusted"
 grep -Fq 'RUNNERHUB_GITHUB_APP_PRIVATE_KEY_FILE: /run/secrets/runnerhub-github-app' "$trusted"
 grep -Fq 'RUNNERHUB_GITHUB_CLIENT_SECRET_FILE: /run/secrets/runnerhub-github-client-secret' "$trusted"
+grep -Fq 'github-app-id: &github-app-id 42424242' "$trusted"
 grep -Fq 'github-client-id: &github-client-id Iv1.test' "$trusted"
 grep -Fq 'github-app-slug: &github-app-slug runnerhub-test' "$trusted"
 grep -Fq 'public-url: &public-url http://runnerhub.example.test:8787' "$trusted"
@@ -43,6 +45,7 @@ grep -Fq 'test -s /run/runnerhub/scaleset-ready' "$trusted"
 
 bash "$prepare" \
   --root /mnt/fast/apps/runnerhub \
+  --github-app-id 42424242 \
   --github-client-id Iv1.dind \
   --github-app-slug runnerhub-dind \
   --public-url https://runnerhub.example.com \
@@ -67,6 +70,7 @@ managed_key='/mnt/Databases/apps_n_stuff/scale-secrets/secrets/runnerhub_github_
 managed_client_secret='/mnt/Databases/apps_n_stuff/scale-secrets/secrets/runnerhub_github_client_secret'
 bash "$prepare" \
   --root /mnt/Databases/apps_n_stuff/runnerhub \
+  --github-app-id 42424242 \
   --github-client-id Iv1.managed \
   --github-app-slug runnerhub-managed \
   --public-url http://TRUENAS_HOST:8787 \
@@ -80,8 +84,20 @@ grep -Fq 'secrets-path: &secrets-path /mnt/Databases/apps_n_stuff/runnerhub/secr
 ! grep -Fq 'runnerhub/secrets/github-app.pem' "$managed"
 ! grep -Fq 'runnerhub/secrets/github-client-secret' "$managed"
 
+
+if bash "$prepare" \
+  --root /mnt/tank/runnerhub \
+  --github-app-id not-a-number \
+  --github-client-id Iv1.test \
+  --github-app-slug runnerhub-test \
+  --public-url http://localhost:8787 >/dev/null 2>&1; then
+  echo 'invalid GitHub App ID unexpectedly succeeded' >&2
+  exit 1
+fi
+
 if bash "$prepare" \
   --root /srv/runnerhub \
+  --github-app-id 42424242 \
   --github-client-id Iv1.test \
   --github-app-slug runnerhub-test \
   --public-url http://localhost:8787 >/dev/null 2>&1; then
@@ -91,6 +107,7 @@ fi
 
 if bash "$prepare" \
   --root /mnt/tank/runnerhub \
+  --github-app-id 42424242 \
   --github-client-id Iv1.test \
   --github-app-slug 'bad slug' \
   --public-url http://localhost:8787 >/dev/null 2>&1; then
@@ -100,6 +117,7 @@ fi
 
 if bash "$prepare" \
   --root /mnt/tank/runnerhub \
+  --github-app-id 42424242 \
   --github-client-id Iv1.test \
   --github-app-slug runnerhub-test \
   --public-url ftp://runnerhub.example.com >/dev/null 2>&1; then
@@ -109,6 +127,7 @@ fi
 
 if bash "$prepare" \
   --root /mnt/tank/runnerhub \
+  --github-app-id 42424242 \
   --github-client-id Iv1.test \
   --github-app-slug runnerhub-test \
   --public-url http://localhost:8787 \
@@ -119,6 +138,7 @@ fi
 
 if bash "$prepare" \
   --root /mnt/tank/runnerhub \
+  --github-app-id 42424242 \
   --github-client-id Iv1.test \
   --github-app-slug runnerhub-test \
   --public-url http://localhost:8787 \
@@ -129,6 +149,7 @@ fi
 
 if bash "$prepare" \
   --root /mnt/tank/runnerhub \
+  --github-app-id 42424242 \
   --github-client-id Iv1.test \
   --github-app-slug runnerhub-test \
   --public-url http://localhost:8787 \

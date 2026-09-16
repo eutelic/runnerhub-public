@@ -199,3 +199,70 @@ func TestProviderFailureQueuesImmediateCleanup(t *testing.T) {
 		t.Fatalf("delete command handle=%+v", cmds[0].Handle)
 	}
 }
+
+func TestProviderFailureRetainsOnlyPreJobDiagnostics(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.OpenSQLite(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	startup := core.Worker{
+		ID: "startup-failure", HostID: "host-1", ProviderID: "docker",
+		ProviderHandle: "container-startup", State: core.WorkerRegistering,
+		UpdatedAt: time.Now().UTC(),
+	}
+	if err := st.UpsertWorker(ctx, startup); err != nil {
+		t.Fatal(err)
+	}
+
+	svc := &Service{Store: st}
+	exitCode := 1
+	if err := svc.HandleAgentResult(ctx, "host-1", agent.CommandResult{
+		WorkerID: startup.ID,
+		OK: true,
+		State: &provider.WorkerState{
+			State: core.WorkerFailed, ExitCode: &exitCode,
+			SafeDetail: "container exited",
+			Diagnostics: "Current runner version: 2.337.0\nregistration failed",
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := st.GetWorker(ctx, startup.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ProviderDiagnostics == "" || got.FailedAt.IsZero() {
+		t.Fatalf("startup diagnostics/timestamp not retained: %+v", got)
+	}
+
+	job := core.Worker{
+		ID: "job-failure", HostID: "host-1", ProviderID: "docker",
+		ProviderHandle: "container-job", State: core.WorkerBusy,
+		StartedAt: time.Now().UTC().Add(-time.Minute),
+		UpdatedAt: time.Now().UTC(),
+	}
+	if err := st.UpsertWorker(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.HandleAgentResult(ctx, "host-1", agent.CommandResult{
+		WorkerID: job.ID,
+		OK: true,
+		State: &provider.WorkerState{
+			State: core.WorkerFailed, ExitCode: &exitCode,
+			SafeDetail: "container exited",
+			Diagnostics: "workflow output must not be retained",
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got, err = st.GetWorker(ctx, job.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ProviderDiagnostics != "" {
+		t.Fatalf("post-job diagnostics unexpectedly retained: %q", got.ProviderDiagnostics)
+	}
+}

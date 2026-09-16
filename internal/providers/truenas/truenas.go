@@ -15,6 +15,7 @@ import (
 
 	"github.com/eutelic/runnerhub/internal/core"
 	"github.com/eutelic/runnerhub/internal/hostinfo"
+	"github.com/eutelic/runnerhub/internal/images"
 	"github.com/eutelic/runnerhub/internal/provider"
 )
 
@@ -60,7 +61,7 @@ func newWithRunner(config Config, runner Runner) (*Provider, error) {
 		return nil, errors.New("truenas root must be absolute")
 	}
 	if len(config.AllowedImages) == 0 {
-		config.AllowedImages = []string{"ghcr.io/actions/actions-runner:latest"}
+		config.AllowedImages = []string{images.DefaultRunnerImage}
 	}
 
 	allowed := map[string]struct{}{}
@@ -109,7 +110,7 @@ func (p *Provider) Validate(_ context.Context, spec provider.WorkerSpec) error {
 
 func (p *Provider) Create(ctx context.Context, spec provider.WorkerSpec) (provider.WorkerHandle, error) {
 	if spec.Image == "" {
-		spec.Image = "ghcr.io/actions/actions-runner:latest"
+		spec.Image = images.DefaultRunnerImage
 	}
 	if err := p.Validate(ctx, spec); err != nil {
 		return provider.WorkerHandle{}, err
@@ -130,22 +131,29 @@ func (p *Provider) Create(ctx context.Context, spec provider.WorkerSpec) (provid
 		return provider.WorkerHandle{}, err
 	}
 
+	runnerService := map[string]any{
+		"image":   spec.Image,
+		"restart": "no",
+		"command": []string{"/bin/bash", "-lc", `exec /home/runner/run.sh --jitconfig "$(cat /run/runnerhub/jitconfig)"`},
+		"volumes": []string{jitPath + ":/run/runnerhub/jitconfig:ro"},
+		"tmpfs": []string{
+			"/home/runner/_work:rw,exec,nosuid,nodev,size=" + strconv.FormatInt(workSize(spec), 10),
+		},
+		"labels": map[string]string{
+			"io.runnerhub.worker": spec.WorkerID,
+			"io.runnerhub.pool":   spec.PoolID,
+		},
+		"security_opt": []string{"no-new-privileges:true"},
+	}
+	if spec.Resources.CPUMillis > 0 {
+		runnerService["cpus"] = strconv.FormatFloat(float64(spec.Resources.CPUMillis)/1000, 'f', 3, 64)
+	}
+	if spec.Resources.MemoryBytes > 0 {
+		runnerService["mem_limit"] = strconv.FormatInt(spec.Resources.MemoryBytes, 10)
+	}
 	compose := map[string]any{
 		"services": map[string]any{
-			"runner": map[string]any{
-				"image":   spec.Image,
-				"restart": "no",
-				"command": []string{"/bin/bash", "-lc", `exec /home/runner/run.sh --jitconfig "$(cat /run/runnerhub/jitconfig)"`},
-				"volumes": []string{jitPath + ":/run/runnerhub/jitconfig:ro"},
-				"tmpfs": []string{
-					"/home/runner/_work:rw,exec,nosuid,nodev,size=" + strconv.FormatInt(workSize(spec), 10),
-				},
-				"labels": map[string]string{
-					"io.runnerhub.worker": spec.WorkerID,
-					"io.runnerhub.pool":   spec.PoolID,
-				},
-				"security_opt": []string{"no-new-privileges:true"},
-			},
+			"runner": runnerService,
 		},
 	}
 	payload := map[string]any{

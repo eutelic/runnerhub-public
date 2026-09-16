@@ -104,6 +104,7 @@ func (r *Reconciler) reconcileWorker(ctx context.Context, w *core.Worker) error 
 		}
 		w.State = core.WorkerFailed
 		w.FailureReason = "provisioning timed out before provider handle was recorded"
+		w.FailedAt = now.UTC()
 		w.UpdatedAt = now.UTC()
 		return r.Store.UpsertWorker(ctx, *w)
 	}
@@ -131,15 +132,35 @@ func (r *Reconciler) reconcileWorker(ctx context.Context, w *core.Worker) error 
 			w.GitHubRunnerOS = gr.OS
 			w.GitHubRunnerEphemeral = gr.Ephemeral
 
-			next := w.State
 			if gr.Busy {
-				next = core.WorkerBusy
+				if w.RegisteredAt.IsZero() {
+					w.RegisteredAt = now.UTC()
+					changed = true
+				}
+				if w.StartedAt.IsZero() {
+					w.StartedAt = now.UTC()
+					changed = true
+				}
+				// GitHub can assign a job immediately after registration, before a
+				// reconciliation pass ever observes the runner idle/online. Preserve
+				// the lifecycle invariant by advancing through ready in the same pass.
+				if w.State == core.WorkerRegistering && core.CanTransitionWorker(w.State, core.WorkerReady) {
+					w.State = core.WorkerReady
+					changed = true
+				}
+				if w.State != core.WorkerBusy && core.CanTransitionWorker(w.State, core.WorkerBusy) {
+					w.State = core.WorkerBusy
+					changed = true
+				}
 			} else if gr.Status == "online" && (w.State == core.WorkerRegistering || w.State == core.WorkerBusy) {
-				next = core.WorkerReady
-			}
-			if next != w.State && core.CanTransitionWorker(w.State, next) {
-				w.State = next
-				changed = true
+				if w.RegisteredAt.IsZero() {
+					w.RegisteredAt = now.UTC()
+					changed = true
+				}
+				if core.CanTransitionWorker(w.State, core.WorkerReady) {
+					w.State = core.WorkerReady
+					changed = true
+				}
 			}
 			if changed {
 				w.UpdatedAt = now.UTC()
@@ -149,6 +170,13 @@ func (r *Reconciler) reconcileWorker(ctx context.Context, w *core.Worker) error 
 			}
 
 		case errors.Is(err, githubrunner.ErrNotFound):
+			// Ephemeral runners can disappear from GitHub's runner API immediately
+			// after finishing their assigned job. Once RunnerHub has observed a job
+			// start, let the provider's terminal state decide success vs failure
+			// instead of racing GitHub's registration cleanup.
+			if w.State == core.WorkerBusy && !w.StartedAt.IsZero() {
+				return nil
+			}
 			registrationStarted := w.RegistrationStartedAt
 			if registrationStarted.IsZero() {
 				registrationStarted = w.CreatedAt
@@ -159,6 +187,7 @@ func (r *Reconciler) reconcileWorker(ctx context.Context, w *core.Worker) error 
 			if w.State != core.WorkerRegistering || now.Sub(registrationStarted) >= registrationGrace {
 				w.State = core.WorkerFailed
 				w.FailureReason = "exact GitHub runner registration disappeared"
+				w.FailedAt = now.UTC()
 				w.UpdatedAt = now.UTC()
 				if err := r.Store.UpsertWorker(ctx, *w); err != nil {
 					return err

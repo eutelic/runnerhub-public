@@ -1,7 +1,7 @@
 package api
 
 import(
-"bytes";"context";"encoding/json";"errors";"net/http";"net/http/httptest";"testing";"time";"github.com/eutelic/runnerhub/internal/agent";"github.com/eutelic/runnerhub/internal/agenthub";cachepkg "github.com/eutelic/runnerhub/internal/cache";"github.com/eutelic/runnerhub/internal/core";"github.com/eutelic/runnerhub/internal/githubrunner";"github.com/eutelic/runnerhub/internal/policy";"github.com/eutelic/runnerhub/internal/provider";"github.com/eutelic/runnerhub/internal/scheduler";"github.com/eutelic/runnerhub/internal/store")
+"bytes";"context";"encoding/json";"errors";"net/http";"net/http/httptest";"testing";"time";"github.com/eutelic/runnerhub/internal/agent";"github.com/eutelic/runnerhub/internal/agenthub";"github.com/eutelic/runnerhub/internal/auth";cachepkg "github.com/eutelic/runnerhub/internal/cache";"github.com/eutelic/runnerhub/internal/core";"github.com/eutelic/runnerhub/internal/fleet";"github.com/eutelic/runnerhub/internal/githubrunner";"github.com/eutelic/runnerhub/internal/policy";"github.com/eutelic/runnerhub/internal/provider";"github.com/eutelic/runnerhub/internal/scheduler";"github.com/eutelic/runnerhub/internal/store")
 type failingCommandStore struct{store.Store;fail bool}
 func(s *failingCommandStore)EnqueueCommand(ctx context.Context,hostID string,c agent.Command)error{if s.fail{return errors.New("simulated command persistence failure")};return s.Store.EnqueueCommand(ctx,hostID,c)}
 type apiFakeGH struct{deleted []int64}
@@ -47,4 +47,48 @@ func TestUpdatePoolResources(t *testing.T){
 	got,err:=st.GetPool(ctx,"pool-resources")
 	if err!=nil{t.Fatal(err)}
 	if got.Resources.CPUMillis!=2500||got.Resources.MemoryBytes!=4<<30||got.Resources.DiskBytes!=20<<30||got.MaxConcurrency!=2{t.Fatalf("pool=%+v",got)}
+}
+
+func TestRuntimeHealthEndpointSeparatesRuntimeEvidenceFromListenerState(t *testing.T){
+	ctx:=context.Background()
+	st,err:=store.OpenSQLite(":memory:")
+	if err!=nil{t.Fatal(err)}
+	defer st.Close()
+	now:=time.Now().UTC()
+	pool:=core.RunnerPool{ID:"pool-runtime",Name:"runtime",Scope:core.GitHubScope{Kind:core.ScopeRepository,Owner:"acme",Repository:"app"},Labels:[]string{"runnerhub"},Isolation:core.IsolationContainerTrusted,Resources:core.Resources{CPUMillis:1000,MemoryBytes:1<<30},MaxConcurrency:1,RunnerGroupID:1}
+	if err:=st.UpsertPool(ctx,pool);err!=nil{t.Fatal(err)}
+	if err:=st.UpsertWorker(ctx,core.Worker{ID:"done",PoolID:pool.ID,State:core.WorkerDeleted,RegisteredAt:now.Add(-3*time.Minute),StartedAt:now.Add(-2*time.Minute),CompletedAt:now.Add(-time.Minute)});err!=nil{t.Fatal(err)}
+	svc:=&Service{Store:st}
+	svc.setScaleSetStatus(pool.ID,"ready","listener connected")
+	req:=httptest.NewRequest(http.MethodGet,"/api/v1/runtime-health",nil)
+	rr:=httptest.NewRecorder()
+	svc.Handler().ServeHTTP(rr,req)
+	if rr.Code!=http.StatusOK{t.Fatalf("status=%d body=%s",rr.Code,rr.Body.String())}
+	var got []fleet.RuntimeHealth
+	if err:=json.NewDecoder(rr.Body).Decode(&got);err!=nil{t.Fatal(err)}
+	if len(got)!=1||got[0].PoolID!=pool.ID||got[0].State!="healthy"{t.Fatalf("runtime=%+v",got)}
+}
+
+func TestScalerWorkerViewOmitsProviderDiagnostics(t *testing.T){
+	ctx:=context.Background()
+	st,err:=store.OpenSQLite(":memory:")
+	if err!=nil{t.Fatal(err)}
+	defer st.Close()
+	if err:=st.UpsertWorker(ctx,core.Worker{ID:"w-secret",State:core.WorkerFailed,ProviderDiagnostics:"redacted startup evidence"});err!=nil{t.Fatal(err)}
+	authm:=auth.New(auth.Config{APIKeys:auth.ParseKeys("scale:scaler:listener,admin:admin:local")})
+	svc:=&Service{Store:st,Auth:authm}
+
+	req:=httptest.NewRequest(http.MethodGet,"/api/v1/workers",nil)
+	req.Header.Set("Authorization","Bearer scale")
+	rr:=httptest.NewRecorder()
+	svc.Handler().ServeHTTP(rr,req)
+	if rr.Code!=http.StatusOK{t.Fatalf("scaler status=%d body=%s",rr.Code,rr.Body.String())}
+	if bytes.Contains(rr.Body.Bytes(),[]byte("redacted startup evidence")){t.Fatalf("scaler response exposed diagnostics: %s",rr.Body.String())}
+
+	req=httptest.NewRequest(http.MethodGet,"/api/v1/workers",nil)
+	req.Header.Set("Authorization","Bearer admin")
+	rr=httptest.NewRecorder()
+	svc.Handler().ServeHTTP(rr,req)
+	if rr.Code!=http.StatusOK{t.Fatalf("admin status=%d body=%s",rr.Code,rr.Body.String())}
+	if !bytes.Contains(rr.Body.Bytes(),[]byte("redacted startup evidence")){t.Fatalf("admin response omitted diagnostics: %s",rr.Body.String())}
 }

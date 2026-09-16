@@ -107,10 +107,11 @@ func TestFailedWorkerWithoutProviderHandleReleasesHostCapacity(t *testing.T) {
 func TestHostRejectionReasonNamesExhaustedDimensions(t *testing.T) {
 	h := core.Host{
 		ID: "a", Provider: "docker", State: core.HostOnline,
-		Tags: map[string]string{"isolation.container-trusted": "true"},
+		Tags: map[string]string{"isolation.container-dind": "true"},
 		Capacity: core.Resources{CPUMillis: 6000, MemoryBytes: 16 << 30, DiskBytes: 30 << 30},
 	}
 	p := testPool()
+	p.Isolation = core.IsolationContainerDinD
 	p.Resources = core.Resources{CPUMillis: 2500, MemoryBytes: 8 << 30, DiskBytes: 20 << 30}
 
 	reason := HostRejectionReason(h, p, core.Resources{CPUMillis: 5000, MemoryBytes: 12 << 30, DiskBytes: 20 << 30})
@@ -118,5 +119,44 @@ func TestHostRejectionReasonNamesExhaustedDimensions(t *testing.T) {
 		if !strings.Contains(reason, want) {
 			t.Fatalf("reason=%q, missing %q", reason, want)
 		}
+	}
+}
+
+func TestTrustedDockerTmpfsDoesNotConsumeHostDiskCapacity(t *testing.T) {
+	h := core.Host{
+		ID: "a", Provider: "docker", State: core.HostOnline,
+		Tags: map[string]string{"isolation.container-trusted": "true"},
+		Capacity: core.Resources{CPUMillis: 6000, MemoryBytes: 16 << 30, DiskBytes: 25 << 30},
+	}
+	p := testPool()
+	p.Resources = core.Resources{CPUMillis: 2500, MemoryBytes: 8 << 30, DiskBytes: 20 << 30}
+
+	usedWorker := core.Worker{
+		ID: "existing", HostID: "a", ProviderID: "docker",
+		Isolation: core.IsolationContainerTrusted,
+		State: core.WorkerBusy,
+		Resources: core.Resources{CPUMillis: 2500, MemoryBytes: 8 << 30, DiskBytes: 20 << 30},
+	}
+	used := EffectiveWorkerResources(usedWorker)
+	if used.DiskBytes != 0 {
+		t.Fatalf("trusted Docker worker disk accounting=%d, want 0", used.DiskBytes)
+	}
+	req := EffectivePoolResources(h, p)
+	if req.DiskBytes != 0 {
+		t.Fatalf("trusted Docker pool disk accounting=%d, want 0", req.DiskBytes)
+	}
+	if reason := HostRejectionReason(h, p, used); strings.Contains(reason, "disk exhausted") {
+		t.Fatalf("trusted tmpfs workdir incorrectly exhausted host disk: %q", reason)
+	}
+}
+
+func TestDinDStillConsumesHostDiskCapacity(t *testing.T) {
+	w := core.Worker{
+		ProviderID: "docker",
+		Isolation: core.IsolationContainerDinD,
+		Resources: core.Resources{DiskBytes: 20 << 30},
+	}
+	if got := EffectiveWorkerResources(w).DiskBytes; got != 20<<30 {
+		t.Fatalf("dind disk accounting=%d, want %d", got, int64(20<<30))
 	}
 }

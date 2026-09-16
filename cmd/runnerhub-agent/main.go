@@ -11,6 +11,7 @@ import (
 	"syscall"
 
 	"github.com/eutelic/runnerhub/internal/agent"
+	"github.com/eutelic/runnerhub/internal/images"
 	"github.com/eutelic/runnerhub/internal/provider"
 	dockerprovider "github.com/eutelic/runnerhub/internal/providers/docker"
 	firecrackerprovider "github.com/eutelic/runnerhub/internal/providers/firecracker"
@@ -35,7 +36,7 @@ func main() {
 		p, err := dockerprovider.New(dockerprovider.Config{
 			HostID:                 name,
 			StateDir:               stateDir,
-			AllowedImages:          []string{env("RUNNERHUB_RUNNER_IMAGE", "ghcr.io/actions/actions-runner:latest")},
+			AllowedImages:          []string{env("RUNNERHUB_RUNNER_IMAGE", images.DefaultRunnerImage)},
 			PullPolicy:             env("RUNNERHUB_DOCKER_PULL_POLICY", "always"),
 			DinDImage:              env("RUNNERHUB_DIND_IMAGE", "docker:dind"),
 			AllowPrivilegedWorkers: boolEnv("RUNNERHUB_ALLOW_PRIVILEGED_WORKERS", false),
@@ -81,7 +82,7 @@ func main() {
 		p, err := truenasprovider.New(truenasprovider.Config{
 			HostID:        name,
 			Root:          mustEnv("RUNNERHUB_TRUENAS_ROOT"),
-			AllowedImages: []string{env("RUNNERHUB_RUNNER_IMAGE", "ghcr.io/actions/actions-runner:latest")},
+			AllowedImages: []string{env("RUNNERHUB_RUNNER_IMAGE", images.DefaultRunnerImage)},
 		})
 		must(err)
 		providers[kind] = p

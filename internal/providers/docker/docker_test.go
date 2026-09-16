@@ -61,6 +61,59 @@ func TestCreateHasNoPortsOrDockerSocketHidesJITAndPullsImage(t *testing.T) {
 	}
 }
 
+
+func TestCreateExtractsContainerIDFromCombinedPullOutput(t *testing.T) {
+	const id = "d860df4b25b214321046b596fff7b6008195b1af11d9c1426f98af5ec2448e34"
+	f := &fakeRunner{fn: func(_ string, a ...string) (string, error) {
+		if len(a) > 0 && a[0] == "run" {
+			return "layer: Pulling fs layer\nDigest: sha256:deadbeef\nStatus: Downloaded newer image\n" + id + "\n", nil
+		}
+		return "", nil
+	}}
+	p, err := newWithRunner(Config{StateDir: t.TempDir(), AllowedImages: []string{"img"}}, f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h, err := p.Create(context.Background(), provider.WorkerSpec{
+		WorkerID: "w1", PoolID: "p1", RunnerName: "r1", JITConfig: "jit",
+		Image: "img", Isolation: core.IsolationContainerTrusted,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if h.ProviderID != id {
+		t.Fatalf("provider handle=%q, want exact container id %q", h.ProviderID, id)
+	}
+}
+
+func TestCreateFallsBackToExactNameWhenRunOutputIsAmbiguous(t *testing.T) {
+	const id = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	f := &fakeRunner{fn: func(_ string, a ...string) (string, error) {
+		joined := strings.Join(a, " ")
+		if len(a) > 0 && a[0] == "run" {
+			return "Pulling image\nwarning from docker\n", nil
+		}
+		if strings.HasPrefix(joined, "inspect runnerhub-w1 --format") {
+			return id + "\n", nil
+		}
+		return "", nil
+	}}
+	p, err := newWithRunner(Config{StateDir: t.TempDir(), AllowedImages: []string{"img"}}, f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h, err := p.Create(context.Background(), provider.WorkerSpec{
+		WorkerID: "w1", PoolID: "p1", RunnerName: "r1", JITConfig: "jit",
+		Image: "img", Isolation: core.IsolationContainerTrusted,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if h.ProviderID != id {
+		t.Fatalf("provider handle=%q, want exact inspected id %q", h.ProviderID, id)
+	}
+}
+
 func TestCreateDinDUsesPrivateSidecarSocketNotHostSocket(t *testing.T) {
 	f := &fakeRunner{fn: func(_ string, a ...string) (string, error) {
 		joined := strings.Join(a, " ")
@@ -272,5 +325,70 @@ func TestJITBindMountFileIsReadableByNonRootRunner(t *testing.T) {
 	}
 	if got := info.Mode().Perm(); got != 0o444 {
 		t.Fatalf("jitconfig mode=%o, want 444 so the image's non-root runner user can read the bind mount", got)
+	}
+}
+
+func TestInspectFailedContainerCapturesRedactedDiagnostics(t *testing.T) {
+	const secret = "github_pat_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+	f := &fakeRunner{fn: func(_ string, a ...string) (string, error) {
+		joined := strings.Join(a, " ")
+		switch {
+		case strings.HasPrefix(joined, "inspect runner123 --format"):
+			return `{"Running":false,"ExitCode":1,"Status":"exited","OOMKilled":false,"Error":""}`, nil
+		case strings.HasPrefix(joined, "logs --tail 80 runner123"):
+			return "Listening for Jobs\nAuthorization: Bearer super-secret-value\ntoken=" + secret + "\n", nil
+		default:
+			return "", nil
+		}
+	}}
+	p, err := newWithRunner(Config{StateDir: t.TempDir(), AllowedImages: []string{"img"}}, f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, err := p.Inspect(context.Background(), provider.WorkerHandle{ProviderID: "runner123"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.State != core.WorkerFailed || st.ExitCode == nil || *st.ExitCode != 1 {
+		t.Fatalf("state=%+v", st)
+	}
+	if !strings.Contains(st.Diagnostics, "Listening for Jobs") {
+		t.Fatalf("diagnostics=%q", st.Diagnostics)
+	}
+	for _, secretValue := range []string{"super-secret-value", secret} {
+		if strings.Contains(st.Diagnostics, secretValue) {
+			t.Fatalf("diagnostics leaked secret %q: %q", secretValue, st.Diagnostics)
+		}
+	}
+	if !strings.Contains(st.Diagnostics, "[REDACTED]") {
+		t.Fatalf("diagnostics were not visibly redacted: %q", st.Diagnostics)
+	}
+}
+
+func TestSanitizeDiagnosticsBoundsOutputAndRedactsJWT(t *testing.T) {
+	jwt := "eyJaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.cccccccccccccccccccccccccccccccc"
+	input := jwt + "\n" + strings.Repeat("x ", maxDiagnosticsBytes)
+	got := sanitizeDiagnostics(input)
+	if strings.Contains(got, jwt) {
+		t.Fatalf("jwt was not redacted")
+	}
+	if len(got) > maxDiagnosticsBytes+32 {
+		t.Fatalf("diagnostics len=%d exceeds bounded size", len(got))
+	}
+	if !strings.HasPrefix(got, "[truncated]\n") {
+		t.Fatalf("expected truncation marker, got prefix %q", got[:min(20, len(got))])
+	}
+}
+
+func TestSanitizeDiagnosticsStopsBeforeWorkflowOutput(t *testing.T) {
+	got := sanitizeDiagnostics("Current runner version: 2.337.0\nListening for Jobs\nRunning job: build\nPLAINTEXT_WORKFLOW_SECRET\n")
+	if !strings.Contains(got, "Listening for Jobs") {
+		t.Fatalf("startup evidence missing: %q", got)
+	}
+	if strings.Contains(got, "PLAINTEXT_WORKFLOW_SECRET") {
+		t.Fatalf("workflow output leaked into startup diagnostics: %q", got)
+	}
+	if !strings.Contains(got, "[job output omitted]") {
+		t.Fatalf("job boundary marker missing: %q", got)
 	}
 }

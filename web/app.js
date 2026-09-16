@@ -85,18 +85,20 @@ async function refresh(){
       j('/api/v1/pools'),
       j('/api/v1/workers'),
       j('/api/v1/audit?limit=20'),
-      j('/api/v1/scalesets/status')
+      j('/api/v1/scalesets/status'),
+      j('/api/v1/runtime-health')
     ];
     if(auth.authenticated)requests.push(j('/api/v1/github/connected-repositories'));
     const results=await Promise.all(requests);
-    const [h,p,w,a,statuses,repos]=results;
-    const runtime=new Map((statuses||[]).map(x=>[x.poolId,x]));
+    const [h,p,w,a,statuses,runtimeHealth,repos]=results;
+    const listenerByPool=new Map((statuses||[]).map(x=>[x.poolId,x]));
+    const runtimeByPool=new Map((runtimeHealth||[]).map(x=>[x.poolId,x]));
     els.hosts.innerHTML=tab(h,[['Name',x=>x.name],['State',x=>x.state],['Provider',x=>x.provider],['CPU',x=>x.capacity?.cpuMillis?cpuCores(x.capacity.cpuMillis)+' cores':'unknown'],['Memory',x=>x.capacity?.memoryBytes?gib(x.capacity.memoryBytes)+' GiB':'unknown'],['Disk free',x=>x.capacity?.diskBytes?gib(x.capacity.diskBytes)+' GiB':'unknown']]);
-    els.pools.innerHTML=tab(p,[['Name',x=>x.name],['Repository',x=>x.scope?.repository?x.scope.owner+'/'+x.scope.repository:x.scope?.owner||''],['runs-on',x=>(x.labels||[]).join(', ')],['CPU',x=>cpuCores(x.resources?.cpuMillis)+' cores'],['Memory',x=>gib(x.resources?.memoryBytes)+' GiB'],['Disk',x=>gib(x.resources?.diskBytes)+' GiB'],['Listener',x=>runtime.get(x.id)?.state||'pending'],['Max',x=>x.maxConcurrency]]);
-    const visibleWorkers=(w||[]).filter(x=>x.state!=='deleted');
-    els.workers.innerHTML=tab(visibleWorkers,[['Runner',x=>x.runnerName],['State',x=>x.state],['Exit',x=>x.providerExitCode??''],['OOM',x=>x.providerOomKilled?'yes':''],['Failure',x=>x.failureReason||''],['Host',x=>x.hostId],['Repo',x=>x.repository||''],['Job',x=>x.jobName||'']]);
+    els.pools.innerHTML=tab(p,[['Name',x=>x.name],['Repository',x=>x.scope?.repository?x.scope.owner+'/'+x.scope.repository:x.scope?.owner||''],['runs-on',x=>(x.labels||[]).join(', ')],['CPU',x=>cpuCores(x.resources?.cpuMillis)+' cores'],['Memory',x=>gib(x.resources?.memoryBytes)+' GiB'],['Workdir',x=>gib(x.resources?.diskBytes)+' GiB'],['Listener',x=>listenerByPool.get(x.id)?.state||'pending'],['Runtime',x=>runtimeByPool.get(x.id)?.state||'unknown'],['Max',x=>x.maxConcurrency]]);
+    const visibleWorkers=(w||[]).filter(x=>x.state!=='deleted'||x.failureReason||x.providerDiagnostics).slice(0,50);
+    els.workers.innerHTML=tab(visibleWorkers,[['Runner',x=>x.runnerName],['State',x=>x.state],['Exit',x=>x.providerExitCode??''],['OOM',x=>x.providerOomKilled?'yes':''],['Failure',x=>x.failureReason||''],['Startup diagnostics',x=>x.providerDiagnostics||''],['Host',x=>x.hostId],['Repo',x=>x.repository||''],['Job',x=>x.jobName||'']]);
     els.audit.innerHTML=tab(a,[['When',x=>x.createdAt],['Action',x=>x.action],['Result',x=>x.result],['Detail',x=>x.safeDetail||'']]);
-    if(auth.authenticated&&!els.repos.querySelector('.repo-config[open]'))renderRepos(repos||[],p||[],statuses||[]);
+    if(auth.authenticated&&!els.repos.querySelector('.repo-config[open]'))renderRepos(repos||[],p||[],statuses||[],runtimeHealth||[]);
   }catch(e){message(e.message,'error')}
 }
 
@@ -121,11 +123,12 @@ function resourceEditor(repo,pool){
   '</details>';
 }
 
-function renderRepos(repos,pools,statuses){
+function renderRepos(repos,pools,statuses,runtimeHealth){
   const poolsByRepo=new Map((pools||[])
     .filter(p=>p.scope?.kind==='repository')
     .map(p=>[(p.scope.owner+'/'+p.scope.repository).toLowerCase(),p]));
   const statusByPool=new Map((statuses||[]).map(s=>[s.poolId,s]));
+  const runtimeByPool=new Map((runtimeHealth||[]).map(s=>[s.poolId,s]));
   if(!repos.length){
     els.repos.innerHTML='<div class="empty">No repositories are available through the GitHub App installation. Use <strong>Install / manage repositories</strong> to grant access.</div>';
     return;
@@ -133,17 +136,26 @@ function renderRepos(repos,pools,statuses){
   els.repos.innerHTML=repos.map(repo=>{
     const pool=poolsByRepo.get(repo.fullName.toLowerCase());
     const status=pool?statusByPool.get(pool.id):null;
+    const runtime=pool?runtimeByPool.get(pool.id):null;
     const privacy=repo.private?'Private':'Public';
     let state='';
     let detail='';
     if(pool){
       const current=status?.state||'pending';
-      if(current==='ready')state='<span class="badge">Listener ready</span>';
-      else if(current==='error')state='<span class="badge warn">Error</span>';
-      else if(current==='starting')state='<span class="badge warn">Starting</span>';
-      else state='<span class="badge warn">Pending</span>';
+      let listenerBadge='';
+      if(current==='ready')listenerBadge='<span class="badge">Listener ready</span>';
+      else if(current==='error')listenerBadge='<span class="badge warn">Listener error</span>';
+      else if(current==='starting')listenerBadge='<span class="badge warn">Listener starting</span>';
+      else listenerBadge='<span class="badge warn">Listener pending</span>';
+      const runtimeState=runtime?.state||'unknown';
+      let runtimeBadge='<span class="badge warn">Runtime unverified</span>';
+      if(runtimeState==='healthy')runtimeBadge='<span class="badge">Runtime healthy</span>';
+      else if(runtimeState==='active')runtimeBadge='<span class="badge">Runtime active</span>';
+      else if(runtimeState==='degraded')runtimeBadge='<span class="badge warn">Runtime degraded</span>';
+      state='<span class="badge-row">'+listenerBadge+runtimeBadge+'</span>';
       detail='<div class="resource-summary">'+esc(cpuCores(pool.resources?.cpuMillis))+' CPU · '+esc(gib(pool.resources?.memoryBytes))+' GiB · max '+esc(pool.maxConcurrency)+'</div>';
       if(status?.detail)detail+='<div class="muted">'+esc(status.detail)+'</div>';
+      if(runtime?.lastFailureReason)detail+='<div class="muted">Last runtime failure: '+esc(runtime.lastFailureReason)+'</div>';
     }else if(!repo.private){
       state='<span class="badge warn">Public unsupported</span>';
     }
