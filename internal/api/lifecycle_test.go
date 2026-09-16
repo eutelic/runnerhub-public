@@ -90,3 +90,44 @@ func TestProviderReadyDoesNotBypassGitHubRegistration(t *testing.T) {
 		t.Fatalf("provider readiness must not bypass GitHub registration, got %s", got.State)
 	}
 }
+
+
+func TestProviderFailureRetainsExitCode(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.OpenSQLite(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	worker := core.Worker{
+		ID:             "worker-failed",
+		HostID:         "host-1",
+		ProviderID:     "docker",
+		ProviderHandle: "container-123",
+		State:          core.WorkerRegistering,
+		UpdatedAt:      time.Now().UTC(),
+	}
+	if err := st.UpsertWorker(ctx, worker); err != nil {
+		t.Fatal(err)
+	}
+
+	svc := &Service{Store: st}
+	exitCode := 13
+	providerState := provider.WorkerState{State: core.WorkerFailed, ExitCode: &exitCode, SafeDetail: "container exited"}
+	if err := svc.HandleAgentResult(ctx, "host-1", agent.CommandResult{
+		WorkerID: worker.ID,
+		OK:       true,
+		State:    &providerState,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := st.GetWorker(ctx, worker.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.State != core.WorkerFailed || got.FailureReason != "container exited (exit code 13)" {
+		t.Fatalf("worker=%+v", got)
+	}
+}

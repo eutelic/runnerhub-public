@@ -56,6 +56,9 @@ func TestCreateHasNoPortsOrDockerSocketHidesJITAndPullsImage(t *testing.T) {
 	if strings.Contains(joined, "--privileged") {
 		t.Fatalf("trusted container unexpectedly privileged: %s", joined)
 	}
+	if !strings.Contains(joined, "/home/runner/_work:rw,exec,nosuid,nodev,mode=0770,uid=1001,gid=1001") {
+		t.Fatalf("trusted runner workdir tmpfs is not explicitly owned by runner uid/gid: %s", joined)
+	}
 }
 
 func TestCreateDinDUsesPrivateSidecarSocketNotHostSocket(t *testing.T) {

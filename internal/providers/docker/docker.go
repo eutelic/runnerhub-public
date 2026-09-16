@@ -183,7 +183,7 @@ func (p *Provider) createTrustedWorker(ctx context.Context, s provider.WorkerSpe
 		size = p.cfg.DefaultWorkdirBytes
 	}
 	args = append(args,
-		"--tmpfs", "/home/runner/_work:rw,exec,nosuid,nodev,size="+strconv.FormatInt(size, 10),
+		"--tmpfs", "/home/runner/_work:rw,exec,nosuid,nodev,mode=0770,uid=1001,gid=1001,size="+strconv.FormatInt(size, 10),
 		s.Image,
 		"/bin/bash", "-lc", `exec /home/runner/run.sh --jitconfig "$(cat /run/runnerhub/jitconfig)"`,
 	)
