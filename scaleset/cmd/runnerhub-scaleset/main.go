@@ -135,6 +135,31 @@ type poolResponse struct {
 	MaxConcurrency int    `json:"maxConcurrency"`
 }
 
+type poolHealthResponse struct {
+	Healthy bool     `json:"healthy"`
+	Reasons []string `json:"reasons,omitempty"`
+}
+
+type runnerHubHTTPError struct {
+	Path       string
+	StatusCode int
+	Body       string
+}
+
+func (e *runnerHubHTTPError) Error() string {
+	return fmt.Sprintf("runnerhub %s returned %d: %s", e.Path, e.StatusCode, e.Body)
+}
+
+func isRunnerHubConflict(err error) bool {
+	var httpErr *runnerHubHTTPError
+	return errors.As(err, &httpErr) && httpErr.StatusCode == http.StatusConflict
+}
+
+type scaleSetRunnerClient interface {
+	GenerateJitRunnerConfig(context.Context, *scaleset.RunnerScaleSetJitRunnerSetting, int) (*scaleset.RunnerScaleSetJitRunnerConfig, error)
+	RemoveRunner(context.Context, int64) error
+}
+
 type scaleEvent struct {
 	PoolID        string    `json:"poolId"`
 	RunnerName    string    `json:"runnerName"`
@@ -151,11 +176,12 @@ type scaleEvent struct {
 	Result        string    `json:"result,omitempty"`
 }
 
-func (c runnerHubClient) create(ctx context.Context, name, jit string) (workerResponse, error) {
+func (c runnerHubClient) create(ctx context.Context, name, jit string, githubRunnerID int64) (workerResponse, error) {
 	var out workerResponse
-	err := c.do(ctx, http.MethodPost, "/api/v1/pools/"+c.poolID+"/scale-workers", map[string]string{
-		"runnerName": name,
-		"jitConfig":  jit,
+	err := c.do(ctx, http.MethodPost, "/api/v1/pools/"+c.poolID+"/scale-workers", map[string]any{
+		"runnerName":     name,
+		"jitConfig":      jit,
+		"githubRunnerId": githubRunnerID,
 	}, &out)
 	return out, err
 }
@@ -192,6 +218,14 @@ func (c runnerHubClient) poolLimit(ctx context.Context) (int, error) {
 	return 0, fmt.Errorf("runnerhub pool %q not found", c.poolID)
 }
 
+func (c runnerHubClient) poolHasCapacity(ctx context.Context) (bool, []string, error) {
+	var health poolHealthResponse
+	if err := c.do(ctx, http.MethodGet, "/api/v1/pools/"+c.poolID+"/health", nil, &health); err != nil {
+		return false, nil, err
+	}
+	return health.Healthy, health.Reasons, nil
+}
+
 func (c runnerHubClient) scaleSetStatus(ctx context.Context, poolID, state, detail string) error {
 	return c.do(ctx, http.MethodPost, "/api/v1/scalesets/status", map[string]string{
 		"poolId": poolID,
@@ -226,7 +260,7 @@ func (c runnerHubClient) do(ctx context.Context, method, path string, body any, 
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return fmt.Errorf("runnerhub %s returned %d: %s", path, resp.StatusCode, strings.TrimSpace(string(msg)))
+		return &runnerHubHTTPError{Path: path, StatusCode: resp.StatusCode, Body: strings.TrimSpace(string(msg))}
 	}
 	if out != nil {
 		return json.NewDecoder(resp.Body).Decode(out)
@@ -240,7 +274,7 @@ type scaler struct {
 	min        int
 	max        int
 	scaleSetID int
-	github     *scaleset.Client
+	github     scaleSetRunnerClient
 	hub        runnerHubClient
 	logger     *slog.Logger
 }
@@ -272,19 +306,53 @@ func (s *scaler) HandleDesiredRunnerCount(ctx context.Context, count int) (int, 
 
 	target := min(s.max, s.min+count)
 	for s.count() < target {
+		hasCapacity, reasons, err := s.hub.poolHasCapacity(ctx)
+		if err != nil {
+			return s.count(), fmt.Errorf("check RunnerHub pool capacity: %w", err)
+		}
+		if !hasCapacity {
+			s.logger.Info("waiting for RunnerHub capacity", "pool", s.hub.poolID, "active", s.count(), "target", target, "reasons", reasons)
+			break
+		}
+
 		name := fmt.Sprintf("runnerhub-%d-%d", time.Now().UnixNano(), s.count())
 		jit, err := s.github.GenerateJitRunnerConfig(ctx, &scaleset.RunnerScaleSetJitRunnerSetting{Name: name}, s.scaleSetID)
 		if err != nil {
 			return s.count(), fmt.Errorf("generate jit: %w", err)
 		}
-		wr, err := s.hub.create(ctx, name, jit.EncodedJITConfig)
+		if jit == nil || jit.Runner == nil || jit.Runner.ID <= 0 || strings.TrimSpace(jit.EncodedJITConfig) == "" {
+			return s.count(), errors.New("github returned incomplete scale-set jit configuration")
+		}
+
+		runnerID := int64(jit.Runner.ID)
+		wr, err := s.hub.create(ctx, name, jit.EncodedJITConfig, runnerID)
 		if err != nil {
-			return s.count(), err
+			// The request may have reached RunnerHub even if the response was lost.
+			// Recover by runner name before removing the GitHub JIT registration.
+			if active, recoverErr := s.hub.activeWorkers(ctx); recoverErr == nil {
+				if workerID := active[name]; workerID != "" {
+					s.mu.Lock()
+					s.names[name] = workerID
+					s.mu.Unlock()
+					s.logger.Warn("recovered RunnerHub worker after ambiguous create response", "pool", s.hub.poolID, "runner", name, "worker", workerID, "error", err)
+					continue
+				}
+			}
+
+			cleanupErr := s.github.RemoveRunner(context.WithoutCancel(ctx), runnerID)
+			if cleanupErr != nil {
+				return s.count(), fmt.Errorf("provision RunnerHub worker: %w; cleanup generated GitHub runner %d: %v", err, runnerID, cleanupErr)
+			}
+			if isRunnerHubConflict(err) {
+				s.logger.Info("RunnerHub capacity changed before provisioning; cleaned generated GitHub runner and will retry", "pool", s.hub.poolID, "runner", name)
+				break
+			}
+			return s.count(), fmt.Errorf("provision RunnerHub worker: %w", err)
 		}
 		s.mu.Lock()
 		s.names[name] = wr.ID
 		s.mu.Unlock()
-		s.logger.Info("provisioning runner", "runner", name, "worker", wr.ID)
+		s.logger.Info("provisioning runner", "runner", name, "worker", wr.ID, "githubRunnerID", runnerID)
 	}
 	return s.count(), nil
 }

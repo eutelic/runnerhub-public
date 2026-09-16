@@ -53,6 +53,7 @@ func TestScalerRoleIsRestrictedToScaleSetEndpoints(t *testing.T) {
 		{http.MethodGet, "/api/v1/pools"},
 		{http.MethodGet, "/api/v1/workers"},
 		{http.MethodGet, "/api/v1/scalesets/configs"},
+		{http.MethodGet, "/api/v1/pools/pool-docker/health"},
 		{http.MethodPost, "/api/v1/scalesets/status"},
 		{http.MethodPost, "/api/v1/pools/pool-docker/scale-workers"},
 		{http.MethodPost, "/api/v1/scale-events"},

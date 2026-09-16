@@ -239,3 +239,35 @@ func TestDeleteRecoversDinDSidecarByParentWithoutLocalWorkerState(t *testing.T) 
 		t.Fatalf("recovered sidecar was not removed: %s", joined)
 	}
 }
+
+
+func TestJITBindMountFileIsReadableByNonRootRunner(t *testing.T) {
+	stateDir := t.TempDir()
+	f := &fakeRunner{fn: func(_ string, a ...string) (string, error) {
+		if len(a) > 0 && a[0] == "run" {
+			return "abc123\n", nil
+		}
+		return "", nil
+	}}
+	p, err := newWithRunner(Config{StateDir: stateDir, AllowedImages: []string{"img"}}, f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.Create(context.Background(), provider.WorkerSpec{
+		WorkerID: "w1",
+		PoolID: "p1",
+		RunnerName: "r1",
+		JITConfig: "secret",
+		Image: "img",
+		Isolation: core.IsolationContainerTrusted,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(stateDir + "/workers/w1/jitconfig")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0o444 {
+		t.Fatalf("jitconfig mode=%o, want 444 so the image's non-root runner user can read the bind mount", got)
+	}
+}

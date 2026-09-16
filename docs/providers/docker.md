@@ -6,7 +6,7 @@ The Docker provider is the default execution backend for trusted private reposit
 
 This is the default and preferred mode when workflows do not require Docker container actions, service containers, or `container:` jobs.
 
-It uses exact container IDs, an image allowlist, resource limits, a tmpfs work directory, `no-new-privileges`, no published ports, and **no Docker socket inside the workflow runner**. JIT configuration is written to a `0600` host file and mounted read-only into the worker, where `run.sh --jitconfig` consumes it.
+It uses exact container IDs, an image allowlist, resource limits, a tmpfs work directory, `no-new-privileges`, no published ports, and **no Docker socket inside the workflow runner**. JIT configuration is stored under a host-private `0700` worker directory; the JIT file itself is `0444` because the official runner image executes as a non-root user and must be able to read the read-only bind mount. `run.sh --jitconfig` consumes it inside the isolated worker container.
 
 Because the workflow runner has no Docker daemon, shell, JavaScript, and composite actions work but GitHub workflow features that require Docker do not.
 

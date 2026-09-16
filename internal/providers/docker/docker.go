@@ -147,7 +147,10 @@ func (p *Provider) Create(ctx context.Context, s provider.WorkerSpec) (provider.
 		return provider.WorkerHandle{}, err
 	}
 	jitPath := filepath.Join(secretDir, "jitconfig")
-	if err := os.WriteFile(jitPath, []byte(s.JITConfig), 0o600); err != nil {
+	// The official runner image runs as UID 1001. The host-only 0700 parent
+	// protects the secret at rest; the bind-mounted file itself must be readable
+	// by the non-root process inside the worker container.
+	if err := os.WriteFile(jitPath, []byte(s.JITConfig), 0o444); err != nil {
 		return provider.WorkerHandle{}, err
 	}
 

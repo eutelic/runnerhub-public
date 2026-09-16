@@ -124,7 +124,9 @@ func (p *Provider) Create(ctx context.Context, spec provider.WorkerSpec) (provid
 		return provider.WorkerHandle{}, err
 	}
 	jitPath := filepath.Join(root, "jitconfig")
-	if err := os.WriteFile(jitPath, []byte(spec.JITConfig), 0600); err != nil {
+	// The runner image is non-root. Keep the worker directory host-private while
+	// making the bind-mounted JIT file readable inside the custom-app container.
+	if err := os.WriteFile(jitPath, []byte(spec.JITConfig), 0444); err != nil {
 		return provider.WorkerHandle{}, err
 	}
 

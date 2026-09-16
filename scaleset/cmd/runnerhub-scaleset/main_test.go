@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -194,5 +195,151 @@ func TestScaleSetStatusPostsPoolState(t *testing.T) {
 	client := runnerHubClient{base: srv.URL, token: "admin", http: srv.Client()}
 	if err := client.scaleSetStatus(context.Background(), "pool-a", "error", "boom"); err != nil {
 		t.Fatal(err)
+	}
+}
+
+
+type fakeScaleSetRunnerClient struct {
+	generateCalls int
+	removeCalls   []int64
+	jit           *scaleset.RunnerScaleSetJitRunnerConfig
+	generateErr   error
+	removeErr     error
+}
+
+func (f *fakeScaleSetRunnerClient) GenerateJitRunnerConfig(_ context.Context, _ *scaleset.RunnerScaleSetJitRunnerSetting, _ int) (*scaleset.RunnerScaleSetJitRunnerConfig, error) {
+	f.generateCalls++
+	if f.generateErr != nil {
+		return nil, f.generateErr
+	}
+	return f.jit, nil
+}
+
+func (f *fakeScaleSetRunnerClient) RemoveRunner(_ context.Context, id int64) error {
+	f.removeCalls = append(f.removeCalls, id)
+	return f.removeErr
+}
+
+func TestHandleDesiredRunnerCountWaitsForCapacityBeforeGeneratingJIT(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/workers":
+			_ = json.NewEncoder(w).Encode([]workerResponse{})
+		case "/api/v1/pools/pool-docker/health":
+			_ = json.NewEncoder(w).Encode(poolHealthResponse{Healthy: false, Reasons: []string{"no online compatible hosts with requested capacity"}})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	gh := &fakeScaleSetRunnerClient{
+		jit: &scaleset.RunnerScaleSetJitRunnerConfig{
+			Runner:           &scaleset.RunnerReference{ID: 123, Name: "runner"},
+			EncodedJITConfig: "jit",
+		},
+	}
+	s := &scaler{
+		names:      map[string]string{},
+		min:        0,
+		max:        2,
+		scaleSetID: 7,
+		github:     gh,
+		hub: runnerHubClient{
+			base:   srv.URL,
+			poolID: "pool-docker",
+			http:   srv.Client(),
+		},
+		logger: slog.Default(),
+	}
+	got, err := s.HandleDesiredRunnerCount(context.Background(), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != 0 {
+		t.Fatalf("active runners=%d, want 0", got)
+	}
+	if gh.generateCalls != 0 {
+		t.Fatalf("generated %d JIT runners despite no capacity", gh.generateCalls)
+	}
+}
+
+func TestHandleDesiredRunnerCountCleansJITRunnerOnCapacityRace(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/workers":
+			_ = json.NewEncoder(w).Encode([]workerResponse{})
+		case "/api/v1/pools/pool-docker/health":
+			_ = json.NewEncoder(w).Encode(poolHealthResponse{Healthy: true})
+		case "/api/v1/pools/pool-docker/scale-workers":
+			http.Error(w, `{"detail":"no compatible host capacity: resources exhausted"}`, http.StatusConflict)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	gh := &fakeScaleSetRunnerClient{
+		jit: &scaleset.RunnerScaleSetJitRunnerConfig{
+			Runner:           &scaleset.RunnerReference{ID: 456, Name: "runner"},
+			EncodedJITConfig: "jit",
+		},
+	}
+	s := &scaler{
+		names:      map[string]string{},
+		min:        0,
+		max:        2,
+		scaleSetID: 7,
+		github:     gh,
+		hub: runnerHubClient{
+			base:   srv.URL,
+			poolID: "pool-docker",
+			http:   srv.Client(),
+		},
+		logger: slog.Default(),
+	}
+	got, err := s.HandleDesiredRunnerCount(context.Background(), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != 0 {
+		t.Fatalf("active runners=%d, want 0", got)
+	}
+	if gh.generateCalls != 1 {
+		t.Fatalf("generated JIT calls=%d, want 1", gh.generateCalls)
+	}
+	if len(gh.removeCalls) != 1 || gh.removeCalls[0] != 456 {
+		t.Fatalf("removed runners=%v, want [456]", gh.removeCalls)
+	}
+}
+
+func TestRunnerHubClientCreateSendsGitHubRunnerID(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/pools/pool-docker/scale-workers" {
+			http.NotFound(w, r)
+			return
+		}
+		var body struct {
+			RunnerName     string `json:"runnerName"`
+			JITConfig      string `json:"jitConfig"`
+			GitHubRunnerID int64  `json:"githubRunnerId"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		if body.RunnerName != "runner-1" || body.JITConfig != "jit" || body.GitHubRunnerID != 789 {
+			t.Fatalf("body=%+v", body)
+		}
+		_ = json.NewEncoder(w).Encode(workerResponse{ID: "worker-1", PoolID: "pool-docker", RunnerName: body.RunnerName, State: "provisioning"})
+	}))
+	defer srv.Close()
+
+	client := runnerHubClient{base: srv.URL, poolID: "pool-docker", http: srv.Client()}
+	got, err := client.create(context.Background(), "runner-1", "jit", 789)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ID != "worker-1" {
+		t.Fatalf("worker=%+v", got)
 	}
 }

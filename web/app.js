@@ -91,7 +91,8 @@ async function refresh(){
     const runtime=new Map((statuses||[]).map(x=>[x.poolId,x]));
     els.hosts.innerHTML=tab(h,[['Name',x=>x.name],['State',x=>x.state],['Provider',x=>x.provider],['CPU',x=>x.capacity?.cpuMillis?x.capacity.cpuMillis/1000+' cores':'unknown']]);
     els.pools.innerHTML=tab(p,[['Name',x=>x.name],['Repository',x=>x.scope?.repository?x.scope.owner+'/'+x.scope.repository:x.scope?.owner||''],['runs-on',x=>(x.labels||[]).join(', ')],['Listener',x=>runtime.get(x.id)?.state||'pending'],['Max',x=>x.maxConcurrency]]);
-    els.workers.innerHTML=tab(w,[['Runner',x=>x.runnerName],['State',x=>x.state],['Host',x=>x.hostId],['Repo',x=>x.repository||''],['Job',x=>x.jobName||'']]);
+    const visibleWorkers=(w||[]).filter(x=>x.state!=='deleted');
+    els.workers.innerHTML=tab(visibleWorkers,[['Runner',x=>x.runnerName],['State',x=>x.state],['Host',x=>x.hostId],['Repo',x=>x.repository||''],['Job',x=>x.jobName||'']]);
     els.audit.innerHTML=tab(a,[['When',x=>x.createdAt],['Action',x=>x.action],['Result',x=>x.result],['Detail',x=>x.safeDetail||'']]);
     if(auth.authenticated)renderRepos(repos||[],p||[],statuses||[]);
   }catch(e){message(e.message,'error')}

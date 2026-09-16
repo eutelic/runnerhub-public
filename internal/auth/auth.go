@@ -132,8 +132,17 @@ func (m *Manager) Middleware(next http.Handler) http.Handler {
 
 func scalerAllowed(r *http.Request) bool {
 	path := r.URL.Path
-	if r.Method == http.MethodGet && (path == "/api/v1/pools" || path == "/api/v1/workers" || path == "/api/v1/scalesets/configs") {
-		return true
+	if r.Method == http.MethodGet {
+		if path == "/api/v1/pools" || path == "/api/v1/workers" || path == "/api/v1/scalesets/configs" {
+			return true
+		}
+		const prefix = "/api/v1/pools/"
+		const healthSuffix = "/health"
+		if strings.HasPrefix(path, prefix) && strings.HasSuffix(path, healthSuffix) {
+			poolID := strings.TrimSuffix(strings.TrimPrefix(path, prefix), healthSuffix)
+			return poolID != "" && !strings.Contains(poolID, "/")
+		}
+		return false
 	}
 	if r.Method != http.MethodPost {
 		return false

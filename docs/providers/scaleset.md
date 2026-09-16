@@ -30,6 +30,8 @@ The adapter restores active RunnerHub workers after listener restart and clamps 
 
 Before every desired-runner-count decision, the adapter re-reads active workers from RunnerHub. This drops locally cached runners that have already failed or been cleaned up and recovers active workers that were not present in the listener's local map. A provider failure before GitHub assigns a job therefore cannot permanently consume the listener's local capacity count.
 
+The adapter checks RunnerHub pool/host capacity **before** asking GitHub for a JIT runner. Capacity exhaustion is backpressure, not a listener failure: queued jobs remain queued and are retried when capacity becomes available. If capacity changes between that preflight and worker creation, RunnerHub removes the just-generated GitHub JIT runner instead of leaking it into the repository runner list. The generated GitHub runner ID is also persisted with the RunnerHub worker so later provider failures can be reconciled and deleted by the control plane.
+
 Real burst, cancellation, listener-restart, and host-loss testing against GitHub remains an acceptance gate. The repository tests prove local state recovery behavior but cannot prove GitHub message redelivery and assignment behavior under every failure ordering.
 
 The `actions/scaleset` client is still public preview, so the adapter remains isolated from the core lifecycle module and direct JIT registration remains available for diagnostics and explicit provisioning.
