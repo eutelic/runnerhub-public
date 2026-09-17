@@ -6,7 +6,7 @@ The Docker provider is the default execution backend for trusted private reposit
 
 This is the default and preferred mode when workflows do not require Docker container actions, service containers, or `container:` jobs.
 
-It uses exact container IDs, an image allowlist, resource limits, a tmpfs work directory, `no-new-privileges`, no published ports, and **no Docker socket inside the workflow runner**. JIT configuration is stored under a host-private `0700` worker directory; the JIT file itself is `0444` because the official runner image executes as a non-root user and must be able to read the read-only bind mount. `run.sh --jitconfig` consumes it inside the isolated worker container.
+It uses exact container IDs, an image allowlist, resource limits, a tmpfs work directory, `no-new-privileges`, no published ports, and **no Docker socket inside the workflow runner**. JIT configuration is stored under a host-private `0700` worker directory. Before the worker starts, RunnerHub explicitly assigns the JIT file to the official runner identity (`1001:1001`) and makes it owner-read-only (`0400`) instead of relying on file-creation mode bits surviving host ACL inheritance. This is required on TrueNAS/ZFS datasets where inherited ACLs can narrow a requested mode such as `0444` to `0440`. The file is still bind-mounted read-only and `run.sh --jitconfig` consumes it inside the isolated worker container.
 
 The pool's `diskBytes` value is the **maximum tmpfs workdir size** in this mode. It is not charged against host filesystem capacity by the scheduler because Docker backs tmpfs with memory/swap and the runner container's memory cgroup remains the hard memory envelope. Disk-backed isolation modes continue to reserve host disk normally.
 

@@ -61,7 +61,6 @@ func TestCreateHasNoPortsOrDockerSocketHidesJITAndPullsImage(t *testing.T) {
 	}
 }
 
-
 func TestCreateExtractsContainerIDFromCombinedPullOutput(t *testing.T) {
 	const id = "d860df4b25b214321046b596fff7b6008195b1af11d9c1426f98af5ec2448e34"
 	f := &fakeRunner{fn: func(_ string, a ...string) (string, error) {
@@ -296,7 +295,6 @@ func TestDeleteRecoversDinDSidecarByParentWithoutLocalWorkerState(t *testing.T) 
 	}
 }
 
-
 func TestJITBindMountFileIsReadableByNonRootRunner(t *testing.T) {
 	stateDir := t.TempDir()
 	f := &fakeRunner{fn: func(_ string, a ...string) (string, error) {
@@ -323,8 +321,8 @@ func TestJITBindMountFileIsReadableByNonRootRunner(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := info.Mode().Perm(); got != 0o444 {
-		t.Fatalf("jitconfig mode=%o, want 444 so the image's non-root runner user can read the bind mount", got)
+	if got := info.Mode().Perm(); got != 0o400 && got != 0o444 {
+		t.Fatalf("jitconfig mode=%o, want normalized 0400 or non-root fallback 0444", got)
 	}
 }
 

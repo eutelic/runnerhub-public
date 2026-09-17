@@ -19,6 +19,11 @@ import (
 	"github.com/eutelic/runnerhub/internal/provider"
 )
 
+const (
+	runnerUID = 1001
+	runnerGID = 1001
+)
+
 type Runner interface {
 	Run(context.Context, string, ...string) (string, error)
 }
@@ -108,6 +113,35 @@ func (p *Provider) Validate(_ context.Context, spec provider.WorkerSpec) error {
 	return nil
 }
 
+func writeJITSecret(path string, data []byte) error {
+	// TrueNAS datasets can inherit ACLs that narrow requested create modes.
+	// Explicitly hand the JIT secret to the non-root runner identity and then
+	// make it owner-read-only before creating the custom app.
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		return err
+	}
+	if err := os.Chown(path, runnerUID, runnerGID); err != nil {
+		if os.Geteuid() != 0 {
+			if chmodErr := os.Chmod(path, 0o444); chmodErr != nil {
+				return fmt.Errorf("set JIT secret fallback mode after chown failure: %w", chmodErr)
+			}
+			return nil
+		}
+		return fmt.Errorf("set JIT secret owner to %d:%d: %w", runnerUID, runnerGID, err)
+	}
+	if err := os.Chmod(path, 0o400); err != nil {
+		return fmt.Errorf("set JIT secret mode: %w", err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return fmt.Errorf("verify JIT secret: %w", err)
+	}
+	if got := info.Mode().Perm(); got != 0o400 {
+		return fmt.Errorf("verify JIT secret mode: got %04o, want 0400", got)
+	}
+	return nil
+}
+
 func (p *Provider) Create(ctx context.Context, spec provider.WorkerSpec) (provider.WorkerHandle, error) {
 	if spec.Image == "" {
 		spec.Image = images.DefaultRunnerImage
@@ -125,9 +159,8 @@ func (p *Provider) Create(ctx context.Context, spec provider.WorkerSpec) (provid
 		return provider.WorkerHandle{}, err
 	}
 	jitPath := filepath.Join(root, "jitconfig")
-	// The runner image is non-root. Keep the worker directory host-private while
-	// making the bind-mounted JIT file readable inside the custom-app container.
-	if err := os.WriteFile(jitPath, []byte(spec.JITConfig), 0444); err != nil {
+	if err := writeJITSecret(jitPath, []byte(spec.JITConfig)); err != nil {
+		_ = os.RemoveAll(root)
 		return provider.WorkerHandle{}, err
 	}
 

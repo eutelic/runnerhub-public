@@ -21,6 +21,7 @@ x-runnerhub-config:
   runner-image: &runner-image ghcr.io/actions/actions-runner:2.337.0@sha256:e5496277be5d09bc968b3d64911b74e219ac4a3f2edce956a3ecf9271bea1ef4
   pool-isolation: &pool-isolation container-trusted
   allow-privileged-workers: &allow-privileged-workers "false"
+  diagnostics-enabled: &diagnostics-enabled "false"
   dind-image: &dind-image docker:dind
 
 secrets:
@@ -112,6 +113,7 @@ services:
       RUNNERHUB_DOCKER_PULL_POLICY: always
       RUNNERHUB_DIND_IMAGE: *dind-image
       RUNNERHUB_ALLOW_PRIVILEGED_WORKERS: *allow-privileged-workers
+      RUNNERHUB_DIAGNOSTICS_ENABLED: *diagnostics-enabled
     volumes:
       - type: bind
         source: /var/run/docker.sock
