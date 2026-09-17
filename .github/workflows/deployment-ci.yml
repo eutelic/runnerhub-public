@@ -28,6 +28,8 @@ permissions:
 
 jobs:
   packaging:
+    # Docker-heavy deployment validation stays on GitHub-hosted runners until
+    # RunnerHub has a dedicated build/DinD pool.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6

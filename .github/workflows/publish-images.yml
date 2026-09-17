@@ -32,6 +32,9 @@ concurrency:
   group: publish-images-${{ github.ref }}
   cancel-in-progress: true
 
+# Release/image work intentionally uses GitHub-hosted runners for now. RunnerHub's
+# normal pool remains unprivileged; a future dedicated build/DinD pool can replace
+# ubuntu-latest here without widening the trust boundary of ordinary jobs.
 jobs:
   acceptance-config:
     name: Verify live JIT acceptance configuration

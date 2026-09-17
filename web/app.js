@@ -3,6 +3,7 @@ const els={
   hosts:document.getElementById('hosts'),
   pools:document.getElementById('pools'),
   workers:document.getElementById('workers'),
+  workerSummary:document.getElementById('worker-summary'),
   audit:document.getElementById('audit'),
   msg:document.getElementById('msg'),
   repos:document.getElementById('repos'),
@@ -30,6 +31,24 @@ function show(el,on){el.classList.toggle('hidden',!on)}
 function message(text,kind=''){els.msg.className=kind;els.msg.textContent=text||''}
 function gib(bytes){return bytes?Number((bytes/1073741824).toFixed(2)):0}
 function cpuCores(millis){return millis?Number((millis/1000).toFixed(2)):0}
+function repoName(pool){return pool?.scope?.repository?pool.scope.owner+'/'+pool.scope.repository:pool?.scope?.owner||''}
+function isZeroTime(value){return !value||String(value).startsWith('0001-01-01')}
+function fmtTime(value){
+  if(isZeroTime(value))return '—';
+  const d=new Date(value);
+  if(Number.isNaN(d.getTime()))return String(value);
+  return d.toLocaleString([],{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'});
+}
+function workerTimestamp(worker){return worker.updatedAt||worker.failedAt||worker.completedAt||worker.startedAt||worker.registeredAt||worker.createdAt||''}
+function workerDisplayState(worker){
+  if(worker.jobResult){
+    const r=String(worker.jobResult).toLowerCase();
+    if(r==='succeeded'||r==='success')return 'succeeded';
+    if(r==='failed'||r==='failure')return 'failed';
+    return r;
+  }
+  return worker.state||'unknown';
+}
 
 async function j(path,opts={}){
   opts.headers=opts.headers||{};
@@ -49,6 +68,41 @@ function tab(rows,cols){
     rows.map(r=>'<tr>'+cols.map(c=>'<td>'+esc(c[1](r))+'</td>').join('')+'</tr>').join('')+'</table></div>';
 }
 
+function renderWorkers(workers){
+  const all=Array.isArray(workers)?workers:[];
+  const terminal=new Set(['deleted','completed','failed']);
+  const active=all.filter(w=>!terminal.has(String(w.state||'').toLowerCase()));
+  const jobs=all.filter(w=>terminal.has(String(w.state||'').toLowerCase())&&(w.jobName||w.jobResult||w.workflowRunId));
+  const failureCutoff=Date.now()-15*60*1000;
+  const freshStartupFailures=all.filter(w=>{
+    if(!w.failureReason||w.jobName||w.jobResult||w.workflowRunId)return false;
+    const t=new Date(workerTimestamp(w)).getTime();
+    return Number.isFinite(t)&&t>=failureCutoff;
+  }).slice(0,2);
+
+  const wanted=new Set();
+  active.slice(0,10).forEach(w=>wanted.add(w.id));
+  jobs.slice(0,8).forEach(w=>wanted.add(w.id));
+  freshStartupFailures.forEach(w=>wanted.add(w.id));
+  const visible=all.filter(w=>wanted.has(w.id)).slice(0,10);
+
+  els.workerSummary.textContent=active.length+' active · '+Math.min(jobs.length,8)+' recent job'+(Math.min(jobs.length,8)===1?'':'s');
+  if(!visible.length){
+    els.workers.innerHTML='<div class="empty">No active or recent runner activity.</div>';
+    return;
+  }
+
+  els.workers.innerHTML=tab(visible,[
+    ['Repository',x=>x.repository||repoName(x)||'—'],
+    ['Job',x=>x.jobName||'startup'],
+    ['Result',x=>workerDisplayState(x)],
+    ['CPU',x=>x.resources?.cpuMillis?cpuCores(x.resources.cpuMillis):'—'],
+    ['RAM',x=>x.resources?.memoryBytes?gib(x.resources.memoryBytes)+' GiB':'—'],
+    ['Updated',x=>fmtTime(workerTimestamp(x))],
+    ['Failure',x=>x.failureReason||'']
+  ])+'<div class="muted small workers-note">Historical and deleted worker records are hidden here. Diagnostics retains the full history.</div>';
+}
+
 async function loadAuth(){
   try{
     auth=await fetch('/auth/github/status').then(r=>r.json());
@@ -65,7 +119,7 @@ async function loadAuth(){
       show(els.login,true);show(els.install,false);show(els.logout,false);show(els.legacy,false);
       return;
     }
-    els.authstatus.textContent='Choose a private repository and configure the resources each runner may use.';
+    els.authstatus.textContent='Connected repositories can run GitHub Actions on this RunnerHub fleet.';
     els.account.textContent='@'+auth.user;
     show(els.login,false);show(els.install,true);show(els.logout,true);show(els.legacy,false);
   }catch(e){message(e.message,'error')}
@@ -76,6 +130,7 @@ async function refresh(){
   const canAPI=auth.authenticated||Boolean(els.token.value);
   if(!canAPI){
     els.hosts.innerHTML=els.pools.innerHTML=els.workers.innerHTML=els.audit.innerHTML='<span class="muted">Sign in to view.</span>';
+    els.workerSummary.textContent='';
     els.repos.innerHTML='';
     return;
   }
@@ -84,7 +139,7 @@ async function refresh(){
       j('/api/v1/hosts'),
       j('/api/v1/pools'),
       j('/api/v1/workers'),
-      j('/api/v1/audit?limit=20'),
+      j('/api/v1/audit?limit=12'),
       j('/api/v1/scalesets/status'),
       j('/api/v1/runtime-health')
     ];
@@ -93,11 +148,28 @@ async function refresh(){
     const [h,p,w,a,statuses,runtimeHealth,repos]=results;
     const listenerByPool=new Map((statuses||[]).map(x=>[x.poolId,x]));
     const runtimeByPool=new Map((runtimeHealth||[]).map(x=>[x.poolId,x]));
-    els.hosts.innerHTML=tab(h,[['Name',x=>x.name],['State',x=>x.state],['Provider',x=>x.provider],['CPU',x=>x.capacity?.cpuMillis?cpuCores(x.capacity.cpuMillis)+' cores':'unknown'],['Memory',x=>x.capacity?.memoryBytes?gib(x.capacity.memoryBytes)+' GiB':'unknown'],['Disk free',x=>x.capacity?.diskBytes?gib(x.capacity.diskBytes)+' GiB':'unknown']]);
-    els.pools.innerHTML=tab(p,[['Name',x=>x.name],['Repository',x=>x.scope?.repository?x.scope.owner+'/'+x.scope.repository:x.scope?.owner||''],['runs-on',x=>(x.labels||[]).join(', ')],['CPU',x=>cpuCores(x.resources?.cpuMillis)+' cores'],['Memory',x=>gib(x.resources?.memoryBytes)+' GiB'],['Workdir',x=>gib(x.resources?.diskBytes)+' GiB'],['Listener',x=>listenerByPool.get(x.id)?.state||'pending'],['Runtime',x=>runtimeByPool.get(x.id)?.state||'unknown'],['Max',x=>x.maxConcurrency]]);
-    const visibleWorkers=(w||[]).filter(x=>x.state!=='deleted'||x.failureReason||x.providerDiagnostics).slice(0,50);
-    els.workers.innerHTML=tab(visibleWorkers,[['Runner',x=>x.runnerName],['State',x=>x.state],['Exit',x=>x.providerExitCode??''],['OOM',x=>x.providerOomKilled?'yes':''],['Failure',x=>x.failureReason||''],['Startup diagnostics',x=>x.providerDiagnostics||''],['Host',x=>x.hostId],['Repo',x=>x.repository||''],['Job',x=>x.jobName||'']]);
-    els.audit.innerHTML=tab(a,[['When',x=>x.createdAt],['Action',x=>x.action],['Result',x=>x.result],['Detail',x=>x.safeDetail||'']]);
+
+    els.hosts.innerHTML=tab(h,[
+      ['Name',x=>x.name],
+      ['State',x=>x.state],
+      ['CPU',x=>x.capacity?.cpuMillis?cpuCores(x.capacity.cpuMillis)+' cores':'unknown'],
+      ['Memory',x=>x.capacity?.memoryBytes?gib(x.capacity.memoryBytes)+' GiB':'unknown']
+    ]);
+    els.pools.innerHTML=tab(p,[
+      ['Repository',x=>repoName(x)],
+      ['CPU',x=>cpuCores(x.resources?.cpuMillis)+' cores'],
+      ['RAM',x=>gib(x.resources?.memoryBytes)+' GiB'],
+      ['Max',x=>x.maxConcurrency],
+      ['Listener',x=>listenerByPool.get(x.id)?.state||'pending'],
+      ['Runtime',x=>runtimeByPool.get(x.id)?.state||'unknown']
+    ]);
+    renderWorkers(w);
+    els.audit.innerHTML=tab(a,[
+      ['When',x=>fmtTime(x.createdAt)],
+      ['Action',x=>x.action],
+      ['Result',x=>x.result],
+      ['Detail',x=>x.safeDetail||'']
+    ]);
     if(auth.authenticated&&!els.repos.querySelector('.repo-config[open]'))renderRepos(repos||[],p||[],statuses||[],runtimeHealth||[]);
   }catch(e){message(e.message,'error')}
 }
@@ -130,37 +202,50 @@ function renderRepos(repos,pools,statuses,runtimeHealth){
   const statusByPool=new Map((statuses||[]).map(s=>[s.poolId,s]));
   const runtimeByPool=new Map((runtimeHealth||[]).map(s=>[s.poolId,s]));
   if(!repos.length){
-    els.repos.innerHTML='<div class="empty">No repositories are available through the GitHub App installation. Use <strong>Install / manage repositories</strong> to grant access.</div>';
+    els.repos.innerHTML='<div class="empty">No repositories are available through the GitHub App installation. Use <strong>Manage repositories</strong> to grant access.</div>';
     return;
   }
-  els.repos.innerHTML=repos.map(repo=>{
+
+  const sorted=[...repos].sort((a,b)=>{
+    const ac=poolsByRepo.has(a.fullName.toLowerCase())?1:0;
+    const bc=poolsByRepo.has(b.fullName.toLowerCase())?1:0;
+    if(ac!==bc)return bc-ac;
+    return a.fullName.localeCompare(b.fullName);
+  });
+
+  els.repos.innerHTML=sorted.map(repo=>{
     const pool=poolsByRepo.get(repo.fullName.toLowerCase());
     const status=pool?statusByPool.get(pool.id):null;
     const runtime=pool?runtimeByPool.get(pool.id):null;
     const privacy=repo.private?'Private':'Public';
-    let state='';
+    let statusHtml='';
     let detail='';
+
     if(pool){
-      const current=status?.state||'pending';
-      let listenerBadge='';
-      if(current==='ready')listenerBadge='<span class="badge">Listener ready</span>';
-      else if(current==='error')listenerBadge='<span class="badge warn">Listener error</span>';
-      else if(current==='starting')listenerBadge='<span class="badge warn">Listener starting</span>';
-      else listenerBadge='<span class="badge warn">Listener pending</span>';
+      const listener=status?.state||'pending';
       const runtimeState=runtime?.state||'unknown';
-      let runtimeBadge='<span class="badge warn">Runtime unverified</span>';
-      if(runtimeState==='healthy')runtimeBadge='<span class="badge">Runtime healthy</span>';
-      else if(runtimeState==='active')runtimeBadge='<span class="badge">Runtime active</span>';
-      else if(runtimeState==='degraded')runtimeBadge='<span class="badge warn">Runtime degraded</span>';
-      state='<span class="badge-row">'+listenerBadge+runtimeBadge+'</span>';
-      detail='<div class="resource-summary">'+esc(cpuCores(pool.resources?.cpuMillis))+' CPU · '+esc(gib(pool.resources?.memoryBytes))+' GiB · max '+esc(pool.maxConcurrency)+'</div>';
-      if(status?.detail)detail+='<div class="muted">'+esc(status.detail)+'</div>';
-      if(runtime?.lastFailureReason)detail+='<div class="muted">Last runtime failure: '+esc(runtime.lastFailureReason)+'</div>';
+      const listenerClass=listener==='ready'?'':' warn';
+      const listenerText=listener==='ready'?'Listener ready':'Listener '+listener;
+      let runtimeClass=' warn';
+      let runtimeText='Runtime unverified';
+      if(runtimeState==='healthy'){runtimeClass='';runtimeText='Runtime healthy'}
+      else if(runtimeState==='active'){runtimeClass='';runtimeText='Runtime active'}
+      else if(runtimeState==='degraded'){runtimeClass=' warn';runtimeText='Runtime degraded'}
+      statusHtml='<div class="repo-status"><span class="badge'+listenerClass+'">'+esc(listenerText)+'</span><span class="badge'+runtimeClass+'">'+esc(runtimeText)+'</span></div>';
+      detail='<div class="resource-summary">'+esc(cpuCores(pool.resources?.cpuMillis))+' CPU · '+esc(gib(pool.resources?.memoryBytes))+' GiB RAM · max '+esc(pool.maxConcurrency)+'</div>';
+      if(status?.detail&&listener!=='ready')detail+='<div class="runtime-detail muted">'+esc(status.detail)+'</div>';
+      if(runtimeState==='degraded'&&runtime?.lastFailureReason)detail+='<div class="runtime-detail muted">Last failure: '+esc(runtime.lastFailureReason)+'</div>';
     }else if(!repo.private){
-      state='<span class="badge warn">Public unsupported</span>';
+      statusHtml='<div class="repo-status"><span class="badge warn">Public unsupported</span></div>';
+    }else{
+      statusHtml='<div class="repo-status"><span class="badge neutral">Not connected</span></div>';
     }
-    return '<article class="repo">'+
-      '<div class="repo-row"><div><strong>'+esc(repo.fullName)+'</strong><div class="muted">'+esc(privacy)+' · '+esc(repo.defaultBranch||'')+'</div>'+detail+'</div>'+state+'</div>'+
+
+    return '<article class="repo'+(pool?' connected':'')+'">'+
+      '<div class="repo-row">'+
+        '<div class="repo-title"><div><div class="repo-name">'+esc(repo.fullName)+'</div><div class="repo-meta muted">'+esc(privacy)+' · '+esc(repo.defaultBranch||'')+'</div></div></div>'+
+        statusHtml+detail+
+      '</div>'+
       (repo.private?resourceEditor(repo,pool):'')+
       '</article>';
   }).join('');
@@ -199,7 +284,6 @@ async function saveRepositoryResources(button){
     await refresh();
   }catch(e){message(e.message,'error');button.disabled=false}
 }
-
 
 async function logout(){
   try{

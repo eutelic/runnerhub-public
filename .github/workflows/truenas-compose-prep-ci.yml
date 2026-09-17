@@ -16,7 +16,7 @@ permissions:
 
 jobs:
   truenas-tools:
-    runs-on: ubuntu-latest
+    runs-on: runnerhub
     steps:
       - uses: actions/checkout@v6
       - name: Validate TrueNAS Compose generator

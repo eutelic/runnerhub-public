@@ -19,6 +19,8 @@ concurrency:
 jobs:
   unit:
     name: Source and unit validation
+    # This validation needs Docker Compose and the Go race detector, so keep it
+    # on a GitHub-hosted runner until RunnerHub has a dedicated build worker.
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:

@@ -8,7 +8,11 @@ var workerTransitions = map[WorkerState]map[WorkerState]struct{}{
 	WorkerRequested: {WorkerProvisioning: {}, WorkerDeleting: {}, WorkerFailed: {}}, WorkerProvisioning: {WorkerStarting: {}, WorkerFailed: {}, WorkerDeleting: {}},
 	WorkerStarting: {WorkerRegistering: {}, WorkerFailed: {}, WorkerDeleting: {}}, WorkerRegistering: {WorkerReady: {}, WorkerFailed: {}, WorkerDeleting: {}},
 	WorkerReady: {WorkerBusy: {}, WorkerCompleted: {}, WorkerDeleting: {}, WorkerFailed: {}}, WorkerBusy: {WorkerCompleted: {}, WorkerFailed: {}, WorkerDeleting: {}},
-	WorkerCompleted: {WorkerDeleting: {}, WorkerCleanupPending: {}}, WorkerFailed: {WorkerCleanupPending: {}, WorkerDeleting: {}}, WorkerCleanupPending: {WorkerDeleting: {}, WorkerDeleted: {}},
+	WorkerCompleted: {WorkerDeleting: {}, WorkerCleanupPending: {}}, WorkerFailed: {WorkerCleanupPending: {}, WorkerDeleting: {}},
+	// GitHub completion can win the race with a provider inspection. If cleanup
+	// has already started, allow a late clean provider completion to be treated
+	// idempotently; the API immediately returns the worker to cleanup_pending.
+	WorkerCleanupPending: {WorkerCompleted: {}, WorkerDeleting: {}, WorkerDeleted: {}},
 	WorkerDeleting: {WorkerDeleted: {}, WorkerCleanupPending: {}}, WorkerDeleted: {},
 }
 

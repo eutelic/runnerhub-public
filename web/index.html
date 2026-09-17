@@ -18,31 +18,50 @@
     <section class="card onboarding">
       <div class="section-head">
         <div>
-          <h2>GitHub</h2>
+          <h2>Repositories</h2>
           <div id="authstatus" class="muted">Checking authentication…</div>
         </div>
         <div class="actions">
           <a class="button secondary" href="/diagnostics.html">Diagnostics</a>
           <a id="login" class="button hidden" href="/auth/github/login">Sign in with GitHub</a>
-          <a id="install" class="button secondary hidden" href="/auth/github/install">Install / manage repositories</a>
+          <a id="install" class="button secondary hidden" href="/auth/github/install">Manage repositories</a>
           <button id="logout" class="secondary hidden">Sign out</button>
         </div>
       </div>
       <div id="repos" class="repo-grid"></div>
-      <details id="legacy-auth">
+      <details id="legacy-auth" class="advanced-details">
         <summary>Advanced: API token</summary>
         <input id="apitoken" type="password" autocomplete="off" placeholder="API token">
       </details>
       <pre id="msg"></pre>
     </section>
 
-    <div class="grid">
-      <section class="card"><h2>Hosts</h2><div id="hosts"></div></section>
-      <section class="card"><h2>Pools</h2><div id="pools"></div></section>
-      <section class="card"><h2>Workers</h2><div id="workers"></div></section>
-      <section class="card">
-        <details>
-          <summary>Advanced: create pool manually</summary>
+    <div class="overview-grid">
+      <section class="card hosts-card">
+        <div class="card-head"><h2>Hosts</h2><span class="muted small">Available compute</span></div>
+        <div id="hosts"></div>
+      </section>
+      <section class="card pools-card">
+        <div class="card-head"><h2>Pools</h2><span class="muted small">Connected runner pools</span></div>
+        <div id="pools"></div>
+      </section>
+    </div>
+
+    <section class="card workers-card">
+      <div class="card-head">
+        <div>
+          <h2>Runner activity</h2>
+          <div class="muted small">Active runners and the most recent jobs. Full worker history is kept in Diagnostics.</div>
+        </div>
+        <div id="worker-summary" class="muted small"></div>
+      </div>
+      <div id="workers"></div>
+    </section>
+
+    <section class="card advanced-card">
+      <details>
+        <summary>Advanced: create pool manually</summary>
+        <div class="advanced-body">
           <input id="pname" placeholder="linux-small">
           <input id="owner" placeholder="owner">
           <input id="repo" placeholder="repo">
@@ -58,11 +77,17 @@
             <label>Max concurrent<input id="pool-concurrency" type="number" min="1" step="1" value="2"></label>
             <label>Runner group<input id="group" type="number" min="1" step="1" value="1"></label>
           </div>
-          <button id="create">Create</button>
-        </details>
-      </section>
-    </div>
-    <section class="card audit-card"><h2>Audit</h2><div id="audit"></div></section>
+          <button id="create">Create pool</button>
+        </div>
+      </details>
+    </section>
+
+    <section class="card audit-card">
+      <details>
+        <summary class="audit-summary"><strong>Audit</strong><span class="muted small">Recent control-plane events</span></summary>
+        <div id="audit" class="audit-body"></div>
+      </details>
+    </section>
   </main>
   <script src="/app.js" defer></script>
 </body>

@@ -95,6 +95,110 @@ func TestProviderReadyDoesNotBypassGitHubRegistration(t *testing.T) {
 	}
 }
 
+func TestProviderCompletedDuringCleanupDoesNotOverwriteSuccessfulJob(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.OpenSQLite(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	hub, err := agenthub.New(st, "enrollment-secret", "agent-secret-that-is-at-least-thirty-two-bytes")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	now := time.Now().UTC()
+	worker := core.Worker{
+		ID:             "worker-clean-exit",
+		HostID:         "host-1",
+		ProviderID:     "docker",
+		ProviderHandle: "container-clean-exit",
+		State:          core.WorkerCleanupPending,
+		StartedAt:      now.Add(-time.Minute),
+		CompletedAt:    now.Add(-30 * time.Second),
+		JobResult:      "succeeded",
+		UpdatedAt:      now,
+	}
+	if err := st.UpsertWorker(ctx, worker); err != nil {
+		t.Fatal(err)
+	}
+
+	exitCode := 0
+	svc := &Service{Store: st, Hub: hub}
+	if err := svc.HandleAgentResult(ctx, "host-1", agent.CommandResult{
+		WorkerID: worker.ID,
+		OK:       true,
+		State: &provider.WorkerState{
+			State:      core.WorkerCompleted,
+			ExitCode:   &exitCode,
+			SafeDetail: "container exited",
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := st.GetWorker(ctx, worker.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.State != core.WorkerCleanupPending {
+		t.Fatalf("clean provider exit during cleanup changed state to %s", got.State)
+	}
+	if !got.FailedAt.IsZero() || got.FailureReason != "" {
+		t.Fatalf("successful job was rewritten as failure: %+v", got)
+	}
+	if got.ProviderExitCode == nil || *got.ProviderExitCode != 0 {
+		t.Fatalf("provider exit code=%v, want 0", got.ProviderExitCode)
+	}
+	cmds := hub.Next("host-1")
+	if len(cmds) != 1 || cmds[0].Type != agent.CommandDelete {
+		t.Fatalf("expected cleanup delete command after late completion, got %+v", cmds)
+	}
+}
+
+func TestProviderCompletedBeforeRunnableStillFails(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.OpenSQLite(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	worker := core.Worker{
+		ID:             "worker-early-exit",
+		HostID:         "host-1",
+		ProviderID:     "docker",
+		ProviderHandle: "container-early-exit",
+		State:          core.WorkerRegistering,
+		UpdatedAt:      time.Now().UTC(),
+	}
+	if err := st.UpsertWorker(ctx, worker); err != nil {
+		t.Fatal(err)
+	}
+
+	exitCode := 0
+	svc := &Service{Store: st}
+	if err := svc.HandleAgentResult(ctx, "host-1", agent.CommandResult{
+		WorkerID: worker.ID,
+		OK:       true,
+		State: &provider.WorkerState{
+			State:      core.WorkerCompleted,
+			ExitCode:   &exitCode,
+			SafeDetail: "container exited",
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := st.GetWorker(ctx, worker.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.State != core.WorkerFailed || got.FailureReason != "provider exited before worker reached a runnable state" {
+		t.Fatalf("unexpected early-exit classification: %+v", got)
+	}
+}
 
 func TestProviderFailureRetainsExitCode(t *testing.T) {
 	ctx := context.Background()

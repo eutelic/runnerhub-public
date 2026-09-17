@@ -10,7 +10,8 @@ concurrency:
   cancel-in-progress: true
 jobs:
   core:
-    runs-on: ubuntu-latest
+    # Standard unprivileged CI stays on RunnerHub.
+    runs-on: runnerhub
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-go@v7
@@ -18,6 +19,20 @@ jobs:
           go-version: '1.26.6'
           cache: true
       - run: go test ./...
+      - run: go test -tags localtest ./tests/soak -count=1
+      - run: go vet ./...
+      - run: go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...
+
+  root-permission-regression:
+    # This regression intentionally needs real root privileges. Normal RunnerHub
+    # workers use no-new-privileges and should not be relaxed for this test.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v7
+        with:
+          go-version: '1.26.6'
+          cache: true
       - name: Verify root JIT secret ownership normalization
         run: |
           sudo env \
@@ -26,12 +41,21 @@ jobs:
             "GOCACHE=$(go env GOCACHE)" \
             go test ./internal/providers/docker ./internal/providers/truenas \
               -run TestWriteJITSecretNormalizesPermissions -count=1
-      - run: go test -race ./internal/...
-      - run: go test -tags localtest ./tests/soak -count=1
-      - run: go vet ./...
-      - run: go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...
-  scaleset:
+
+  core-race:
+    # The ordinary RunnerHub image is intentionally minimal and does not ship a
+    # C toolchain. Keep the race-detector build on GitHub-hosted runners for now.
     runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v7
+        with:
+          go-version: '1.26.6'
+          cache: true
+      - run: go test -race ./internal/...
+
+  scaleset:
+    runs-on: runnerhub
     defaults:
       run:
         working-directory: scaleset
@@ -44,8 +68,9 @@ jobs:
       - run: go test ./...
       - run: go vet ./...
       - run: go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...
+
   agent-crossbuild:
-    runs-on: ubuntu-latest
+    runs-on: runnerhub
     strategy:
       matrix:
         goos: [darwin, windows]
@@ -56,7 +81,10 @@ jobs:
           go-version: '1.26.6'
           cache: true
       - run: GOOS=${{ matrix.goos }} GOARCH=amd64 CGO_ENABLED=0 go build ./cmd/runnerhub-agent
+
   docker-stack-smoke:
+    # Docker/Compose integration work is the build-class workload. Use a
+    # GitHub-hosted runner until RunnerHub has a dedicated Docker-capable pool.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -118,7 +146,6 @@ jobs:
             exit 1
           fi
 
-          # The generated scale-set key can read only the state its listener needs.
           curl --fail --silent --show-error \
             -H "Authorization: Bearer ${scaleset_key}" \
             http://127.0.0.1:8080/api/v1/workers >/dev/null

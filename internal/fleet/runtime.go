@@ -2,6 +2,7 @@ package fleet
 
 import (
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/eutelic/runnerhub/internal/core"
@@ -30,6 +31,15 @@ func RuntimeHealthByPool(pools []core.RunnerPool, workers []core.Worker, now tim
 	return out
 }
 
+func jobSucceeded(result string) bool {
+	switch strings.ToLower(strings.TrimSpace(result)) {
+	case "success", "succeeded":
+		return true
+	default:
+		return false
+	}
+}
+
 func PoolRuntimeHealth(poolID string, workers []core.Worker, now time.Time) RuntimeHealth {
 	h := RuntimeHealth{PoolID: poolID, State: "unknown"}
 	cutoff := now.Add(-24 * time.Hour)
@@ -53,12 +63,18 @@ func PoolRuntimeHealth(poolID string, workers []core.Worker, now time.Time) Runt
 		if w.CompletedAt.After(h.LastJobCompletedAt) {
 			h.LastJobCompletedAt = w.CompletedAt
 		}
-		if w.FailedAt.After(h.LastFailureAt) {
-			h.LastFailureAt = w.FailedAt
-			h.LastFailureReason = w.FailureReason
-		}
-		if !w.FailedAt.IsZero() && !w.FailedAt.Before(cutoff) {
-			h.RecentFailures++
+
+		// GitHub's final job result is authoritative for runtime health. A worker
+		// may record a later provider/cleanup failure after a successful job; that
+		// is infrastructure cleanup evidence, not a failed repository workload.
+		if !jobSucceeded(w.JobResult) {
+			if w.FailedAt.After(h.LastFailureAt) {
+				h.LastFailureAt = w.FailedAt
+				h.LastFailureReason = w.FailureReason
+			}
+			if !w.FailedAt.IsZero() && !w.FailedAt.Before(cutoff) {
+				h.RecentFailures++
+			}
 		}
 	}
 

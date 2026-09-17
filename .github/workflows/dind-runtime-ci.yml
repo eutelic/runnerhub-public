@@ -31,6 +31,8 @@ permissions:
 
 jobs:
   dind-network:
+    # Privileged Docker-in-Docker validation stays on GitHub-hosted runners
+    # until RunnerHub has a dedicated build/DinD worker class.
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:

@@ -42,6 +42,24 @@ func TestPoolRuntimeHealthMarksNewerFailureDegraded(t *testing.T) {
 	}
 }
 
+func TestPoolRuntimeHealthIgnoresCleanupFailureAfterSuccessfulJob(t *testing.T) {
+	now := time.Now().UTC()
+	workers := []core.Worker{{
+		PoolID: "p",
+		State: core.WorkerDeleted,
+		RegisteredAt: now.Add(-3 * time.Minute),
+		StartedAt: now.Add(-2 * time.Minute),
+		CompletedAt: now.Add(-time.Minute),
+		JobResult: "succeeded",
+		FailedAt: now.Add(-30 * time.Second),
+		FailureReason: "provider exited before worker reached a runnable state",
+	}}
+	h := PoolRuntimeHealth("p", workers, now)
+	if h.State != "healthy" || h.RecentFailures != 0 || !h.LastFailureAt.IsZero() {
+		t.Fatalf("successful job cleanup noise degraded runtime health: %+v", h)
+	}
+}
+
 func TestPoolRuntimeHealthBusyIsActive(t *testing.T) {
 	now := time.Now().UTC()
 	workers := []core.Worker{{
