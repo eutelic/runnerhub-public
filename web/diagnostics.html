@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>RunnerHub Diagnostics</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header>
+    <div>
+      <h1>RunnerHub Diagnostics</h1>
+      <div class="muted">Redacted state and startup evidence for troubleshooting</div>
+    </div>
+    <div class="actions">
+      <a class="button secondary" href="/">Dashboard</a>
+    </div>
+  </header>
+  <main>
+    <section class="card">
+      <div class="section-head">
+        <div>
+          <h2>Support bundle</h2>
+          <div class="muted">Collects RunnerHub API state, recent audit events, runtime/listener status, and retained startup diagnostics. Secrets and job output are not intentionally included.</div>
+        </div>
+        <div class="actions">
+          <button id="refresh-bundle">Refresh bundle</button>
+          <button id="copy-bundle" class="secondary">Copy bundle</button>
+        </div>
+      </div>
+      <p class="muted">For clean pre-job container exits, set <code>RUNNERHUB_DIAGNOSTICS_ENABLED=true</code> on the agent service so the last 200 startup log lines are captured, redacted, and retained with the failed worker.</p>
+      <pre id="diag-status"></pre>
+      <textarea id="support-bundle" spellcheck="false" style="width:100%;min-height:60vh;resize:vertical" aria-label="RunnerHub support bundle"></textarea>
+    </section>
+  </main>
+  <script src="/diagnostics.js" defer></script>
+</body>
+</html>
