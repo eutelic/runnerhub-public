@@ -42,7 +42,12 @@ func main() {
 			AllowPrivilegedWorkers: boolEnv("RUNNERHUB_ALLOW_PRIVILEGED_WORKERS", false),
 		})
 		must(err)
-		providers[kind] = p
+		var selected provider.Provider = p
+		if boolEnv("RUNNERHUB_DIAGNOSTICS_ENABLED", false) {
+			selected = newDiagnosticProvider(p, env("RUNNERHUB_DOCKER_BINARY", "docker"))
+			log.Printf("worker startup diagnostics enabled")
+		}
+		providers[kind] = selected
 
 	case "process":
 		p, err := processprovider.New(processprovider.Config{
