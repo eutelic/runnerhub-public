@@ -19,7 +19,11 @@ import (
 	"github.com/eutelic/runnerhub/internal/provider"
 )
 
-const maxDiagnosticsBytes = 4096
+const (
+	maxDiagnosticsBytes = 4096
+	runnerUID           = 1001
+	runnerGID           = 1001
+)
 
 var detachedContainerIDPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
@@ -153,6 +157,40 @@ func (p *Provider) Validate(_ context.Context, s provider.WorkerSpec) error {
 	return nil
 }
 
+func writeJITSecret(path string, data []byte) error {
+	// The production Docker agent runs as root while the official Actions runner
+	// image runs as UID/GID 1001. TrueNAS/ZFS ACL inheritance can narrow the mode
+	// requested at file creation (for example 0444 -> 0440), so do not rely on
+	// create-mode bits alone. Explicitly hand ownership to the runner and then
+	// make the file owner-read-only before the container starts.
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		return err
+	}
+	if err := os.Chown(path, runnerUID, runnerGID); err != nil {
+		// Keep unit tests and non-root developer environments usable. Production
+		// RunnerHub images run the agent as root; a non-root caller cannot safely
+		// change ownership, so retain the historical read-only fallback there.
+		if os.Geteuid() != 0 {
+			if chmodErr := os.Chmod(path, 0o444); chmodErr != nil {
+				return fmt.Errorf("set JIT secret fallback mode after chown failure: %w", chmodErr)
+			}
+			return nil
+		}
+		return fmt.Errorf("set JIT secret owner to %d:%d: %w", runnerUID, runnerGID, err)
+	}
+	if err := os.Chmod(path, 0o400); err != nil {
+		return fmt.Errorf("set JIT secret mode: %w", err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return fmt.Errorf("verify JIT secret: %w", err)
+	}
+	if got := info.Mode().Perm(); got != 0o400 {
+		return fmt.Errorf("verify JIT secret mode: got %04o, want 0400", got)
+	}
+	return nil
+}
+
 func (p *Provider) Create(ctx context.Context, s provider.WorkerSpec) (provider.WorkerHandle, error) {
 	if s.Image == "" {
 		s.Image = images.DefaultRunnerImage
@@ -165,10 +203,8 @@ func (p *Provider) Create(ctx context.Context, s provider.WorkerSpec) (provider.
 		return provider.WorkerHandle{}, err
 	}
 	jitPath := filepath.Join(secretDir, "jitconfig")
-	// The official runner image runs as UID 1001. The host-only 0700 parent
-	// protects the secret at rest; the bind-mounted file itself must be readable
-	// by the non-root process inside the worker container.
-	if err := os.WriteFile(jitPath, []byte(s.JITConfig), 0o444); err != nil {
+	if err := writeJITSecret(jitPath, []byte(s.JITConfig)); err != nil {
+		_ = os.RemoveAll(secretDir)
 		return provider.WorkerHandle{}, err
 	}
 
