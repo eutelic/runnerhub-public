@@ -27,7 +27,9 @@ func TestSanitizeSupportDiagnosticsStopsBeforeJobOutput(t *testing.T) {
 }
 
 func TestSanitizeSupportDiagnosticsIsBounded(t *testing.T) {
-	got := sanitizeSupportDiagnostics(strings.Repeat("x", maxSupportDiagnosticsBytes+1024))
+	// Keep individual token-like runs short so this exercises the size bound,
+	// rather than the long-opaque-token redactor.
+	got := sanitizeSupportDiagnostics(strings.Repeat("diagnostic line x\n", maxSupportDiagnosticsBytes/8))
 	if len(got) > maxSupportDiagnosticsBytes+32 {
 		t.Fatalf("diagnostics are not bounded: %d bytes", len(got))
 	}
