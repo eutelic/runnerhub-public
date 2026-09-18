@@ -32,9 +32,7 @@ concurrency:
   group: publish-images-${{ github.ref }}
   cancel-in-progress: true
 
-# Recovery bootstrap: release/image work temporarily uses GitHub-hosted
-# capacity because this change repairs the Docker-capable publisher pool itself.
-# Restore runnerhub-publisher after the fixed agent has been deployed.
+# Docker-capable release and image work runs on RunnerHub's isolated publisher pool.
 jobs:
   acceptance-config:
     name: Verify live JIT acceptance configuration
@@ -53,7 +51,7 @@ jobs:
   acceptance-host:
     name: Provision real JIT acceptance runner
     needs: acceptance-config
-    runs-on: ubuntu-latest
+    runs-on: runnerhub-publisher
     timeout-minutes: 15
     env:
       RUNNERHUB_ACCEPTANCE_GITHUB_APP_ISSUER: ${{ secrets.RUNNERHUB_ACCEPTANCE_GITHUB_APP_ISSUER }}
@@ -99,7 +97,7 @@ jobs:
   verify-release:
     name: Validate release candidate
     needs: [acceptance-host, jit-smoke]
-    runs-on: ubuntu-latest
+    runs-on: runnerhub-publisher
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v6
@@ -108,7 +106,7 @@ jobs:
 
   publish:
     needs: verify-release
-    runs-on: ubuntu-latest
+    runs-on: runnerhub-publisher
     strategy:
       fail-fast: false
       matrix:
