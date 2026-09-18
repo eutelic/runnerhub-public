@@ -33,6 +33,7 @@ concurrency:
   cancel-in-progress: true
 
 # Docker-capable release and image work runs on RunnerHub's isolated publisher pool.
+# End-to-end RunnerHub release validation trigger.
 jobs:
   acceptance-config:
     name: Verify live JIT acceptance configuration
