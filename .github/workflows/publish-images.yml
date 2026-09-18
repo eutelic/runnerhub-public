@@ -32,13 +32,12 @@ concurrency:
   group: publish-images-${{ github.ref }}
   cancel-in-progress: true
 
-# Release/image work intentionally uses GitHub-hosted runners for now. RunnerHub's
-# normal pool remains unprivileged; a future dedicated build/DinD pool can replace
-# ubuntu-latest here without widening the trust boundary of ordinary jobs.
+# Release/image work uses the repository's Docker-capable publisher pool.
+# The normal runnerhub pool remains unprivileged.
 jobs:
   acceptance-config:
     name: Verify live JIT acceptance configuration
-    runs-on: ubuntu-latest
+    runs-on: runnerhub
     timeout-minutes: 5
     steps:
       - name: Require dedicated GitHub App acceptance credentials
@@ -53,7 +52,7 @@ jobs:
   acceptance-host:
     name: Provision real JIT acceptance runner
     needs: acceptance-config
-    runs-on: ubuntu-latest
+    runs-on: runnerhub-publisher
     timeout-minutes: 15
     env:
       RUNNERHUB_ACCEPTANCE_GITHUB_APP_ISSUER: ${{ secrets.RUNNERHUB_ACCEPTANCE_GITHUB_APP_ISSUER }}
@@ -99,7 +98,7 @@ jobs:
   verify-release:
     name: Validate release candidate
     needs: [acceptance-host, jit-smoke]
-    runs-on: ubuntu-latest
+    runs-on: runnerhub-publisher
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v6
@@ -108,7 +107,7 @@ jobs:
 
   publish:
     needs: verify-release
-    runs-on: ubuntu-latest
+    runs-on: runnerhub-publisher
     strategy:
       fail-fast: false
       matrix:
@@ -168,7 +167,7 @@ jobs:
     # Only the default branch may advance the deployment-facing :latest set.
     # Tags and manual non-main runs keep their immutable/version tags only.
     if: github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
+    runs-on: runnerhub-publisher
     steps:
       - uses: actions/checkout@v6
 

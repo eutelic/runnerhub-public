@@ -31,9 +31,8 @@ permissions:
 
 jobs:
   dind-network:
-    # Privileged Docker-in-Docker validation stays on GitHub-hosted runners
-    # until RunnerHub has a dedicated build/DinD worker class.
-    runs-on: ubuntu-latest
+    # Validate DinD from RunnerHub's dedicated Docker-capable publisher class.
+    runs-on: runnerhub-publisher
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v6
@@ -51,7 +50,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          tmp="$(mktemp -d)"
+          tmp="$(mktemp -d "$RUNNER_TEMP/runnerhub-dind.XXXXXX")"
           run_dir="$tmp/run"
           mkdir -p "$run_dir"
           runner="runnerhub-dind-ci-runner"
@@ -62,10 +61,8 @@ jobs:
             # be removed before the runner that owns that namespace.
             docker rm -f "$sidecar" >/dev/null 2>&1 || true
             docker rm -f "$runner" >/dev/null 2>&1 || true
-            # dockerd creates root-owned state under the bind-mounted /var/run.
-            # GitHub-hosted runners provide passwordless sudo; use it here so
-            # successful runtime assertions are not reported as cleanup errors.
-            sudo rm -rf "$tmp"
+            # The publisher runner is ephemeral, so root-owned DinD socket
+            # state can be left in RUNNER_TEMP after containers are removed.
           }
           trap cleanup EXIT
 

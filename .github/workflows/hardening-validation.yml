@@ -19,9 +19,8 @@ concurrency:
 jobs:
   unit:
     name: Source and unit validation
-    # This validation needs Docker Compose and the Go race detector, so keep it
-    # on a GitHub-hosted runner until RunnerHub has a dedicated build worker.
-    runs-on: ubuntu-latest
+    # Docker/race validation uses the dedicated publisher runner class.
+    runs-on: runnerhub-publisher
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v6
@@ -41,7 +40,7 @@ jobs:
       - name: Validate Docker Compose configuration without building images
         run: |
           set -euo pipefail
-          tmp="$(mktemp -d)"
+          tmp="$(mktemp -d "$RUNNER_TEMP/runnerhub-hardening.XXXXXX")"
           trap 'rm -rf "$tmp"' EXIT
           key="$tmp/app.pem"
           client_secret="$tmp/client-secret"
@@ -68,7 +67,11 @@ jobs:
       - name: Core tests
         run: |
           go test ./...
-          go test -race ./internal/...
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE:$GITHUB_WORKSPACE" \
+            -w "$GITHUB_WORKSPACE" \
+            golang:1.26.6 \
+            bash -lc 'go test -race ./internal/...'
           go vet ./...
       - name: Scale-set tests
         working-directory: scaleset
@@ -78,7 +81,7 @@ jobs:
 
   acceptance-config:
     name: Check acceptance credentials
-    runs-on: ubuntu-latest
+    runs-on: runnerhub
     timeout-minutes: 5
     outputs:
       configured: ${{ steps.check.outputs.configured }}
@@ -103,7 +106,7 @@ jobs:
     name: Provision real JIT acceptance runner
     needs: acceptance-config
     if: needs.acceptance-config.outputs.configured == 'true'
-    runs-on: ubuntu-latest
+    runs-on: runnerhub-publisher
     timeout-minutes: 15
     env:
       RUNNERHUB_ACCEPTANCE_GITHUB_APP_ISSUER: ${{ secrets.RUNNERHUB_ACCEPTANCE_GITHUB_APP_ISSUER }}

@@ -14,6 +14,7 @@ Usage:
     [--github-client-secret-path /mnt/POOL/runnerhub/secrets/github-client-secret] \
     [--port 8787] \
     [--isolation container-trusted|container-dind] \
+    [--allow-privileged-workers true|false] \
     [--runnerhub-tag latest|sha-...] \
     [--runner-image IMAGE] \
     [--dind-image IMAGE] \
@@ -48,6 +49,7 @@ isolation="container-trusted"
 runnerhub_tag="latest"
 runner_image="ghcr.io/actions/actions-runner:2.337.0@sha256:e5496277be5d09bc968b3d64911b74e219ac4a3f2edce956a3ecf9271bea1ef4"
 dind_image="docker:dind"
+allow_privileged_override=""
 output=""
 
 while (($#)); do
@@ -61,6 +63,7 @@ while (($#)); do
     --github-client-secret-path) (($# >= 2)) || fail '--github-client-secret-path requires a value'; github_client_secret_path="$2"; shift 2 ;;
     --port) (($# >= 2)) || fail '--port requires a value'; port="$2"; shift 2 ;;
     --isolation) (($# >= 2)) || fail '--isolation requires a value'; isolation="$2"; shift 2 ;;
+    --allow-privileged-workers) (($# >= 2)) || fail '--allow-privileged-workers requires a value'; allow_privileged_override="$2"; shift 2 ;;
     --runnerhub-tag) (($# >= 2)) || fail '--runnerhub-tag requires a value'; runnerhub_tag="$2"; shift 2 ;;
     --runner-image) (($# >= 2)) || fail '--runner-image requires a value'; runner_image="$2"; shift 2 ;;
     --dind-image) (($# >= 2)) || fail '--dind-image requires a value'; dind_image="$2"; shift 2 ;;
@@ -109,6 +112,15 @@ case "$isolation" in
   container-dind) allow_privileged="true" ;;
   *) fail '--isolation must be container-trusted or container-dind' ;;
 esac
+if [[ -n "$allow_privileged_override" ]]; then
+  case "$allow_privileged_override" in
+    true|false) allow_privileged="$allow_privileged_override" ;;
+    *) fail '--allow-privileged-workers must be true or false' ;;
+  esac
+fi
+if [[ "$isolation" == "container-dind" && "$allow_privileged" != "true" ]]; then
+  fail '--isolation container-dind requires --allow-privileged-workers true'
+fi
 
 for marker in \
   '/mnt/POOL/runnerhub' \

@@ -51,7 +51,7 @@ app_numeric_id="$(printf '%s' "$app_metadata" | python3 -c 'import json,sys; pri
 [ -n "$app_slug" ] || fail "GitHub App metadata did not include slug"
 
 echo "Live acceptance verified GitHub App metadata for $app_slug and will use explicit App ID + Client ID production configuration."
-root="$(mktemp -d)"
+root="$(mktemp -d "${RUNNER_TEMP:-/tmp}/runnerhub-acceptance.XXXXXX")"
 run_id="${GITHUB_RUN_ID:-local-$$}"
 pool_id="release-acceptance-${run_id}"
 runner_label="runnerhub-release-acceptance"

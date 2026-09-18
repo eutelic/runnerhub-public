@@ -92,3 +92,21 @@ func TestScalerWorkerViewOmitsProviderDiagnostics(t *testing.T){
 	if rr.Code!=http.StatusOK{t.Fatalf("admin status=%d body=%s",rr.Code,rr.Body.String())}
 	if !bytes.Contains(rr.Body.Bytes(),[]byte("redacted startup evidence")){t.Fatalf("admin response omitted diagnostics: %s",rr.Body.String())}
 }
+
+
+func TestPublisherPoolClassification(t *testing.T){
+	standard:=core.RunnerPool{ScaleSetName:"runnerhub",Labels:[]string{"runnerhub"}}
+	if isPublisherPool(standard){t.Fatal("standard pool classified as publisher")}
+	byName:=core.RunnerPool{ScaleSetName:publisherScaleSetName}
+	if !isPublisherPool(byName){t.Fatal("publisher scale-set name not detected")}
+	byLabel:=core.RunnerPool{Labels:[]string{publisherScaleSetName}}
+	if !isPublisherPool(byLabel){t.Fatal("publisher label not detected")}
+}
+
+func TestNormalizePublisherResourcesDefaultsAndOverrides(t *testing.T){
+	got:=normalizePublisherResources(core.Resources{},core.Resources{})
+	if got.CPUMillis!=2500||got.MemoryBytes!=8<<30||got.DiskBytes!=40<<30{t.Fatalf("defaults=%+v",got)}
+	fallback:=core.Resources{CPUMillis:1500,MemoryBytes:6<<30,DiskBytes:30<<30}
+	got=normalizePublisherResources(core.Resources{CPUMillis:3000,MemoryBytes:12<<30},fallback)
+	if got.CPUMillis!=3000||got.MemoryBytes!=12<<30||got.DiskBytes!=30<<30{t.Fatalf("override=%+v",got)}
+}

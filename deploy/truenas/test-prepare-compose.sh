@@ -37,6 +37,20 @@ grep -Fq 'public-url: &public-url http://runnerhub.example.test:8787' "$trusted"
 grep -Fq 'published: "8787"' "$trusted"
 grep -Fq 'pool-isolation: &pool-isolation container-trusted' "$trusted"
 grep -Fq 'allow-privileged-workers: &allow-privileged-workers "false"' "$trusted"
+
+publisher="$tmp/publisher.yaml"
+bash "$prepare" \
+  --root /mnt/tank/runnerhub \
+  --github-app-id 42424242 \
+  --github-client-id Iv1.publisher \
+  --github-app-slug runnerhub-publisher-test \
+  --public-url http://runnerhub.example.test:8787 \
+  --isolation container-trusted \
+  --allow-privileged-workers true \
+  --output "$publisher"
+
+grep -Fq 'pool-isolation: &pool-isolation container-trusted' "$publisher"
+grep -Fq 'allow-privileged-workers: &allow-privileged-workers "true"' "$publisher"
 grep -Fq 'ghcr.io/eutelic/runnerhub-control:latest' "$trusted"
 grep -Fq 'io.runnerhub.component: scaleset' "$trusted"
 grep -Fq 'RUNNERHUB_DYNAMIC_CONFIG: "true"' "$trusted"

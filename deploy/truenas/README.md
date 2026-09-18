@@ -20,6 +20,9 @@ The RunnerHub Docker agent mounts `/var/run/docker.sock` because it creates and 
 
 The default `container-trusted` mode is intended for trusted private repositories. Use `container-dind` only when trusted workflows require Docker container actions, services or job containers.
 
+Publisher runners use `container-dind` as a separate per-repository runner class. To make that class available while keeping ordinary runners on `container-trusted`, enable privileged-worker capability at deployment time and leave the default isolation trusted. Repositories still opt in individually from the dashboard.
+
+
 Do not expose the dashboard directly to the public Internet. A LAN or Tailscale URL is appropriate. The GitHub OAuth callback and App setup flow are browser redirects, so the RunnerHub URL only needs to be reachable by the browser completing setup.
 
 ## 1. Prepare storage
@@ -193,6 +196,7 @@ Useful options:
 ```text
 --port 8787
 --isolation container-trusted
+--allow-privileged-workers true   # permits opt-in runnerhub-publisher pools
 --runnerhub-tag sha-FULL_COMMIT_SHA
 --runner-image ghcr.io/actions/actions-runner:2.337.0@sha256:e5496277be5d09bc968b3d64911b74e219ac4a3f2edce956a3ecf9271bea1ef4
 --dind-image docker:dind
@@ -275,6 +279,27 @@ Install / manage repositories
 GitHub then lets you install the RunnerHub App on your user/org and choose **All repositories** or **Only select repositories**.
 
 After GitHub redirects back to RunnerHub, the dashboard lists repositories available through that App installation.
+
+
+### Enable a publisher runner for a repository
+
+For Docker builds and image publishing, deploy RunnerHub with publisher capability enabled while leaving the normal runner class trusted:
+
+```bash
+bash deploy/truenas/prepare-compose.sh \
+  --root /mnt/POOL/runnerhub \
+  --github-app-id 123456789 \
+  --github-client-id Iv1.EXAMPLE \
+  --github-app-slug runnerhub-self-hosted-ci \
+  --public-url http://TRUENAS_HOST:8787 \
+  --isolation container-trusted \
+  --allow-privileged-workers true \
+  --output runnerhub-truenas.yaml
+```
+
+This does **not** make normal `runnerhub` jobs privileged. It only lets the host advertise the separate Docker-capable class. In the repository card, enable **Publisher runner** and use `runs-on: runnerhub-publisher` for Docker/image jobs. Normal CI continues to use `runs-on: runnerhub`.
+
+Publisher pools are repository-scoped and can be disabled independently. They use a private Docker-in-Docker daemon rather than exposing the TrueNAS host Docker socket to workflow jobs.
 
 For each private repository you want RunnerHub to serve, click:
 

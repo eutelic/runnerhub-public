@@ -85,7 +85,7 @@ images=(
   "$image_prefix-scaleset"
 )
 
-tmp="$(mktemp -d)"
+tmp="$(mktemp -d "${RUNNER_TEMP:-/tmp}/runnerhub-release.XXXXXX")"
 cleanup() {
   rm -rf "$tmp"
   if [ "$keep_images" != true ]; then

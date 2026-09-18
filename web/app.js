@@ -22,6 +22,8 @@ els.token.addEventListener('input',()=>{sessionStorage.setItem('runnerhub-token'
 document.getElementById('create').addEventListener('click',createPool);
 els.logout.addEventListener('click',logout);
 els.repos.addEventListener('click',e=>{
+  const publisher=e.target.closest('button[data-publisher-action]');
+  if(publisher){savePublisher(publisher);return}
   const button=e.target.closest('button[data-resource-action]');
   if(button)saveRepositoryResources(button);
 });
@@ -32,6 +34,8 @@ function message(text,kind=''){els.msg.className=kind;els.msg.textContent=text||
 function gib(bytes){return bytes?Number((bytes/1073741824).toFixed(2)):0}
 function cpuCores(millis){return millis?Number((millis/1000).toFixed(2)):0}
 function repoName(pool){return pool?.scope?.repository?pool.scope.owner+'/'+pool.scope.repository:pool?.scope?.owner||''}
+function isPublisherPool(pool){return Boolean(pool)&&(String(pool.scaleSetName||'').toLowerCase()==='runnerhub-publisher'||(pool.labels||[]).some(x=>String(x).toLowerCase()==='runnerhub-publisher'))}
+function isPublisherEnabled(pool){return Boolean(pool)&&Number(pool.githubInstallationId)>0}
 function isZeroTime(value){return !value||String(value).startsWith('0001-01-01')}
 function fmtTime(value){
   if(isZeroTime(value))return '—';
@@ -157,6 +161,7 @@ async function refresh(){
     ]);
     els.pools.innerHTML=tab(p,[
       ['Repository',x=>repoName(x)],
+      ['Class',x=>isPublisherPool(x)?'publisher':'standard'],
       ['CPU',x=>cpuCores(x.resources?.cpuMillis)+' cores'],
       ['RAM',x=>gib(x.resources?.memoryBytes)+' GiB'],
       ['Max',x=>x.maxConcurrency],
@@ -170,7 +175,7 @@ async function refresh(){
       ['Result',x=>x.result],
       ['Detail',x=>x.safeDetail||'']
     ]);
-    if(auth.authenticated&&!els.repos.querySelector('.repo-config[open]'))renderRepos(repos||[],p||[],statuses||[],runtimeHealth||[]);
+    if(auth.authenticated&&!els.repos.querySelector('.repo-config[open]'))renderRepos(repos||[],p||[],statuses||[],runtimeHealth||[],h||[]);
   }catch(e){message(e.message,'error')}
 }
 
@@ -179,7 +184,6 @@ function resourceEditor(repo,pool){
   const cpu=pool?.resources?.cpuMillis?cpuCores(pool.resources.cpuMillis):2.5;
   const memory=pool?.resources?.memoryBytes?gib(pool.resources.memoryBytes):4;
   const max=pool?.maxConcurrency||2;
-  const isolation=pool?.isolation||'container-trusted';
   const action=connected?'Update settings':'Connect runner';
   const poolAttr=pool?' data-pool-id="'+esc(pool.id)+'"':'';
   return '<details class="repo-config">'+
@@ -188,35 +192,82 @@ function resourceEditor(repo,pool){
       '<label>CPU / runner<input data-field="cpu" type="number" min="0.25" step="0.25" value="'+esc(cpu)+'"></label>'+
       '<label>RAM / runner (GiB)<input data-field="memory" type="number" min="1" step="0.5" value="'+esc(memory)+'"></label>'+
       '<label>Max concurrent<input data-field="concurrency" type="number" min="1" step="1" value="'+esc(max)+'"></label>'+
-      '<label>Isolation<select data-field="isolation"><option value="container-trusted"'+(isolation==='container-trusted'?' selected':'')+'>Container</option><option value="container-dind"'+(isolation==='container-dind'?' selected':'')+'>Container + Docker</option></select></label>'+
     '</div>'+
     '<div class="resource-note muted">Limits apply to newly created runners. CPU may be fractional.</div>'+
     '<button data-resource-action="'+(connected?'update':'connect')+'" data-repo="'+esc(repo.fullName)+'" data-installation="'+esc(repo.installationId)+'"'+poolAttr+'>'+esc(action)+'</button>'+
   '</details>';
 }
 
-function renderRepos(repos,pools,statuses,runtimeHealth){
-  const poolsByRepo=new Map((pools||[])
-    .filter(p=>p.scope?.kind==='repository')
-    .map(p=>[(p.scope.owner+'/'+p.scope.repository).toLowerCase(),p]));
+function publisherEditor(repo,pool,status,runtime,hostAvailable,standardConnected){
+  const enabled=isPublisherEnabled(pool);
+  const cpu=pool?.resources?.cpuMillis?cpuCores(pool.resources.cpuMillis):2.5;
+  const memory=pool?.resources?.memoryBytes?gib(pool.resources.memoryBytes):8;
+  const max=pool?.maxConcurrency||1;
+  const listener=enabled?(status?.state||'pending'):'disabled';
+  const runtimeState=enabled?(runtime?.state||'unknown'):'disabled';
+  let badge='<span class="badge neutral">Publisher disabled</span>';
+  if(enabled){
+    const listenerClass=listener==='ready'?'':' warn';
+    const runtimeClass=(runtimeState==='healthy'||runtimeState==='active')?'':' warn';
+    badge='<span class="badge'+listenerClass+'">Publisher '+esc(listener)+'</span><span class="badge'+runtimeClass+'">Runtime '+esc(runtimeState)+'</span>';
+  }else if(!hostAvailable){
+    badge='<span class="badge warn">Publisher unavailable</span>';
+  }
+  let note='Docker builds, container actions, services, and image publishing use <code>runs-on: runnerhub-publisher</code>. Publisher jobs get a private Docker-in-Docker daemon; the NAS Docker socket is not mounted into workflow jobs.';
+  if(!standardConnected)note='Connect the standard runner first, then enable publisher runners for this repository.';
+  else if(!hostAvailable&&!enabled)note+=' Enable privileged publisher support in the RunnerHub deployment first (<code>allow-privileged-workers: true</code>).';
+  const controls=standardConnected?(hostAvailable||enabled):false;
+  const fields='<div class="resource-grid">'+
+      '<label>Publisher CPU<input data-publisher-field="cpu" type="number" min="0.25" step="0.25" value="'+esc(cpu)+'"></label>'+
+      '<label>Publisher RAM (GiB)<input data-publisher-field="memory" type="number" min="1" step="0.5" value="'+esc(memory)+'"></label>'+
+      '<label>Max publishers<input data-publisher-field="concurrency" type="number" min="1" step="1" value="'+esc(max)+'"></label>'+
+    '</div>';
+  let buttons='';
+  if(enabled){
+    buttons='<div class="publisher-actions"><button data-publisher-action="update" data-repo="'+esc(repo.fullName)+'" data-installation="'+esc(repo.installationId)+'">Save publisher settings</button><button class="secondary" data-publisher-action="disable" data-repo="'+esc(repo.fullName)+'" data-installation="'+esc(repo.installationId)+'">Disable publisher</button></div>';
+  }else{
+    buttons='<button data-publisher-action="enable" data-repo="'+esc(repo.fullName)+'" data-installation="'+esc(repo.installationId)+'"'+(controls?'':' disabled')+'>Enable publisher runner</button>';
+  }
+  return '<details class="repo-config publisher-config">'+
+    '<summary>Publisher runner</summary>'+
+    '<div class="repo-status">'+badge+'</div>'+
+    '<div class="resource-note">'+note+'</div>'+
+    fields+buttons+
+  '</details>';
+}
+
+function renderRepos(repos,pools,statuses,runtimeHealth,hosts){
+  const poolsByRepo=new Map();
+  (pools||[]).filter(p=>p.scope?.kind==='repository').forEach(p=>{
+    const key=(p.scope.owner+'/'+p.scope.repository).toLowerCase();
+    const entry=poolsByRepo.get(key)||{standard:null,publisher:null};
+    if(isPublisherPool(p))entry.publisher=p;
+    else if(!entry.standard||String(p.scaleSetName||'').toLowerCase()==='runnerhub')entry.standard=p;
+    poolsByRepo.set(key,entry);
+  });
   const statusByPool=new Map((statuses||[]).map(s=>[s.poolId,s]));
   const runtimeByPool=new Map((runtimeHealth||[]).map(s=>[s.poolId,s]));
+  const publisherHostAvailable=(hosts||[]).some(h=>h.state==='online'&&h.tags?.['isolation.container-dind']==='true');
   if(!repos.length){
     els.repos.innerHTML='<div class="empty">No repositories are available through the GitHub App installation. Use <strong>Manage repositories</strong> to grant access.</div>';
     return;
   }
 
   const sorted=[...repos].sort((a,b)=>{
-    const ac=poolsByRepo.has(a.fullName.toLowerCase())?1:0;
-    const bc=poolsByRepo.has(b.fullName.toLowerCase())?1:0;
+    const ac=poolsByRepo.get(a.fullName.toLowerCase())?.standard?1:0;
+    const bc=poolsByRepo.get(b.fullName.toLowerCase())?.standard?1:0;
     if(ac!==bc)return bc-ac;
     return a.fullName.localeCompare(b.fullName);
   });
 
   els.repos.innerHTML=sorted.map(repo=>{
-    const pool=poolsByRepo.get(repo.fullName.toLowerCase());
+    const entry=poolsByRepo.get(repo.fullName.toLowerCase())||{standard:null,publisher:null};
+    const pool=entry.standard;
+    const publisher=entry.publisher;
     const status=pool?statusByPool.get(pool.id):null;
     const runtime=pool?runtimeByPool.get(pool.id):null;
+    const publisherStatus=publisher?statusByPool.get(publisher.id):null;
+    const publisherRuntime=publisher?runtimeByPool.get(publisher.id):null;
     const privacy=repo.private?'Private':'Public';
     let statusHtml='';
     let detail='';
@@ -247,6 +298,7 @@ function renderRepos(repos,pools,statuses,runtimeHealth){
         statusHtml+detail+
       '</div>'+
       (repo.private?resourceEditor(repo,pool):'')+
+      (repo.private?publisherEditor(repo,publisher,publisherStatus,publisherRuntime,publisherHostAvailable,Boolean(pool)):'')+
       '</article>';
   }).join('');
 }
@@ -256,7 +308,7 @@ async function saveRepositoryResources(button){
   const cpu=Number(panel.querySelector('[data-field="cpu"]').value);
   const memory=Number(panel.querySelector('[data-field="memory"]').value);
   const concurrency=Number(panel.querySelector('[data-field="concurrency"]').value);
-  const isolation=panel.querySelector('[data-field="isolation"]').value;
+  const isolation='container-trusted';
   if(!Number.isFinite(cpu)||cpu<=0)return message('CPU must be greater than 0.','error');
   if(!Number.isFinite(memory)||memory<=0)return message('RAM must be greater than 0.','error');
   if(!Number.isInteger(concurrency)||concurrency<1)return message('Max concurrent runners must be at least 1.','error');
@@ -280,6 +332,34 @@ async function saveRepositoryResources(button){
       });
       message(button.dataset.repo+' connection requested. Waiting for the GitHub scale-set listener to become ready.','success');
     }
+    panel.open=false;
+    await refresh();
+  }catch(e){message(e.message,'error');button.disabled=false}
+}
+
+async function savePublisher(button){
+  const panel=button.closest('.publisher-config');
+  const enabled=button.dataset.publisherAction!=='disable';
+  const body={installationId:Number(button.dataset.installation),repository:button.dataset.repo,enabled};
+  if(enabled){
+    const cpu=Number(panel.querySelector('[data-publisher-field="cpu"]').value);
+    const memory=Number(panel.querySelector('[data-publisher-field="memory"]').value);
+    const concurrency=Number(panel.querySelector('[data-publisher-field="concurrency"]').value);
+    if(!Number.isFinite(cpu)||cpu<=0)return message('Publisher CPU must be greater than 0.','error');
+    if(!Number.isFinite(memory)||memory<=0)return message('Publisher RAM must be greater than 0.','error');
+    if(!Number.isInteger(concurrency)||concurrency<1)return message('Publisher concurrency must be at least 1.','error');
+    body.resources={cpuMillis:Math.round(cpu*1000),memoryBytes:Math.round(memory*1073741824),diskBytes:42949672960};
+    body.maxConcurrency=concurrency;
+  }
+  button.disabled=true;
+  try{
+    message((enabled?'Configuring ':'Disabling ')+button.dataset.repo+' publisher runner…');
+    await j('/api/v1/github/publisher',{
+      method:'POST',
+      headers:{'content-type':'application/json'},
+      body:JSON.stringify(body)
+    });
+    message(button.dataset.repo+(enabled?' publisher runner configured. Use runs-on: runnerhub-publisher for Docker/image jobs.':' publisher runner disabled.'),'success');
     panel.open=false;
     await refresh();
   }catch(e){message(e.message,'error');button.disabled=false}

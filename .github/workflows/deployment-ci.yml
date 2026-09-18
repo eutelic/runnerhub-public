@@ -28,9 +28,8 @@ permissions:
 
 jobs:
   packaging:
-    # Docker-heavy deployment validation stays on GitHub-hosted runners until
-    # RunnerHub has a dedicated build/DinD pool.
-    runs-on: ubuntu-latest
+    # Docker-heavy deployment validation runs on the repository publisher pool.
+    runs-on: runnerhub-publisher
     steps:
       - uses: actions/checkout@v6
 
@@ -46,7 +45,7 @@ jobs:
           bash -n deploy/docker/test-control-data-ownership.sh
           bash -n deploy/truenas/verify.sh
 
-          tmp="$(mktemp -d)"
+          tmp="$(mktemp -d "$RUNNER_TEMP/runnerhub-deploy.XXXXXX")"
           trap 'rm -rf "$tmp"' EXIT
           envfile="$tmp/runnerhub.env"
           keyfile="$tmp/github-app.pem"
@@ -132,7 +131,7 @@ jobs:
       - name: Exercise TrueNAS-style persisted control and Docker agent
         run: |
           set -euo pipefail
-          tmp="$(mktemp -d)"
+          tmp="$(mktemp -d "$RUNNER_TEMP/runnerhub-deploy.XXXXXX")"
           root="$tmp/runnerhub"
           compose_file="$tmp/compose.yaml"
           project="runnerhub-truenas-ci"
@@ -147,9 +146,18 @@ jobs:
 
           cleanup() {
             docker compose -p "$project" -f "$compose_file" down --remove-orphans >/dev/null 2>&1 || true
-            sudo rm -rf "$tmp"
           }
           trap cleanup EXIT
+
+          root_read() {
+            docker run --rm -v "$root:/state:ro" alpine:3.20 cat "/state/$1"
+          }
+          root_secret_hash() {
+            docker run --rm -v "$root:/state:ro" alpine:3.20 sh -c '
+              sha256sum /state/secrets/enrollment-token /state/secrets/agent-secret /state/secrets/admin-key /state/secrets/scaleset-key |
+                sha256sum | cut -d" " -f1
+            '
+          }
 
           mkdir -p "$root/data" "$root/agent" "$root/secrets"
           openssl genrsa -out "$root/secrets/github-app.pem" 2048 >/dev/null 2>&1
@@ -181,7 +189,7 @@ jobs:
                  curl --fail --silent "http://127.0.0.1:$port/healthz" >/dev/null 2>&1 && \
                  [ -s "$root/secrets/admin-key" ] && \
                  [ -s "$root/agent/agent-credentials.json" ]; then
-                admin_key="$(sudo cat "$root/secrets/admin-key")"
+                admin_key="$(root_read secrets/admin-key)"
                 hosts="$(curl --fail --silent \
                   -H "Authorization: Bearer $admin_key" \
                   "http://127.0.0.1:$port/api/v1/hosts" 2>/dev/null || true)"
@@ -204,24 +212,16 @@ jobs:
           docker compose -p "$project" -f "$compose_file" up -d init-secrets control agent
           wait_for_agent
 
-          admin_before="$(sudo cat "$root/secrets/admin-key")"
-          secrets_before="$(sudo sha256sum \
-            "$root/secrets/enrollment-token" \
-            "$root/secrets/agent-secret" \
-            "$root/secrets/admin-key" \
-            "$root/secrets/scaleset-key" | sha256sum | cut -d' ' -f1)"
-          host_before="$(sudo cat "$root/agent/agent-credentials.json" | python3 -c 'import json,sys; print(json.load(sys.stdin)["hostId"])')"
+          admin_before="$(root_read secrets/admin-key)"
+          secrets_before="$(root_secret_hash)"
+          host_before="$(root_read agent/agent-credentials.json | python3 -c 'import json,sys; print(json.load(sys.stdin)["hostId"])')"
 
           docker compose -p "$project" -f "$compose_file" down --remove-orphans
           docker compose -p "$project" -f "$compose_file" up -d init-secrets control agent
           wait_for_agent
 
-          test "$(sudo cat "$root/secrets/admin-key")" = "$admin_before"
-          secrets_after="$(sudo sha256sum \
-            "$root/secrets/enrollment-token" \
-            "$root/secrets/agent-secret" \
-            "$root/secrets/admin-key" \
-            "$root/secrets/scaleset-key" | sha256sum | cut -d' ' -f1)"
+          test "$(root_read secrets/admin-key)" = "$admin_before"
+          secrets_after="$(root_secret_hash)"
           test "$secrets_after" = "$secrets_before"
-          host_after="$(sudo cat "$root/agent/agent-credentials.json" | python3 -c 'import json,sys; print(json.load(sys.stdin)["hostId"])')"
+          host_after="$(root_read agent/agent-credentials.json | python3 -c 'import json,sys; print(json.load(sys.stdin)["hostId"])')"
           test "$host_after" = "$host_before"

@@ -24,9 +24,9 @@ jobs:
       - run: go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...
 
   root-permission-regression:
-    # This regression intentionally needs real root privileges. Normal RunnerHub
-    # workers use no-new-privileges and should not be relaxed for this test.
-    runs-on: ubuntu-latest
+    # Root-only filesystem regression runs inside a nested container on the
+    # dedicated publisher pool. The normal runnerhub pool stays unprivileged.
+    runs-on: runnerhub-publisher
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-go@v7
@@ -35,24 +35,31 @@ jobs:
           cache: true
       - name: Verify root JIT secret ownership normalization
         run: |
-          sudo env \
-            "PATH=$PATH" \
-            "GOMODCACHE=$(go env GOMODCACHE)" \
-            "GOCACHE=$(go env GOCACHE)" \
-            go test ./internal/providers/docker ./internal/providers/truenas \
-              -run TestWriteJITSecretNormalizesPermissions -count=1
+          set -euo pipefail
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE:$GITHUB_WORKSPACE" \
+            -w "$GITHUB_WORKSPACE" \
+            golang:1.26.6 \
+            bash -lc 'go test ./internal/providers/docker ./internal/providers/truenas -run TestWriteJITSecretNormalizesPermissions -count=1'
 
   core-race:
-    # The ordinary RunnerHub image is intentionally minimal and does not ship a
-    # C toolchain. Keep the race-detector build on GitHub-hosted runners for now.
-    runs-on: ubuntu-latest
+    # The publisher pool supplies Docker; use a toolchain container for CGO/race
+    # support instead of depending on the minimal standard runner image.
+    runs-on: runnerhub-publisher
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-go@v7
         with:
           go-version: '1.26.6'
           cache: true
-      - run: go test -race ./internal/...
+      - name: Run race detector in toolchain container
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE:$GITHUB_WORKSPACE" \
+            -w "$GITHUB_WORKSPACE" \
+            golang:1.26.6 \
+            bash -lc 'go test -race ./internal/...'
 
   scaleset:
     runs-on: runnerhub
@@ -83,23 +90,21 @@ jobs:
       - run: GOOS=${{ matrix.goos }} GOARCH=amd64 CGO_ENABLED=0 go build ./cmd/runnerhub-agent
 
   docker-stack-smoke:
-    # Docker/Compose integration work is the build-class workload. Use a
-    # GitHub-hosted runner until RunnerHub has a dedicated Docker-capable pool.
-    runs-on: ubuntu-latest
+    # Docker/Compose integration work runs on the dedicated publisher pool.
+    runs-on: runnerhub-publisher
     steps:
       - uses: actions/checkout@v6
       - name: Boot Compose stack and enroll Docker agent
         run: |
           set -euo pipefail
-          tmp="$(mktemp -d)"
+          tmp="$(mktemp -d "$RUNNER_TEMP/runnerhub-stack.XXXXXX")"
           envfile="$tmp/runnerhub.env"
           keyfile="$tmp/github-app.pem"
           project="runnerhub-ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
 
           cleanup() {
             docker compose --env-file "$envfile" -f deploy/docker/compose.yaml -p "$project" --profile autoscale down -v >/dev/null 2>&1 || true
-            sudo rm -rf /var/lib/runnerhub >/dev/null 2>&1 || true
-            rm -rf "$tmp"
+            rm -rf "$tmp" >/dev/null 2>&1 || true
           }
           trap cleanup EXIT
 

@@ -53,6 +53,27 @@ The current scheduler models `pool.Resources` as one worker envelope. In `contai
 
 Pool concurrency and host capacity provide coarse bounds, but strict aggregate per-worker DinD CPU, memory, and disk accounting remains a hardening item. Do not use DinD for untrusted/adversarial workloads.
 
+## Publisher runners
+
+RunnerHub can expose a second, repository-scoped runner class for Docker/image work without changing the normal `runnerhub` pool. In the dashboard, connect the repository normally, then enable **Publisher runner**. Publisher jobs use:
+
+```yaml
+runs-on: runnerhub-publisher
+```
+
+The publisher pool is always created with `container-dind`, a private Docker daemon, and a default concurrency of one. The normal `runnerhub` pool remains `container-trusted`.
+
+Publisher support is intentionally gated twice. The control plane must allow privileged workers and the Docker host must advertise DinD support:
+
+```yaml
+x-runnerhub-config:
+  allow-privileged-workers: "true"
+```
+
+This setting permits creation of publisher pools; it does not make ordinary `runnerhub` workers privileged. Disabling a publisher pool removes it from dynamic scale-set configuration, stops its listener, and leaves the standard repository runner unchanged.
+
+Use publisher runners only for trusted private repositories. The DinD sidecar is privileged and remains a weaker isolation boundary than the standard pool.
+
 ## Live DinD acceptance fixture
 
 `tests/fixtures/runner-dind-smoke.yml` is intended for the real GitHub/TrueNAS acceptance pass. It verifies:

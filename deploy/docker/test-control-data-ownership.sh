@@ -5,7 +5,7 @@ image="${1:-runnerhub-ci-control}"
 host_uid="$(id -u)"
 host_gid="$(id -g)"
 
-tmp="$(mktemp -d)"
+tmp="$(mktemp -d "${RUNNER_TEMP:-/tmp}/runnerhub-ownership.XXXXXX")"
 
 run_chown() {
   local owner="$1"
@@ -15,8 +15,8 @@ run_chown() {
   elif command -v sudo >/dev/null 2>&1; then
     sudo chown "$owner" "$path"
   else
-    echo 'test-control-data-ownership: root or sudo is required for ownership migration checks' >&2
-    exit 1
+    local rel="${path#"$tmp"/}"
+    docker run --rm -v "$tmp:/state" alpine:3.20 chown "$owner" "/state/$rel"
   fi
 }
 
@@ -26,6 +26,7 @@ cleanup() {
   elif command -v sudo >/dev/null 2>&1; then
     sudo rm -rf "$tmp"
   else
+    docker run --rm -v "$tmp:/state" alpine:3.20 sh -c 'rm -rf /state/*' >/dev/null 2>&1 || true
     rm -rf "$tmp" || true
   fi
 }
