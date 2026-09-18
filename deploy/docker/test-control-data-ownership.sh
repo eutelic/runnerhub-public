@@ -32,8 +32,35 @@ mkdir -p "$tmp/data"
 touch "$tmp/data/runnerhub.db"
 chmod 0600 "$tmp/data/runnerhub.db"
 
-stat_uid() { stat -c '%u' "$1"; }
-stat_gid() { stat -c '%g' "$1"; }
+stat_uid() {
+  local path="$1"
+  if [ "$host_uid" -eq 0 ]; then
+    stat -c '%u' "$path"
+  else
+    local rel="${path#"$tmp"/}"
+    docker run --rm -v "$tmp:/state:ro" alpine:3.20 stat -c '%u' "/state/$rel"
+  fi
+}
+
+stat_gid() {
+  local path="$1"
+  if [ "$host_uid" -eq 0 ]; then
+    stat -c '%g' "$path"
+  else
+    local rel="${path#"$tmp"/}"
+    docker run --rm -v "$tmp:/state:ro" alpine:3.20 stat -c '%g' "/state/$rel"
+  fi
+}
+
+read_file() {
+  local path="$1"
+  if [ "$host_uid" -eq 0 ]; then
+    cat "$path"
+  else
+    local rel="${path#"$tmp"/}"
+    docker run --rm -v "$tmp:/state:ro" alpine:3.20 cat "/state/$rel"
+  fi
+}
 
 run_chown 12345:12345 "$tmp/data/runnerhub.db"
 [ "$(stat_uid "$tmp/data/runnerhub.db")" = "12345" ]
@@ -73,7 +100,7 @@ EOF
   echo "persisted DB GID was not migrated to 10001" >&2
   exit 1
 }
-[ "$(cat "$tmp/data/runtime-identity")" = "10001:10001" ] || {
+[ "$(read_file "$tmp/data/runtime-identity")" = "10001:10001" ] || {
   echo "control process did not drop to the fixed RunnerHub identity" >&2
   exit 1
 }
