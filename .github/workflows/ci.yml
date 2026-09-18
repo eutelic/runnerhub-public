@@ -5,6 +5,7 @@ on:
     paths-ignore:
       - '.github/workflows/emergency-agent-bootstrap.yml'
       - '.github/workflows/publisher-post-redeploy-smoke.yml'
+      - '.github/workflows/cleanup-stale-publisher-runs.yml'
       - '.github/workflows/emergency-control-bootstrap.yml'
   pull_request:
 permissions:
