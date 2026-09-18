@@ -1,10 +1,7 @@
 name: emergency-control-bootstrap
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - '.github/workflows/emergency-control-bootstrap.yml'
+  workflow_dispatch:
 
 permissions:
   contents: read
