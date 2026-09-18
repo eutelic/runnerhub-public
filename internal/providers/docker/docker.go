@@ -372,6 +372,23 @@ printf '%s:%s:%s' "$uid" "$gid" "$docker_gid"`
 
 	name := workerContainerName(s.WorkerID)
 	runnerArgs := p.runnerArgs(s, name, jitPath)
+	runnerBootstrap := `set -eu
+while [ ! -f /run/runnerhub-docker/ready ]; do sleep 0.1; done
+attempts="${RUNNER_WAIT_FOR_DOCKER_IN_SECONDS:-120}"
+i=0
+while [ "$i" -lt "$attempts" ]; do
+  if docker info >/dev/null 2>&1; then
+    exec /home/runner/run.sh --jitconfig "$(cat /run/runnerhub/jitconfig)"
+  fi
+  i=$((i+1))
+  sleep 1
+done
+echo "RunnerHub DinD readiness failed in runner process" >&2
+id >&2 || true
+ls -ldn /run/runnerhub-docker >&2 || true
+stat -c '%n mode=%a uid=%u gid=%g type=%F' /run/runnerhub-docker/docker.sock >&2 || true
+docker info >&2 || true
+exit 1`
 	runnerArgs = append(runnerArgs,
 		"--group-add", runnerDockerGroup,
 		"--mount", "type=bind,src="+workDir+",dst=/home/runner/_work",
@@ -379,7 +396,7 @@ printf '%s:%s:%s' "$uid" "$gid" "$docker_gid"`
 		"--env", "DOCKER_HOST=unix://"+dindSocketPath,
 		"--env", "RUNNER_WAIT_FOR_DOCKER_IN_SECONDS=120",
 		s.Image,
-		"/bin/bash", "-lc", `while [ ! -f /run/runnerhub-docker/ready ]; do sleep 0.1; done; exec /home/runner/run.sh --jitconfig "$(cat /run/runnerhub/jitconfig)"`,
+		"/bin/bash", "-lc", runnerBootstrap,
 	)
 	runnerOut, err := p.run.Run(ctx, p.cfg.DockerBinary, runnerArgs...)
 	if err != nil {
@@ -422,28 +439,10 @@ printf '%s:%s:%s' "$uid" "$gid" "$docker_gid"`
 		}
 	}
 
-	// Keep the Actions listener gated until the actual long-lived non-root runner
-	// can use the private DinD socket. This catches socket ownership/group
-	// regressions before GitHub can assign a workflow job to a broken worker.
-	socketProbe := `set -eu
-for i in $(seq 1 60); do
-  if docker info >/dev/null 2>&1; then
-    exit 0
-  fi
-  sleep 1
-done
-docker info`
-	if _, err := p.run.Run(ctx, p.cfg.DockerBinary,
-		"exec",
-		"--env", "DOCKER_HOST=unix://"+dindSocketPath,
-		runnerID,
-		"/bin/bash", "-lc", socketProbe,
-	); err != nil {
-		_, _ = p.run.Run(ctx, p.cfg.DockerBinary, "rm", "-f", dindName)
-		_, _ = p.run.Run(ctx, p.cfg.DockerBinary, "rm", "-f", runnerID)
-		_ = os.RemoveAll(secretDir)
-		return "", fmt.Errorf("verify Docker-in-Docker socket access as runner: %w", err)
-	}
+	// Release the long-lived runner process only after the DinD sidecar exists.
+	// The runner process itself performs the Docker socket readiness check before
+	// starting run.sh. This validates the exact UID/GID/supplementary-group context
+	// that will execute workflow steps instead of relying on a separate docker exec.
 	if err := os.WriteFile(filepath.Join(runDir, "ready"), []byte("ready\n"), 0o644); err != nil {
 		_, _ = p.run.Run(ctx, p.cfg.DockerBinary, "rm", "-f", dindName)
 		_, _ = p.run.Run(ctx, p.cfg.DockerBinary, "rm", "-f", runnerID)
