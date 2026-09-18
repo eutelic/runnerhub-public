@@ -2,6 +2,8 @@ name: ci
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - '.github/workflows/emergency-agent-bootstrap.yml'
   pull_request:
 permissions:
   contents: read
