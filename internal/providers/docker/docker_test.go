@@ -140,17 +140,38 @@ func TestCreateDinDUsesPrivateSidecarSocketNotHostSocket(t *testing.T) {
 		t.Fatalf("handle=%+v", h)
 	}
 	all := make([]string, 0, len(f.calls))
+	preflightSeen := false
 	for _, call := range f.calls {
-		all = append(all, strings.Join(call, " "))
+		joinedCall := strings.Join(call, " ")
+		all = append(all, joinedCall)
+		if strings.Contains(joinedCall, "test -r /run/runnerhub/jitconfig") {
+			preflightSeen = true
+			if !strings.Contains(joinedCall, "dst=/run/runnerhub-docker") {
+				t.Fatalf("JIT preflight did not use isolated socket directory: %s", joinedCall)
+			}
+		}
 	}
 	joined := strings.Join(all, "\n")
+	if !preflightSeen {
+		t.Fatalf("DinD JIT readability preflight missing: %s", joined)
+	}
 	if strings.Contains(joined, "src=/var/run/docker.sock") || strings.Contains(joined, "-v /var/run/docker.sock") {
 		t.Fatalf("host Docker socket leaked into worker path: %s", joined)
 	}
-	if !strings.Contains(joined, "DOCKER_HOST=unix:///var/run/docker.sock") || !strings.Contains(joined, "RUNNER_WAIT_FOR_DOCKER_IN_SECONDS=120") {
+	if strings.Contains(joined, "dst=/var/run") {
+		t.Fatalf("DinD socket mount aliases the JIT /run tree through /var/run: %s", joined)
+	}
+	if !strings.Contains(joined, "DOCKER_HOST=unix:///run/runnerhub-docker/docker.sock") || !strings.Contains(joined, "RUNNER_WAIT_FOR_DOCKER_IN_SECONDS=120") {
 		t.Fatalf("runner is not wired to private Docker daemon: %s", joined)
 	}
-	if !strings.Contains(joined, "--name runnerhub-w1-dind") || !strings.Contains(joined, "--privileged") || !strings.Contains(joined, "docker:dind dockerd") || !strings.Contains(joined, "--group=123") {
+	if !strings.Contains(joined, "dst=/run/runnerhub-docker") {
+		t.Fatalf("private DinD socket directory missing: %s", joined)
+	}
+	if !strings.Contains(joined, "--name runnerhub-w1-dind") ||
+		!strings.Contains(joined, "--privileged") ||
+		!strings.Contains(joined, "--network container:runner123") ||
+		!strings.Contains(joined, "docker:dind dockerd --host=unix:///run/runnerhub-docker/docker.sock") ||
+		!strings.Contains(joined, "--group=123") {
 		t.Fatalf("Docker-in-Docker sidecar missing required configuration: %s", joined)
 	}
 
@@ -161,6 +182,35 @@ func TestCreateDinDUsesPrivateSidecarSocketNotHostSocket(t *testing.T) {
 	}
 	if got := info.Mode().Perm(); got != 0o400 && os.Geteuid() == 0 {
 		t.Fatalf("DinD JIT secret mode=%04o, want 0400", got)
+	}
+}
+
+func TestCreateDinDFailsFastWhenRunnerCannotReadJITMount(t *testing.T) {
+	stateDir := t.TempDir()
+	f := &fakeRunner{fn: func(_ string, a ...string) (string, error) {
+		joined := strings.Join(a, " ")
+		if len(a) > 0 && a[0] == "run" && strings.Contains(joined, "--entrypoint /bin/bash") {
+			return "1001:123", nil
+		}
+		if strings.Contains(joined, "test -r /run/runnerhub/jitconfig") {
+			return "", errors.New("permission denied")
+		}
+		return "", nil
+	}}
+	p, err := newWithRunner(Config{StateDir: stateDir, AllowedImages: []string{"img"}, DinDImage: "docker:dind", AllowPrivilegedWorkers: true}, f)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = p.Create(context.Background(), provider.WorkerSpec{
+		WorkerID: "w1", PoolID: "p1", RunnerName: "r1", JITConfig: "jit",
+		Image: "img", Isolation: core.IsolationContainerDinD,
+	})
+	if err == nil || !strings.Contains(err.Error(), "preflight Docker-in-Docker JIT mount") {
+		t.Fatalf("expected JIT preflight failure, got %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(stateDir, "workers", "w1")); !os.IsNotExist(statErr) {
+		t.Fatalf("failed DinD preflight left worker state behind: stat err=%v", statErr)
 	}
 }
 

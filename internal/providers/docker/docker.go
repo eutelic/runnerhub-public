@@ -23,6 +23,8 @@ const (
 	maxDiagnosticsBytes = 4096
 	runnerUID           = 1001
 	runnerGID           = 1001
+	dindSocketDir       = "/run/runnerhub-docker"
+	dindSocketPath      = dindSocketDir + "/docker.sock"
 )
 
 var detachedContainerIDPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
@@ -314,12 +316,26 @@ func (p *Provider) createDinDWorker(ctx context.Context, s provider.WorkerSpec, 
 	}
 	runnerGID := strconv.Itoa(runnerGIDValue)
 
+	// Validate the exact mount topology as the image's default runner user before
+	// starting the long-lived worker. This catches host ACL/user-namespace and
+	// mount-shadowing problems without ever putting the JIT payload in argv.
+	if _, err := p.run.Run(ctx, p.cfg.DockerBinary,
+		"run", "--rm", "--pull", p.cfg.PullPolicy,
+		"--mount", "type=bind,src="+jitPath+",dst=/run/runnerhub/jitconfig,readonly",
+		"--mount", "type=bind,src="+runDir+",dst="+dindSocketDir,
+		s.Image, "/bin/bash", "-lc",
+		"test -r /run/runnerhub/jitconfig && test -s /run/runnerhub/jitconfig && cat /run/runnerhub/jitconfig >/dev/null",
+	); err != nil {
+		_ = os.RemoveAll(secretDir)
+		return "", fmt.Errorf("preflight Docker-in-Docker JIT mount: %w", err)
+	}
+
 	name := workerContainerName(s.WorkerID)
 	runnerArgs := p.runnerArgs(s, name, jitPath)
 	runnerArgs = append(runnerArgs,
 		"--mount", "type=bind,src="+workDir+",dst=/home/runner/_work",
-		"--mount", "type=bind,src="+runDir+",dst=/var/run",
-		"--env", "DOCKER_HOST=unix:///var/run/docker.sock",
+		"--mount", "type=bind,src="+runDir+",dst="+dindSocketDir,
+		"--env", "DOCKER_HOST=unix://"+dindSocketPath,
 		"--env", "RUNNER_WAIT_FOR_DOCKER_IN_SECONDS=120",
 		s.Image,
 		"/bin/bash", "-lc", `exec /home/runner/run.sh --jitconfig "$(cat /run/runnerhub/jitconfig)"`,
@@ -350,11 +366,12 @@ func (p *Provider) createDinDWorker(ctx context.Context, s provider.WorkerSpec, 
 		"--label", "io.runnerhub.role=dind",
 		"--label", "io.runnerhub.parent=" + runnerID,
 		"--privileged",
+		"--network", "container:" + runnerID,
 		"--mount", "type=bind,src=" + workDir + ",dst=/home/runner/_work",
-		"--mount", "type=bind,src=" + runDir + ",dst=/var/run",
+		"--mount", "type=bind,src=" + runDir + ",dst=" + dindSocketDir,
 		"--mount", "type=bind,src=" + externalsDir + ",dst=/home/runner/externals,readonly",
 		p.cfg.DinDImage,
-		"dockerd", "--host=unix:///var/run/docker.sock", "--group=" + runnerGID,
+		"dockerd", "--host=unix://" + dindSocketPath, "--group=" + runnerGID,
 	}
 	if _, err := p.run.Run(ctx, p.cfg.DockerBinary, dindArgs...); err != nil {
 		if existing, findErr := p.findExact(ctx, dindName); findErr != nil || existing == "" {

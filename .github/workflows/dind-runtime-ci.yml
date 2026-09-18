@@ -46,14 +46,33 @@ jobs:
       - name: Verify Docker provider unit tests
         run: go test ./internal/providers/docker ./internal/policy ./internal/core
 
-      - name: Exercise private DinD socket and shared runner network
+      - name: Exercise JIT mount, private DinD socket, and shared runner network
         shell: bash
         run: |
           set -euo pipefail
 
           tmp="$(mktemp -d "$RUNNER_TEMP/runnerhub-dind.XXXXXX")"
-          run_dir="$tmp/run"
+          run_dir="$tmp/docker-run"
+          jit_path="$tmp/jitconfig"
           mkdir -p "$run_dir"
+          printf '%s' 'runnerhub-dind-ci-jit' >"$jit_path"
+
+          runner_image='ghcr.io/actions/actions-runner:2.337.0@sha256:e5496277be5d09bc968b3d64911b74e219ac4a3f2edce956a3ecf9271bea1ef4'
+          identity="$(docker run --rm --entrypoint /bin/bash "$runner_image" -lc 'printf "%s:%s" "$(id -u runner)" "$(id -g runner)"')"
+          runner_uid="${identity%%:*}"
+          runner_gid="${identity##*:}"
+          sudo chown "$runner_uid:$runner_gid" "$jit_path"
+          chmod 0400 "$jit_path"
+
+          # Reproduce the provider's security-sensitive mount layout using the
+          # actual Actions runner image/default user. The socket directory must
+          # not alias the /run/runnerhub tree containing the JIT secret.
+          docker run --rm \
+            --mount "type=bind,src=$jit_path,dst=/run/runnerhub/jitconfig,readonly" \
+            --mount "type=bind,src=$run_dir,dst=/run/runnerhub-docker" \
+            "$runner_image" \
+            /bin/bash -lc 'test -r /run/runnerhub/jitconfig && test -s /run/runnerhub/jitconfig && cat /run/runnerhub/jitconfig >/dev/null'
+
           runner="runnerhub-dind-ci-runner"
           sidecar="runnerhub-dind-ci-sidecar"
 
@@ -69,8 +88,8 @@ jobs:
 
           docker run -d \
             --name "$runner" \
-            --mount "type=bind,src=$run_dir,dst=/var/run" \
-            -e DOCKER_HOST=unix:///var/run/docker.sock \
+            --mount "type=bind,src=$run_dir,dst=/run/runnerhub-docker" \
+            -e DOCKER_HOST=unix:///run/runnerhub-docker/docker.sock \
             docker:27-cli \
             sh -c 'sleep 300' >/dev/null
 
@@ -80,13 +99,13 @@ jobs:
             --name "$sidecar" \
             --privileged \
             --network "container:$runner_id" \
-            --mount "type=bind,src=$run_dir,dst=/var/run" \
+            --mount "type=bind,src=$run_dir,dst=/run/runnerhub-docker" \
             docker:27-dind \
-            dockerd --host=unix:///var/run/docker.sock >/dev/null
+            dockerd --host=unix:///run/runnerhub-docker/docker.sock >/dev/null
 
           for _ in $(seq 1 60); do
             if docker exec \
-              -e DOCKER_HOST=unix:///var/run/docker.sock \
+              -e DOCKER_HOST=unix:///run/runnerhub-docker/docker.sock \
               "$runner" docker info >/dev/null 2>&1; then
               break
             fi
@@ -94,19 +113,27 @@ jobs:
           done
 
           docker exec \
-            -e DOCKER_HOST=unix:///var/run/docker.sock \
+            -e DOCKER_HOST=unix:///run/runnerhub-docker/docker.sock \
             "$runner" docker info >/dev/null
 
-          # The runner receives only the private socket. The host Docker socket
-          # is never mounted into the runner container.
+          # The runner receives only the private socket directory. The host
+          # Docker socket and the aliased /var/run tree are never mounted.
           mounts="$(docker inspect "$runner" --format '{{json .Mounts}}')"
           if grep -q '"Source":"/var/run/docker.sock"' <<<"$mounts"; then
             echo 'host Docker socket leaked into DinD runner' >&2
             exit 1
           fi
+          if grep -q '"Destination":"/var/run"' <<<"$mounts"; then
+            echo 'DinD runner still mounts the aliased /var/run tree' >&2
+            exit 1
+          fi
+          if ! grep -q '"Destination":"/run/runnerhub-docker"' <<<"$mounts"; then
+            echo 'isolated DinD socket directory is missing' >&2
+            exit 1
+          fi
 
           docker exec \
-            -e DOCKER_HOST=unix:///var/run/docker.sock \
+            -e DOCKER_HOST=unix:///run/runnerhub-docker/docker.sock \
             "$runner" docker run -d \
               --name runnerhub-dind-ci-redis \
               -p 6379:6379 \
@@ -126,7 +153,7 @@ jobs:
           '
 
           docker exec \
-            -e DOCKER_HOST=unix:///var/run/docker.sock \
+            -e DOCKER_HOST=unix:///run/runnerhub-docker/docker.sock \
             "$runner" docker run --rm alpine:3.20 \
               sh -c 'echo RunnerHub nested container passed'
 
