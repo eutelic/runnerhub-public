@@ -23,12 +23,12 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - name: Verify root can reach the private DinD daemon
+      - name: Verify runner can reach the private DinD daemon
         shell: bash
         run: |
           set -euo pipefail
-          sudo -n env DOCKER_HOST="$DOCKER_HOST" docker info >/dev/null
-          sudo -n env DOCKER_HOST="$DOCKER_HOST" docker buildx version
+          env DOCKER_HOST="$DOCKER_HOST" docker info >/dev/null
+          env DOCKER_HOST="$DOCKER_HOST" docker buildx version
 
       - name: Log in to GHCR
         shell: bash
@@ -36,15 +36,15 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          printf '%s' "$GITHUB_TOKEN" |             sudo -n env DOCKER_HOST="$DOCKER_HOST"               docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          printf '%s' "$GITHUB_TOKEN" |             env DOCKER_HOST="$DOCKER_HOST" docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
 
       - name: Enable multi-architecture builds
         shell: bash
         run: |
           set -euo pipefail
-          sudo -n env DOCKER_HOST="$DOCKER_HOST"             docker run --privileged --rm tonistiigi/binfmt --install all
-          sudo -n env DOCKER_HOST="$DOCKER_HOST"             docker buildx create --name runnerhub-issue47 --driver docker-container --use
-          sudo -n env DOCKER_HOST="$DOCKER_HOST"             docker buildx inspect --bootstrap
+          env DOCKER_HOST="$DOCKER_HOST" docker run --privileged --rm tonistiigi/binfmt --install all
+          env DOCKER_HOST="$DOCKER_HOST" docker buildx create --name runnerhub-issue47 --driver docker-container --use
+          env DOCKER_HOST="$DOCKER_HOST" docker buildx inspect --bootstrap
 
       - name: Build and push coherent fixed image set
         shell: bash
@@ -53,7 +53,7 @@ jobs:
         run: |
           set -euo pipefail
           for target in control agent bootstrap scaleset; do
-            sudo -n env DOCKER_HOST="$DOCKER_HOST"               docker buildx build                 --platform linux/amd64,linux/arm64                 --build-arg VERSION="$GITHUB_SHA"                 --target "$target"                 -f deploy/docker/Dockerfile                 -t "ghcr.io/eutelic/runnerhub-$target:$SOURCE_TAG"                 --push                 .
+            env DOCKER_HOST="$DOCKER_HOST" docker buildx build                 --platform linux/amd64,linux/arm64                 --build-arg VERSION="$GITHUB_SHA"                 --target "$target"                 -f deploy/docker/Dockerfile                 -t "ghcr.io/eutelic/runnerhub-$target:$SOURCE_TAG"                 --push                 .
           done
 
   promote-fixed-images:
