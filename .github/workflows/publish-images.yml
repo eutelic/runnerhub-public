@@ -165,40 +165,38 @@ jobs:
   promote-latest:
     name: Promote coherent latest set
     needs: publish
-    # Only the default branch may advance the deployment-facing :latest set.
-    # Tags and manual non-main runs keep their immutable/version tags only.
+    # Promotion is registry-only and does not need Docker-in-Docker. Keep it on
+    # the standard RunnerHub pool so release publication is independent of
+    # GitHub-hosted Actions minutes.
     if: github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
+    runs-on: runnerhub
     steps:
-      - uses: actions/checkout@v6
-
-      - uses: docker/setup-buildx-action@v3
-
-      - name: Log in to GHCR
-        uses: docker/login-action@v3
+      - uses: actions/setup-go@v7
         with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          go-version: '1.26.6'
+          cache: false
 
-      - name: Promote all images from the same commit
+      - name: Install crane
+        run: go install github.com/google/go-containerregistry/cmd/crane@v0.22.1
+
+      - name: Promote and verify coherent latest set
         env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SOURCE_TAG: sha-${{ github.sha }}
         run: |
           set -euo pipefail
+          crane="$(go env GOPATH)/bin/crane"
+          "$crane" auth login ghcr.io -u "$GITHUB_ACTOR" -p "$GITHUB_TOKEN"
+
           for image in runnerhub-control runnerhub-agent runnerhub-bootstrap runnerhub-scaleset; do
-            docker buildx imagetools create \
-              --tag "ghcr.io/eutelic/${image}:latest" \
-              "ghcr.io/eutelic/${image}:${SOURCE_TAG}"
-          done
+            ref="ghcr.io/eutelic/${image}"
+            "$crane" tag "${ref}:${SOURCE_TAG}" latest
 
-      - name: Verify promoted image set
-        env:
-          SOURCE_TAG: sha-${{ github.sha }}
-        run: |
-          set -euo pipefail
-          bash deploy/truenas/check-images.sh --tag "$SOURCE_TAG"
-          bash deploy/truenas/check-images.sh --tag latest
-          bash deploy/truenas/verify-image-set.sh \
-            --source-tag "$SOURCE_TAG" \
-            --target-tag latest
+            source_digest="$("$crane" digest "${ref}:${SOURCE_TAG}")"
+            latest_digest="$("$crane" digest "${ref}:latest")"
+            if [ "$source_digest" != "$latest_digest" ]; then
+              echo "digest mismatch for ${ref}: source=${source_digest} latest=${latest_digest}" >&2
+              exit 1
+            fi
+            echo "[ ok ] ${ref}:latest -> ${source_digest}"
+          done
