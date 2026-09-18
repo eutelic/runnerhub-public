@@ -1,10 +1,6 @@
 name: emergency-agent-bootstrap
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - '.github/workflows/emergency-agent-bootstrap.yml'
   workflow_dispatch:
 
 permissions:
@@ -113,8 +109,8 @@ jobs:
           {
             echo "### Emergency agent bootstrap"
             echo
-            echo "- fixed amd64: `$fixed_amd64_digest`"
-            echo "- preserved arm64: `$arm64_base_digest`"
-            echo "- promoted index: `$latest_digest`"
-            echo "- source commit: `$GITHUB_SHA`"
+            echo "- fixed amd64: $fixed_amd64_digest"
+            echo "- preserved arm64: $arm64_base_digest"
+            echo "- promoted index: $latest_digest"
+            echo "- source commit: $GITHUB_SHA"
           } >> "$GITHUB_STEP_SUMMARY"
