@@ -1,0 +1,77 @@
+name: publisher-post-redeploy-smoke
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/publisher-post-redeploy-smoke.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publisher-post-redeploy-smoke
+  cancel-in-progress: true
+
+jobs:
+  drain-pre-redeploy-worker:
+    name: Drain pre-redeploy publisher worker
+    runs-on: runnerhub-publisher
+    timeout-minutes: 10
+    steps:
+      - name: Inspect current publisher worker
+        shell: bash
+        run: |
+          set +e
+          echo '== identity =='
+          id
+          echo '== docker group =='
+          getent group docker || true
+          echo '== socket directory =='
+          ls -ldn /run/runnerhub-docker 2>&1 || true
+          stat -c '%n mode=%a uid=%u gid=%g type=%F' /run/runnerhub-docker 2>&1 || true
+          echo '== non-root docker info =='
+          docker info 2>&1
+          echo "docker_info_rc=$?"
+          exit 0
+
+  verify-fixed-agent-worker:
+    name: Verify fixed publisher worker
+    needs: drain-pre-redeploy-worker
+    if: always()
+    runs-on: runnerhub-publisher
+    timeout-minutes: 10
+    steps:
+      - name: Verify runner identity and Docker group
+        shell: bash
+        run: |
+          set -euo pipefail
+          id
+          getent group docker
+          id -nG | tr ' ' '\n' | grep -Fx docker
+
+      - name: Verify private DinD socket is reachable non-root
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "${DOCKER_HOST:-}" = "unix:///run/runnerhub-docker/docker.sock"
+          test -S /run/runnerhub-docker/docker.sock
+          docker version
+          docker info
+
+      - name: Verify nested Docker execution
+        shell: bash
+        run: |
+          set -euo pipefail
+          output="$(docker run --rm alpine:3.22 sh -c 'printf nested-docker-ok')"
+          test "$output" = "nested-docker-ok"
+
+      - name: Verify host Docker socket is not exposed
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -S /var/run/docker.sock ] && [ "/var/run/docker.sock" != "/run/runnerhub-docker/docker.sock" ]; then
+            echo "unexpected host-style Docker socket exposed at /var/run/docker.sock" >&2
+            exit 1
+          fi
+          echo "host Docker socket is not exposed"
