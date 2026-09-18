@@ -4,6 +4,7 @@ on:
     branches: [main]
     paths-ignore:
       - '.github/workflows/emergency-agent-bootstrap.yml'
+      - '.github/workflows/publisher-post-redeploy-smoke.yml'
   pull_request:
 permissions:
   contents: read
