@@ -23,6 +23,10 @@ on:
       - 'go.sum'
       - 'scaleset/**'
 
+concurrency:
+  group: deployment-ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 

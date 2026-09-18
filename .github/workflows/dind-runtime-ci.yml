@@ -26,6 +26,10 @@ on:
       - 'tests/fixtures/runner-dind-smoke.yml'
   workflow_dispatch:
 
+concurrency:
+  group: dind-runtime-ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
