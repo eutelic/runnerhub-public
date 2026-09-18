@@ -1,6 +1,10 @@
 name: emergency-agent-bootstrap
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/emergency-agent-bootstrap.yml'
   workflow_dispatch:
 
 permissions:
@@ -23,6 +27,12 @@ jobs:
         with:
           go-version: '1.26.6'
           cache: true
+
+      - name: Run Docker provider regression tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          go test ./internal/providers/docker -count=1
 
       - name: Build fixed linux/amd64 agent binary
         shell: bash
