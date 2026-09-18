@@ -75,7 +75,10 @@ jobs:
           test -n "$runner_gid"
           test -n "$docker_gid"
           test "$runner_gid" != "$docker_gid"
-          sudo chown "$runner_uid:$runner_gid" "$jit_path"
+          docker run --rm \
+            -v "$tmp:/state" \
+            alpine:3.20 \
+            chown "$runner_uid:$runner_gid" /state/jitconfig
           chmod 0400 "$jit_path"
 
           # Reproduce the provider's security-sensitive mount layout using the

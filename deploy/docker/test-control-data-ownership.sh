@@ -12,8 +12,6 @@ run_chown() {
   local path="$2"
   if [ "$host_uid" -eq 0 ]; then
     chown "$owner" "$path"
-  elif command -v sudo >/dev/null 2>&1; then
-    sudo chown "$owner" "$path"
   else
     local rel="${path#"$tmp"/}"
     docker run --rm -v "$tmp:/state" alpine:3.20 chown "$owner" "/state/$rel"
@@ -23,8 +21,6 @@ run_chown() {
 cleanup() {
   if [ "$host_uid" -eq 0 ]; then
     rm -rf "$tmp"
-  elif command -v sudo >/dev/null 2>&1; then
-    sudo rm -rf "$tmp"
   else
     docker run --rm -v "$tmp:/state" alpine:3.20 sh -c 'rm -rf /state/*' >/dev/null 2>&1 || true
     rm -rf "$tmp" || true
