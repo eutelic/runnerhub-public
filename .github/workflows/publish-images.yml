@@ -32,8 +32,9 @@ concurrency:
   group: publish-images-${{ github.ref }}
   cancel-in-progress: true
 
-# Release/image work uses the repository's Docker-capable publisher pool.
-# The normal runnerhub pool remains unprivileged.
+# Recovery bootstrap: release/image work temporarily uses GitHub-hosted
+# capacity because this change repairs the Docker-capable publisher pool itself.
+# Restore runnerhub-publisher after the fixed agent has been deployed.
 jobs:
   acceptance-config:
     name: Verify live JIT acceptance configuration
@@ -52,7 +53,7 @@ jobs:
   acceptance-host:
     name: Provision real JIT acceptance runner
     needs: acceptance-config
-    runs-on: runnerhub-publisher
+    runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
       RUNNERHUB_ACCEPTANCE_GITHUB_APP_ISSUER: ${{ secrets.RUNNERHUB_ACCEPTANCE_GITHUB_APP_ISSUER }}
@@ -98,7 +99,7 @@ jobs:
   verify-release:
     name: Validate release candidate
     needs: [acceptance-host, jit-smoke]
-    runs-on: runnerhub-publisher
+    runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v6
@@ -107,7 +108,7 @@ jobs:
 
   publish:
     needs: verify-release
-    runs-on: runnerhub-publisher
+    runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
@@ -167,7 +168,7 @@ jobs:
     # Only the default branch may advance the deployment-facing :latest set.
     # Tags and manual non-main runs keep their immutable/version tags only.
     if: github.ref == 'refs/heads/main'
-    runs-on: runnerhub-publisher
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
 

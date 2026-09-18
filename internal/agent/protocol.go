@@ -20,6 +20,7 @@ type EnrollResponse struct {
 type Heartbeat struct {
 	HostID       string                          `json:"hostId"`
 	At           time.Time                       `json:"at"`
+	AgentVersion string                          `json:"agentVersion,omitempty"`
 	Capabilities provider.Capabilities           `json:"capabilities"`
 	Active       map[string]provider.WorkerState `json:"active,omitempty"`
 }

@@ -31,8 +31,9 @@ permissions:
 
 jobs:
   dind-network:
-    # Validate DinD from RunnerHub's dedicated Docker-capable publisher class.
-    runs-on: runnerhub-publisher
+    # Recovery bootstrap: validate DinD on GitHub-hosted Docker while the
+    # RunnerHub publisher pool is being repaired.
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v6

@@ -29,7 +29,7 @@ permissions:
 jobs:
   packaging:
     # Docker-heavy deployment validation runs on the repository publisher pool.
-    runs-on: runnerhub-publisher
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
 

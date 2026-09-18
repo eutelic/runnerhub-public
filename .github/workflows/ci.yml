@@ -24,9 +24,9 @@ jobs:
       - run: go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...
 
   root-permission-regression:
-    # Root-only filesystem regression runs inside a nested container on the
-    # dedicated publisher pool. The normal runnerhub pool stays unprivileged.
-    runs-on: runnerhub-publisher
+    # Recovery bootstrap: this PR repairs the publisher itself, so Docker-heavy
+    # validation must use GitHub-hosted capacity until the fixed agent is deployed.
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-go@v7
@@ -40,12 +40,12 @@ jobs:
             -v "$GITHUB_WORKSPACE:$GITHUB_WORKSPACE" \
             -w "$GITHUB_WORKSPACE" \
             golang:1.26.6 \
-            bash -lc 'go test ./internal/providers/docker ./internal/providers/truenas -run TestWriteJITSecretNormalizesPermissions -count=1'
+            bash -lc '/usr/local/go/bin/go test ./internal/providers/docker ./internal/providers/truenas -run TestWriteJITSecretNormalizesPermissions -count=1'
 
   core-race:
-    # The publisher pool supplies Docker; use a toolchain container for CGO/race
-    # support instead of depending on the minimal standard runner image.
-    runs-on: runnerhub-publisher
+    # Recovery bootstrap: use GitHub-hosted Docker/CGO capacity while the
+    # publisher pool is being repaired.
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-go@v7
@@ -59,7 +59,7 @@ jobs:
             -v "$GITHUB_WORKSPACE:$GITHUB_WORKSPACE" \
             -w "$GITHUB_WORKSPACE" \
             golang:1.26.6 \
-            bash -lc 'go test -race ./internal/...'
+            bash -lc '/usr/local/go/bin/go test -race ./internal/...'
 
   scaleset:
     runs-on: runnerhub
@@ -90,8 +90,9 @@ jobs:
       - run: GOOS=${{ matrix.goos }} GOARCH=amd64 CGO_ENABLED=0 go build ./cmd/runnerhub-agent
 
   docker-stack-smoke:
-    # Docker/Compose integration work runs on the dedicated publisher pool.
-    runs-on: runnerhub-publisher
+    # Recovery bootstrap: the publisher pool cannot validate the fix that repairs
+    # its own startup path, so use GitHub-hosted Docker here temporarily.
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
       - name: Boot Compose stack and enroll Docker agent

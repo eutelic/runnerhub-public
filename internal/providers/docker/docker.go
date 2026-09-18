@@ -157,26 +157,18 @@ func (p *Provider) Validate(_ context.Context, s provider.WorkerSpec) error {
 	return nil
 }
 
-func writeJITSecret(path string, data []byte) error {
-	// The production Docker agent runs as root while the official Actions runner
-	// image runs as UID/GID 1001. TrueNAS/ZFS ACL inheritance can narrow the mode
-	// requested at file creation (for example 0444 -> 0440), so do not rely on
-	// create-mode bits alone. Explicitly hand ownership to the runner and then
-	// make the file owner-read-only before the container starts.
-	if err := os.WriteFile(path, data, 0o600); err != nil {
-		return err
-	}
-	if err := os.Chown(path, runnerUID, runnerGID); err != nil {
+func secureJITSecretForRunner(path string, uid, gid int) error {
+	if err := os.Chown(path, uid, gid); err != nil {
 		// Keep unit tests and non-root developer environments usable. Production
 		// RunnerHub images run the agent as root; a non-root caller cannot safely
-		// change ownership, so retain the historical read-only fallback there.
+		// change ownership, so retain a read-only fallback there.
 		if os.Geteuid() != 0 {
 			if chmodErr := os.Chmod(path, 0o444); chmodErr != nil {
 				return fmt.Errorf("set JIT secret fallback mode after chown failure: %w", chmodErr)
 			}
 			return nil
 		}
-		return fmt.Errorf("set JIT secret owner to %d:%d: %w", runnerUID, runnerGID, err)
+		return fmt.Errorf("set JIT secret owner to %d:%d: %w", uid, gid, err)
 	}
 	if err := os.Chmod(path, 0o400); err != nil {
 		return fmt.Errorf("set JIT secret mode: %w", err)
@@ -189,6 +181,18 @@ func writeJITSecret(path string, data []byte) error {
 		return fmt.Errorf("verify JIT secret mode: got %04o, want 0400", got)
 	}
 	return nil
+}
+
+func writeJITSecret(path string, data []byte) error {
+	// The production Docker agent runs as root while the official Actions runner
+	// image normally runs as UID/GID 1001. TrueNAS/ZFS ACL inheritance can narrow
+	// create-mode bits, so explicitly hand ownership to the runner. DinD workers
+	// re-normalize this ownership after asking the selected image for its actual
+	// runner UID/GID.
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		return err
+	}
+	return secureJITSecretForRunner(path, runnerUID, runnerGID)
 }
 
 func (p *Provider) Create(ctx context.Context, s provider.WorkerSpec) (provider.WorkerHandle, error) {
@@ -273,8 +277,8 @@ func (p *Provider) createDinDWorker(ctx context.Context, s provider.WorkerSpec, 
 	// that the runner passes when launching container actions. Initialize those
 	// directories using the selected runner image and capture its runner GID so
 	// dockerd can create a socket the non-root runner can use.
-	initScript := `set -eu; uid="$(id -u runner)"; gid="$(id -g runner)"; chown "$uid:$gid" /home/runner/_work; cp -a /home/runner/externals/. /runnerhub-externals/; printf '%s' "$gid"`
-	gidOut, err := p.run.Run(ctx, p.cfg.DockerBinary,
+	initScript := `set -eu; uid="$(id -u runner)"; gid="$(id -g runner)"; chown "$uid:$gid" /home/runner/_work; cp -a /home/runner/externals/. /runnerhub-externals/; printf '%s:%s' "$uid" "$gid"`
+	identityOut, err := p.run.Run(ctx, p.cfg.DockerBinary,
 		"run", "--rm", "--pull", p.cfg.PullPolicy, "--user", "0", "--entrypoint", "/bin/bash",
 		"--mount", "type=bind,src="+workDir+",dst=/home/runner/_work",
 		"--mount", "type=bind,src="+externalsDir+",dst=/runnerhub-externals",
@@ -284,16 +288,31 @@ func (p *Provider) createDinDWorker(ctx context.Context, s provider.WorkerSpec, 
 		_ = os.RemoveAll(secretDir)
 		return "", fmt.Errorf("initialize Docker-in-Docker worker paths: %w", err)
 	}
-	gidFields := strings.Fields(gidOut)
-	if len(gidFields) == 0 {
+	identityFields := strings.Fields(identityOut)
+	if len(identityFields) == 0 {
 		_ = os.RemoveAll(secretDir)
-		return "", errors.New("runner image returned no runner group id")
+		return "", errors.New("runner image returned no runner identity")
 	}
-	runnerGID := gidFields[len(gidFields)-1]
-	if _, err := strconv.Atoi(runnerGID); err != nil {
+	identity := strings.Split(identityFields[len(identityFields)-1], ":")
+	if len(identity) != 2 {
 		_ = os.RemoveAll(secretDir)
-		return "", fmt.Errorf("runner image returned invalid runner group id %q", sanitize(runnerGID))
+		return "", fmt.Errorf("runner image returned invalid runner identity %q", sanitize(identityFields[len(identityFields)-1]))
 	}
+	runnerUID, err := strconv.Atoi(identity[0])
+	if err != nil || runnerUID < 0 {
+		_ = os.RemoveAll(secretDir)
+		return "", fmt.Errorf("runner image returned invalid runner uid %q", sanitize(identity[0]))
+	}
+	runnerGIDValue, err := strconv.Atoi(identity[1])
+	if err != nil || runnerGIDValue < 0 {
+		_ = os.RemoveAll(secretDir)
+		return "", fmt.Errorf("runner image returned invalid runner gid %q", sanitize(identity[1]))
+	}
+	if err := secureJITSecretForRunner(jitPath, runnerUID, runnerGIDValue); err != nil {
+		_ = os.RemoveAll(secretDir)
+		return "", fmt.Errorf("normalize Docker-in-Docker JIT secret ownership: %w", err)
+	}
+	runnerGID := strconv.Itoa(runnerGIDValue)
 
 	name := workerContainerName(s.WorkerID)
 	runnerArgs := p.runnerArgs(s, name, jitPath)

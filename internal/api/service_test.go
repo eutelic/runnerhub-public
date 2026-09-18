@@ -110,3 +110,23 @@ func TestNormalizePublisherResourcesDefaultsAndOverrides(t *testing.T){
 	got=normalizePublisherResources(core.Resources{CPUMillis:3000,MemoryBytes:12<<30},fallback)
 	if got.CPUMillis!=3000||got.MemoryBytes!=12<<30||got.DiskBytes!=30<<30{t.Fatalf("override=%+v",got)}
 }
+
+
+func TestScaleEventTreatsLateTerminalEventForDeletedWorkerAsSuccess(t *testing.T){
+	ctx:=context.Background()
+	st,err:=store.OpenSQLite(":memory:")
+	if err!=nil{t.Fatal(err)}
+	defer st.Close()
+	now:=time.Now().UTC()
+	wk:=core.Worker{ID:"w-late",PoolID:"pool-late",RunnerName:"runner-late",State:core.WorkerDeleted,UpdatedAt:now,CompletedAt:now.Add(-time.Second)}
+	if err:=st.UpsertWorker(ctx,wk);err!=nil{t.Fatal(err)}
+	svc:=&Service{Store:st}
+	req:=httptest.NewRequest(http.MethodPost,"/api/v1/scale-events",bytes.NewBufferString(`{"poolId":"pool-late","runnerName":"runner-late","state":"completed","result":"succeeded"}`))
+	req.Header.Set("Content-Type","application/json")
+	rr:=httptest.NewRecorder()
+	svc.Handler().ServeHTTP(rr,req)
+	if rr.Code!=http.StatusOK{t.Fatalf("status=%d body=%s",rr.Code,rr.Body.String())}
+	got,err:=st.GetWorker(ctx,"w-late")
+	if err!=nil{t.Fatal(err)}
+	if got.State!=core.WorkerDeleted{t.Fatalf("late completion resurrected worker: %+v",got)}
+}

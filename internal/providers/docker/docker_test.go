@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -117,7 +118,7 @@ func TestCreateDinDUsesPrivateSidecarSocketNotHostSocket(t *testing.T) {
 	f := &fakeRunner{fn: func(_ string, a ...string) (string, error) {
 		joined := strings.Join(a, " ")
 		if len(a) > 0 && a[0] == "run" && strings.Contains(joined, "--entrypoint /bin/bash") {
-			return "123", nil
+			return "1001:123", nil
 		}
 		if len(a) > 0 && a[0] == "run" && strings.Contains(joined, "--name runnerhub-w1-dind") {
 			return "dind123\n", nil
@@ -151,6 +152,15 @@ func TestCreateDinDUsesPrivateSidecarSocketNotHostSocket(t *testing.T) {
 	}
 	if !strings.Contains(joined, "--name runnerhub-w1-dind") || !strings.Contains(joined, "--privileged") || !strings.Contains(joined, "docker:dind dockerd") || !strings.Contains(joined, "--group=123") {
 		t.Fatalf("Docker-in-Docker sidecar missing required configuration: %s", joined)
+	}
+
+	jitPath := filepath.Join(p.cfg.StateDir, "workers", "w1", "jitconfig")
+	info, err := os.Stat(jitPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0o400 && os.Geteuid() == 0 {
+		t.Fatalf("DinD JIT secret mode=%04o, want 0400", got)
 	}
 }
 
