@@ -1,3 +1,4 @@
+# issue-52 cleanup
 name: cleanup-stale-publisher-runs
 
 on:
