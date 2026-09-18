@@ -24,9 +24,8 @@ jobs:
       - run: go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...
 
   root-permission-regression:
-    # Recovery bootstrap: this PR repairs the publisher itself, so Docker-heavy
-    # validation must use GitHub-hosted capacity until the fixed agent is deployed.
-    runs-on: ubuntu-latest
+    # Docker-heavy validation uses RunnerHub's isolated publisher pool.
+    runs-on: runnerhub-publisher
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-go@v7
@@ -43,9 +42,8 @@ jobs:
             bash -lc '/usr/local/go/bin/go test ./internal/providers/docker ./internal/providers/truenas -run TestWriteJITSecretNormalizesPermissions -count=1'
 
   core-race:
-    # Recovery bootstrap: use GitHub-hosted Docker/CGO capacity while the
-    # publisher pool is being repaired.
-    runs-on: ubuntu-latest
+    # Docker/CGO race validation uses RunnerHub's isolated publisher pool.
+    runs-on: runnerhub-publisher
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-go@v7
@@ -90,9 +88,8 @@ jobs:
       - run: GOOS=${{ matrix.goos }} GOARCH=amd64 CGO_ENABLED=0 go build ./cmd/runnerhub-agent
 
   docker-stack-smoke:
-    # Recovery bootstrap: the publisher pool cannot validate the fix that repairs
-    # its own startup path, so use GitHub-hosted Docker here temporarily.
-    runs-on: ubuntu-latest
+    # Docker stack validation uses RunnerHub's isolated publisher pool.
+    runs-on: runnerhub-publisher
     steps:
       - uses: actions/checkout@v6
       - name: Boot Compose stack and enroll Docker agent
