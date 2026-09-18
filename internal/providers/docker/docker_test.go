@@ -118,7 +118,7 @@ func TestCreateDinDUsesPrivateSidecarSocketNotHostSocket(t *testing.T) {
 	f := &fakeRunner{fn: func(_ string, a ...string) (string, error) {
 		joined := strings.Join(a, " ")
 		if len(a) > 0 && a[0] == "run" && strings.Contains(joined, "--entrypoint /bin/bash") {
-			return "1001:123", nil
+			return "1001:1001:123", nil
 		}
 		if len(a) > 0 && a[0] == "run" && strings.Contains(joined, "--name runnerhub-w1-dind") {
 			return "dind123\n", nil
@@ -149,6 +149,10 @@ func TestCreateDinDUsesPrivateSidecarSocketNotHostSocket(t *testing.T) {
 			if !strings.Contains(joinedCall, "dst=/run/runnerhub-docker") {
 				t.Fatalf("JIT preflight did not use isolated socket directory: %s", joinedCall)
 			}
+			if !strings.Contains(joinedCall, "--group-add 123") ||
+				!strings.Contains(joinedCall, "touch /run/runnerhub-docker/.runnerhub-access-test") {
+				t.Fatalf("JIT/socket-directory preflight did not run as the Docker-capable runner identity: %s", joinedCall)
+			}
 		}
 	}
 	joined := strings.Join(all, "\n")
@@ -174,6 +178,22 @@ func TestCreateDinDUsesPrivateSidecarSocketNotHostSocket(t *testing.T) {
 		!strings.Contains(joined, "--group=123") {
 		t.Fatalf("Docker-in-Docker sidecar missing required configuration: %s", joined)
 	}
+	if !strings.Contains(joined, "--group-add 123") {
+		t.Fatalf("runner did not receive Docker socket supplementary gid: %s", joined)
+	}
+	if strings.Contains(joined, "--group-add 1001") || strings.Contains(joined, "--group=1001") {
+		t.Fatalf("runner primary gid was incorrectly used as Docker socket group: %s", joined)
+	}
+	if !strings.Contains(joined, "while [ ! -f /run/runnerhub-docker/ready ]") {
+		t.Fatalf("runner listener is not gated on DinD socket preflight: %s", joined)
+	}
+	if !strings.Contains(joined, "exec --env DOCKER_HOST=unix:///run/runnerhub-docker/docker.sock runner123 /bin/bash -lc") ||
+		!strings.Contains(joined, "docker info") {
+		t.Fatalf("non-root DinD socket preflight missing: %s", joined)
+	}
+	if _, err := os.Stat(filepath.Join(p.cfg.StateDir, "workers", "w1", "dind-run", "ready")); err != nil {
+		t.Fatalf("DinD ready gate was not released after socket preflight: %v", err)
+	}
 
 	jitPath := filepath.Join(p.cfg.StateDir, "workers", "w1", "jitconfig")
 	info, err := os.Stat(jitPath)
@@ -190,7 +210,7 @@ func TestCreateDinDFailsFastWhenRunnerCannotReadJITMount(t *testing.T) {
 	f := &fakeRunner{fn: func(_ string, a ...string) (string, error) {
 		joined := strings.Join(a, " ")
 		if len(a) > 0 && a[0] == "run" && strings.Contains(joined, "--entrypoint /bin/bash") {
-			return "1001:123", nil
+			return "1001:1001:123", nil
 		}
 		if strings.Contains(joined, "test -r /run/runnerhub/jitconfig") {
 			return "", errors.New("permission denied")
@@ -211,6 +231,51 @@ func TestCreateDinDFailsFastWhenRunnerCannotReadJITMount(t *testing.T) {
 	}
 	if _, statErr := os.Stat(filepath.Join(stateDir, "workers", "w1")); !os.IsNotExist(statErr) {
 		t.Fatalf("failed DinD preflight left worker state behind: stat err=%v", statErr)
+	}
+}
+
+func TestCreateDinDFailsFastWhenRunnerCannotUseDockerSocket(t *testing.T) {
+	stateDir := t.TempDir()
+	f := &fakeRunner{fn: func(_ string, a ...string) (string, error) {
+		joined := strings.Join(a, " ")
+		switch {
+		case len(a) > 0 && a[0] == "run" && strings.Contains(joined, "--entrypoint /bin/bash"):
+			return "1001:1001:123", nil
+		case len(a) > 0 && a[0] == "run" && strings.Contains(joined, "--name runnerhub-w1-dind"):
+			return "dind123\n", nil
+		case len(a) > 0 && a[0] == "run" && strings.Contains(joined, "--name runnerhub-w1"):
+			return "runner123\n", nil
+		case len(a) > 0 && a[0] == "exec" && strings.Contains(joined, "docker info"):
+			return "permission denied while trying to connect to the docker API", errors.New("exit status 1")
+		default:
+			return "", nil
+		}
+	}}
+	p, err := newWithRunner(Config{
+		StateDir: stateDir, AllowedImages: []string{"img"}, DinDImage: "docker:dind", AllowPrivilegedWorkers: true,
+	}, f)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = p.Create(context.Background(), provider.WorkerSpec{
+		WorkerID: "w1", PoolID: "p1", RunnerName: "r1", JITConfig: "jit",
+		Image: "img", Isolation: core.IsolationContainerDinD,
+	})
+	if err == nil || !strings.Contains(err.Error(), "verify Docker-in-Docker socket access as runner") {
+		t.Fatalf("expected Docker socket preflight failure, got %v", err)
+	}
+
+	joined := make([]string, 0, len(f.calls))
+	for _, call := range f.calls {
+		joined = append(joined, strings.Join(call, " "))
+	}
+	all := strings.Join(joined, "\n")
+	if !strings.Contains(all, "rm -f runnerhub-w1-dind") || !strings.Contains(all, "rm -f runner123") {
+		t.Fatalf("failed socket preflight did not clean up both containers: %s", all)
+	}
+	if _, statErr := os.Stat(filepath.Join(stateDir, "workers", "w1")); !os.IsNotExist(statErr) {
+		t.Fatalf("failed socket preflight left worker state behind: stat err=%v", statErr)
 	}
 }
 

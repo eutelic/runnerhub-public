@@ -58,9 +58,20 @@ jobs:
           printf '%s' 'runnerhub-dind-ci-jit' >"$jit_path"
 
           runner_image='ghcr.io/actions/actions-runner:2.337.0@sha256:e5496277be5d09bc968b3d64911b74e219ac4a3f2edce956a3ecf9271bea1ef4'
-          identity="$(docker run --rm --entrypoint /bin/bash "$runner_image" -lc 'printf "%s:%s" "$(id -u runner)" "$(id -g runner)"')"
-          runner_uid="${identity%%:*}"
-          runner_gid="${identity##*:}"
+          identity="$(docker run --rm --entrypoint /bin/bash "$runner_image" -lc '
+            set -eu
+            docker_gid="$(getent group docker | cut -d: -f3)"
+            case " $(id -G runner) " in
+              *" $docker_gid "*) ;;
+              *) exit 1 ;;
+            esac
+            printf "%s:%s:%s" "$(id -u runner)" "$(id -g runner)" "$docker_gid"
+          ')"
+          IFS=: read -r runner_uid runner_gid docker_gid <<<"$identity"
+          test -n "$runner_uid"
+          test -n "$runner_gid"
+          test -n "$docker_gid"
+          test "$runner_gid" != "$docker_gid"
           sudo chown "$runner_uid:$runner_gid" "$jit_path"
           chmod 0400 "$jit_path"
 
@@ -88,10 +99,11 @@ jobs:
 
           docker run -d \
             --name "$runner" \
+            --group-add "$docker_gid" \
             --mount "type=bind,src=$run_dir,dst=/run/runnerhub-docker" \
             -e DOCKER_HOST=unix:///run/runnerhub-docker/docker.sock \
-            docker:27-cli \
-            sh -c 'sleep 300' >/dev/null
+            "$runner_image" \
+            /bin/bash -lc 'sleep 300' >/dev/null
 
           runner_id="$(docker inspect "$runner" --format '{{.Id}}')"
 
@@ -101,7 +113,7 @@ jobs:
             --network "container:$runner_id" \
             --mount "type=bind,src=$run_dir,dst=/run/runnerhub-docker" \
             docker:27-dind \
-            dockerd --host=unix:///run/runnerhub-docker/docker.sock >/dev/null
+            dockerd --host=unix:///run/runnerhub-docker/docker.sock --group="$docker_gid" >/dev/null
 
           for _ in $(seq 1 60); do
             if docker exec \
@@ -115,6 +127,15 @@ jobs:
           docker exec \
             -e DOCKER_HOST=unix:///run/runnerhub-docker/docker.sock \
             "$runner" docker info >/dev/null
+
+          docker exec "$runner" /bin/bash -lc '
+            set -eu
+            socket_gid="$(stat -c %g /run/runnerhub-docker/docker.sock)"
+            case " $(id -G) " in
+              *" $socket_gid "*) ;;
+              *) echo "runner lacks socket gid $socket_gid" >&2; exit 1 ;;
+            esac
+          '
 
           # The runner receives only the private socket directory. The host
           # Docker socket and the aliased /var/run tree are never mounted.

@@ -197,6 +197,25 @@ func writeJITSecret(path string, data []byte) error {
 	return secureJITSecretForRunner(path, runnerUID, runnerGID)
 }
 
+func secureDinDSocketDir(path string, uid, gid int) error {
+	if err := os.Chown(path, uid, gid); err != nil {
+		// Unit tests and non-root development runners may not be allowed to
+		// change ownership. The production agent runs as root; locally, keeping
+		// the directory owner-accessible is sufficient for command-shape tests.
+		if os.Geteuid() != 0 {
+			if chmodErr := os.Chmod(path, 0o700); chmodErr != nil {
+				return fmt.Errorf("set DinD socket directory fallback mode after chown failure: %w", chmodErr)
+			}
+			return nil
+		}
+		return fmt.Errorf("set DinD socket directory owner to %d:%d: %w", uid, gid, err)
+	}
+	if err := os.Chmod(path, 0o770); err != nil {
+		return fmt.Errorf("set DinD socket directory mode: %w", err)
+	}
+	return nil
+}
+
 func (p *Provider) Create(ctx context.Context, s provider.WorkerSpec) (provider.WorkerHandle, error) {
 	if s.Image == "" {
 		s.Image = images.DefaultRunnerImage
@@ -277,9 +296,20 @@ func (p *Provider) createDinDWorker(ctx context.Context, s provider.WorkerSpec, 
 
 	// The inner Docker daemon must see the same work and runner-externals paths
 	// that the runner passes when launching container actions. Initialize those
-	// directories using the selected runner image and capture its runner GID so
-	// dockerd can create a socket the non-root runner can use.
-	initScript := `set -eu; uid="$(id -u runner)"; gid="$(id -g runner)"; chown "$uid:$gid" /home/runner/_work; cp -a /home/runner/externals/. /runnerhub-externals/; printf '%s:%s' "$uid" "$gid"`
+	// directories using the selected runner image and capture both the runner's
+	// primary identity and the supplementary Docker group used for socket access.
+	initScript := `set -eu
+uid="$(id -u runner)"
+gid="$(id -g runner)"
+docker_gid="$(getent group docker | cut -d: -f3)"
+test -n "$docker_gid"
+case " $(id -G runner) " in
+  *" $docker_gid "*) ;;
+  *) echo "runner is not a member of docker gid $docker_gid" >&2; exit 1 ;;
+esac
+chown "$uid:$gid" /home/runner/_work
+cp -a /home/runner/externals/. /runnerhub-externals/
+printf '%s:%s:%s' "$uid" "$gid" "$docker_gid"`
 	identityOut, err := p.run.Run(ctx, p.cfg.DockerBinary,
 		"run", "--rm", "--pull", p.cfg.PullPolicy, "--user", "0", "--entrypoint", "/bin/bash",
 		"--mount", "type=bind,src="+workDir+",dst=/home/runner/_work",
@@ -296,7 +326,7 @@ func (p *Provider) createDinDWorker(ctx context.Context, s provider.WorkerSpec, 
 		return "", errors.New("runner image returned no runner identity")
 	}
 	identity := strings.Split(identityFields[len(identityFields)-1], ":")
-	if len(identity) != 2 {
+	if len(identity) != 3 {
 		_ = os.RemoveAll(secretDir)
 		return "", fmt.Errorf("runner image returned invalid runner identity %q", sanitize(identityFields[len(identityFields)-1]))
 	}
@@ -305,26 +335,36 @@ func (p *Provider) createDinDWorker(ctx context.Context, s provider.WorkerSpec, 
 		_ = os.RemoveAll(secretDir)
 		return "", fmt.Errorf("runner image returned invalid runner uid %q", sanitize(identity[0]))
 	}
-	runnerGIDValue, err := strconv.Atoi(identity[1])
-	if err != nil || runnerGIDValue < 0 {
+	runnerPrimaryGID, err := strconv.Atoi(identity[1])
+	if err != nil || runnerPrimaryGID < 0 {
 		_ = os.RemoveAll(secretDir)
-		return "", fmt.Errorf("runner image returned invalid runner gid %q", sanitize(identity[1]))
+		return "", fmt.Errorf("runner image returned invalid runner primary gid %q", sanitize(identity[1]))
 	}
-	if err := secureJITSecretForRunner(jitPath, runnerUID, runnerGIDValue); err != nil {
+	runnerDockerGID, err := strconv.Atoi(identity[2])
+	if err != nil || runnerDockerGID < 0 {
+		_ = os.RemoveAll(secretDir)
+		return "", fmt.Errorf("runner image returned invalid docker gid %q", sanitize(identity[2]))
+	}
+	if err := secureJITSecretForRunner(jitPath, runnerUID, runnerPrimaryGID); err != nil {
 		_ = os.RemoveAll(secretDir)
 		return "", fmt.Errorf("normalize Docker-in-Docker JIT secret ownership: %w", err)
 	}
-	runnerGID := strconv.Itoa(runnerGIDValue)
+	if err := secureDinDSocketDir(runDir, runnerUID, runnerDockerGID); err != nil {
+		_ = os.RemoveAll(secretDir)
+		return "", fmt.Errorf("normalize Docker-in-Docker socket directory: %w", err)
+	}
+	runnerDockerGroup := strconv.Itoa(runnerDockerGID)
 
 	// Validate the exact mount topology as the image's default runner user before
 	// starting the long-lived worker. This catches host ACL/user-namespace and
 	// mount-shadowing problems without ever putting the JIT payload in argv.
 	if _, err := p.run.Run(ctx, p.cfg.DockerBinary,
 		"run", "--rm", "--pull", p.cfg.PullPolicy,
+		"--group-add", runnerDockerGroup,
 		"--mount", "type=bind,src="+jitPath+",dst=/run/runnerhub/jitconfig,readonly",
 		"--mount", "type=bind,src="+runDir+",dst="+dindSocketDir,
 		s.Image, "/bin/bash", "-lc",
-		"test -r /run/runnerhub/jitconfig && test -s /run/runnerhub/jitconfig && cat /run/runnerhub/jitconfig >/dev/null",
+		"test -r /run/runnerhub/jitconfig && test -s /run/runnerhub/jitconfig && cat /run/runnerhub/jitconfig >/dev/null && touch /run/runnerhub-docker/.runnerhub-access-test && rm /run/runnerhub-docker/.runnerhub-access-test",
 	); err != nil {
 		_ = os.RemoveAll(secretDir)
 		return "", fmt.Errorf("preflight Docker-in-Docker JIT mount: %w", err)
@@ -333,12 +373,13 @@ func (p *Provider) createDinDWorker(ctx context.Context, s provider.WorkerSpec, 
 	name := workerContainerName(s.WorkerID)
 	runnerArgs := p.runnerArgs(s, name, jitPath)
 	runnerArgs = append(runnerArgs,
+		"--group-add", runnerDockerGroup,
 		"--mount", "type=bind,src="+workDir+",dst=/home/runner/_work",
 		"--mount", "type=bind,src="+runDir+",dst="+dindSocketDir,
 		"--env", "DOCKER_HOST=unix://"+dindSocketPath,
 		"--env", "RUNNER_WAIT_FOR_DOCKER_IN_SECONDS=120",
 		s.Image,
-		"/bin/bash", "-lc", `exec /home/runner/run.sh --jitconfig "$(cat /run/runnerhub/jitconfig)"`,
+		"/bin/bash", "-lc", `while [ ! -f /run/runnerhub-docker/ready ]; do sleep 0.1; done; exec /home/runner/run.sh --jitconfig "$(cat /run/runnerhub/jitconfig)"`,
 	)
 	runnerOut, err := p.run.Run(ctx, p.cfg.DockerBinary, runnerArgs...)
 	if err != nil {
@@ -371,7 +412,7 @@ func (p *Provider) createDinDWorker(ctx context.Context, s provider.WorkerSpec, 
 		"--mount", "type=bind,src=" + runDir + ",dst=" + dindSocketDir,
 		"--mount", "type=bind,src=" + externalsDir + ",dst=/home/runner/externals,readonly",
 		p.cfg.DinDImage,
-		"dockerd", "--host=unix://" + dindSocketPath, "--group=" + runnerGID,
+		"dockerd", "--host=unix://" + dindSocketPath, "--group=" + runnerDockerGroup,
 	}
 	if _, err := p.run.Run(ctx, p.cfg.DockerBinary, dindArgs...); err != nil {
 		if existing, findErr := p.findExact(ctx, dindName); findErr != nil || existing == "" {
@@ -380,6 +421,36 @@ func (p *Provider) createDinDWorker(ctx context.Context, s provider.WorkerSpec, 
 			return "", fmt.Errorf("start Docker-in-Docker sidecar: %w", err)
 		}
 	}
+
+	// Keep the Actions listener gated until the actual long-lived non-root runner
+	// can use the private DinD socket. This catches socket ownership/group
+	// regressions before GitHub can assign a workflow job to a broken worker.
+	socketProbe := `set -eu
+for i in $(seq 1 60); do
+  if docker info >/dev/null 2>&1; then
+    exit 0
+  fi
+  sleep 1
+done
+docker info`
+	if _, err := p.run.Run(ctx, p.cfg.DockerBinary,
+		"exec",
+		"--env", "DOCKER_HOST=unix://"+dindSocketPath,
+		runnerID,
+		"/bin/bash", "-lc", socketProbe,
+	); err != nil {
+		_, _ = p.run.Run(ctx, p.cfg.DockerBinary, "rm", "-f", dindName)
+		_, _ = p.run.Run(ctx, p.cfg.DockerBinary, "rm", "-f", runnerID)
+		_ = os.RemoveAll(secretDir)
+		return "", fmt.Errorf("verify Docker-in-Docker socket access as runner: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(runDir, "ready"), []byte("ready\n"), 0o644); err != nil {
+		_, _ = p.run.Run(ctx, p.cfg.DockerBinary, "rm", "-f", dindName)
+		_, _ = p.run.Run(ctx, p.cfg.DockerBinary, "rm", "-f", runnerID)
+		_ = os.RemoveAll(secretDir)
+		return "", fmt.Errorf("release Docker-in-Docker runner gate: %w", err)
+	}
+
 	if err := os.WriteFile(filepath.Join(secretDir, "dind-mode"), []byte(p.cfg.DinDImage), 0o600); err != nil {
 		_, _ = p.run.Run(ctx, p.cfg.DockerBinary, "rm", "-f", dindName)
 		_, _ = p.run.Run(ctx, p.cfg.DockerBinary, "rm", "-f", runnerID)
