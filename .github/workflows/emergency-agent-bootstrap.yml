@@ -1,10 +1,6 @@
 name: emergency-agent-bootstrap
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - '.github/workflows/emergency-agent-bootstrap.yml'
   workflow_dispatch:
 
 permissions:
