@@ -1,0 +1,119 @@
+name: emergency-agent-recovery
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/emergency-agent-recovery.yml'
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: emergency-agent-recovery
+  cancel-in-progress: true
+
+jobs:
+  recover-agent:
+    name: Test and publish fixed agent
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version: '1.26.6'
+          cache: true
+
+      - name: Run Docker provider regression tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          go test ./internal/providers/docker -count=1
+
+      - name: Build fixed linux/amd64 agent binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+            go build -trimpath \
+              -ldflags="-s -w -X main.version=${GITHUB_SHA}" \
+              -o "${RUNNER_TEMP}/runnerhub-agent" \
+              ./cmd/runnerhub-agent
+          test -s "${RUNNER_TEMP}/runnerhub-agent"
+          test -x "${RUNNER_TEMP}/runnerhub-agent"
+
+      - name: Install crane and authenticate to GHCR
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          go install github.com/google/go-containerregistry/cmd/crane@v0.22.1
+          crane="$(go env GOPATH)/bin/crane"
+          "$crane" auth login ghcr.io -u "$GITHUB_ACTOR" -p "$GITHUB_TOKEN"
+          "$crane" version
+
+      - name: Overlay fixed agent onto current amd64 image
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          crane="$(go env GOPATH)/bin/crane"
+          image='ghcr.io/eutelic/runnerhub-agent'
+          fixed_amd64="${image}:recovery-amd64-${GITHUB_SHA}"
+          fixed_index="${image}:recovery-${GITHUB_SHA}"
+
+          "$crane" auth login ghcr.io -u "$GITHUB_ACTOR" -p "$GITHUB_TOKEN"
+
+          amd64_base_digest="$("$crane" digest --platform=linux/amd64 "${image}:latest")"
+          arm64_base_digest="$("$crane" digest --platform=linux/arm64 "${image}:latest")"
+
+          layer_root="${RUNNER_TEMP}/agent-layer"
+          layer_tar="${RUNNER_TEMP}/agent-layer.tar"
+          rootfs_tar="${RUNNER_TEMP}/agent-rootfs.tar"
+          extracted="${RUNNER_TEMP}/runnerhub-agent-extracted"
+
+          mkdir -p "${layer_root}/usr/local/bin"
+          install -m 0755 "${RUNNER_TEMP}/runnerhub-agent" "${layer_root}/usr/local/bin/runnerhub-agent"
+          tar --numeric-owner --owner=0 --group=0 \
+            -C "$layer_root" \
+            -cf "$layer_tar" \
+            usr/local/bin/runnerhub-agent
+
+          "$crane" append \
+            --base "${image}@${amd64_base_digest}" \
+            --new_layer "$layer_tar" \
+            --new_tag "$fixed_amd64"
+
+          fixed_amd64_digest="$("$crane" digest "$fixed_amd64")"
+
+          "$crane" export "$fixed_amd64" "$rootfs_tar"
+          tar -xOf "$rootfs_tar" usr/local/bin/runnerhub-agent > "$extracted"
+          cmp "${RUNNER_TEMP}/runnerhub-agent" "$extracted"
+
+          "$crane" index append \
+            --manifest "$fixed_amd64" \
+            --manifest "${image}@${arm64_base_digest}" \
+            --tag "$fixed_index"
+
+          test "$("$crane" digest --platform=linux/amd64 "$fixed_index")" = "$fixed_amd64_digest"
+          test "$("$crane" digest --platform=linux/arm64 "$fixed_index")" = "$arm64_base_digest"
+
+          "$crane" copy "$fixed_index" "${image}:latest"
+
+          source_digest="$("$crane" digest "$fixed_index")"
+          latest_digest="$("$crane" digest "${image}:latest")"
+          test "$source_digest" = "$latest_digest"
+
+          {
+            echo "### Emergency agent recovery"
+            echo
+            echo "- fixed amd64: $fixed_amd64_digest"
+            echo "- preserved arm64: $arm64_base_digest"
+            echo "- promoted index: $latest_digest"
+            echo "- source commit: $GITHUB_SHA"
+          } >> "$GITHUB_STEP_SUMMARY"
