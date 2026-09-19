@@ -103,6 +103,13 @@ func TestPublisherPoolClassification(t *testing.T){
 	if !isPublisherPool(byLabel){t.Fatal("publisher label not detected")}
 }
 
+func TestPublisherMaxConcurrencyDefaultsToTwoAndPreservesExistingChoice(t *testing.T){
+	if got:=publisherMaxConcurrency(0,nil);got!=2{t.Fatalf("new publisher default=%d, want 2",got)}
+	existing:=core.RunnerPool{MaxConcurrency:1}
+	if got:=publisherMaxConcurrency(0,&existing);got!=1{t.Fatalf("existing publisher max=%d, want preserved 1",got)}
+	if got:=publisherMaxConcurrency(3,&existing);got!=3{t.Fatalf("requested publisher max=%d, want 3",got)}
+}
+
 func TestNormalizePublisherResourcesDefaultsAndOverrides(t *testing.T){
 	got:=normalizePublisherResources(core.Resources{},core.Resources{})
 	if got.CPUMillis!=2500||got.MemoryBytes!=8<<30||got.DiskBytes!=40<<30{t.Fatalf("defaults=%+v",got)}

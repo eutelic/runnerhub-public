@@ -202,7 +202,7 @@ function publisherEditor(repo,pool,status,runtime,hostAvailable,standardConnecte
   const enabled=isPublisherEnabled(pool);
   const cpu=pool?.resources?.cpuMillis?cpuCores(pool.resources.cpuMillis):2.5;
   const memory=pool?.resources?.memoryBytes?gib(pool.resources.memoryBytes):8;
-  const max=pool?.maxConcurrency||1;
+  const max=pool?.maxConcurrency||2;
   const listener=enabled?(status?.state||'pending'):'disabled';
   const runtimeState=enabled?(runtime?.state||'unknown'):'disabled';
   let badge='<span class="badge neutral">Publisher disabled</span>';
@@ -221,7 +221,8 @@ function publisherEditor(repo,pool,status,runtime,hostAvailable,standardConnecte
       '<label>Publisher CPU<input data-publisher-field="cpu" type="number" min="0.25" step="0.25" value="'+esc(cpu)+'"></label>'+
       '<label>Publisher RAM (GiB)<input data-publisher-field="memory" type="number" min="1" step="0.5" value="'+esc(memory)+'"></label>'+
       '<label>Max publishers<input data-publisher-field="concurrency" type="number" min="1" step="1" value="'+esc(max)+'"></label>'+
-    '</div>';
+    '</div>'+
+    '<div class="resource-note muted">Max publishers is an upper bound. RunnerHub still enforces host-wide CPU, RAM, and disk capacity before starting another runner.</div>';
   let buttons='';
   if(enabled){
     buttons='<div class="publisher-actions"><button data-publisher-action="update" data-repo="'+esc(repo.fullName)+'" data-installation="'+esc(repo.installationId)+'">Save publisher settings</button><button class="secondary" data-publisher-action="disable" data-repo="'+esc(repo.fullName)+'" data-installation="'+esc(repo.installationId)+'">Disable publisher</button></div>';

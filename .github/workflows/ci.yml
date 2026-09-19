@@ -2,7 +2,35 @@ name: ci
 on:
   push:
     branches: [main]
+    paths:
+      - '.dockerignore'
+      - '.github/workflows/ci.yml'
+      - 'cmd/**'
+      - 'internal/**'
+      - 'scaleset/**'
+      - 'tests/**'
+      - 'deploy/docker/**'
+      - 'deploy/truenas/**'
+      - 'web/**'
+      - 'migrations/**'
+      - 'scripts/**'
+      - 'go.mod'
+      - 'go.sum'
   pull_request:
+    paths:
+      - '.dockerignore'
+      - '.github/workflows/ci.yml'
+      - 'cmd/**'
+      - 'internal/**'
+      - 'scaleset/**'
+      - 'tests/**'
+      - 'deploy/docker/**'
+      - 'deploy/truenas/**'
+      - 'web/**'
+      - 'migrations/**'
+      - 'scripts/**'
+      - 'go.mod'
+      - 'go.sum'
 permissions:
   contents: read
 concurrency:
