@@ -405,6 +405,80 @@ func TestDinDSidecarFailureMarksWorkerFailed(t *testing.T) {
 	}
 }
 
+func TestDeleteRemovesDinDSidecarBeforeRunner(t *testing.T) {
+	sidecarRemoved := false
+	f := &fakeRunner{fn: func(_ string, a ...string) (string, error) {
+		joined := strings.Join(a, " ")
+		switch {
+		case strings.HasPrefix(joined, "inspect runner123 --format"):
+			return "w1\n", nil
+		case len(a) > 0 && a[0] == "ps" && strings.Contains(joined, "label=io.runnerhub.parent=runner123"):
+			return "dind123\n", nil
+		case joined == "rm -f dind123":
+			sidecarRemoved = true
+			return "", nil
+		case joined == "rm -f runner123":
+			if !sidecarRemoved {
+				return "", errors.New("conflict: container shares runner network namespace")
+			}
+			return "", nil
+		default:
+			return "", nil
+		}
+	}}
+	p, err := newWithRunner(Config{StateDir: t.TempDir(), AllowedImages: []string{"img"}}, f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Delete(context.Background(), provider.WorkerHandle{ProviderID: "runner123"}); err != nil {
+		t.Fatal(err)
+	}
+
+	sidecarIndex, runnerIndex := -1, -1
+	for i, call := range f.calls {
+		joined := strings.Join(call[1:], " ")
+		if joined == "rm -f dind123" {
+			sidecarIndex = i
+		}
+		if joined == "rm -f runner123" {
+			runnerIndex = i
+		}
+	}
+	if sidecarIndex < 0 || runnerIndex < 0 || sidecarIndex >= runnerIndex {
+		t.Fatalf("DinD cleanup order was not sidecar-before-runner: %+v", f.calls)
+	}
+}
+
+func TestStopStopsDinDSidecarBeforeRunner(t *testing.T) {
+	sidecarStopped := false
+	f := &fakeRunner{fn: func(_ string, a ...string) (string, error) {
+		joined := strings.Join(a, " ")
+		switch {
+		case strings.HasPrefix(joined, "inspect runner123 --format"):
+			return "w1\n", nil
+		case len(a) > 0 && a[0] == "ps" && strings.Contains(joined, "label=io.runnerhub.parent=runner123"):
+			return "dind123\n", nil
+		case joined == "stop --time 10 dind123":
+			sidecarStopped = true
+			return "", nil
+		case joined == "stop --time 10 runner123":
+			if !sidecarStopped {
+				return "", errors.New("runner stopped before dependent DinD sidecar")
+			}
+			return "", nil
+		default:
+			return "", nil
+		}
+	}}
+	p, err := newWithRunner(Config{StateDir: t.TempDir(), AllowedImages: []string{"img"}}, f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Stop(context.Background(), provider.WorkerHandle{ProviderID: "runner123"}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestDeleteRecoversDinDSidecarByParentWithoutLocalWorkerState(t *testing.T) {
 	f := &fakeRunner{fn: func(_ string, a ...string) (string, error) {
 		joined := strings.Join(a, " ")

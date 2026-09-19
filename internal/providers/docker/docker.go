@@ -655,20 +655,23 @@ func (p *Provider) Stop(ctx context.Context, h provider.WorkerHandle) error {
 	if err != nil {
 		return fmt.Errorf("find Docker-in-Docker sidecar before stop: %w", err)
 	}
+
+	// DinD sidecars use --network container:<runner>, so stop the dependent
+	// sidecar before the runner whose network namespace it shares.
+	sidecarTarget := sidecarID
+	if sidecarTarget == "" && workerID != "" {
+		sidecarTarget = workerContainerName(workerID) + "-dind"
+	}
+	if sidecarTarget != "" {
+		_, sidecarErr := p.run.Run(ctx, p.cfg.DockerBinary, "stop", "--time", "10", sidecarTarget)
+		if sidecarErr != nil && !strings.Contains(strings.ToLower(sidecarErr.Error()), "no such") {
+			return sidecarErr
+		}
+	}
+
 	_, runnerErr := p.run.Run(ctx, p.cfg.DockerBinary, "stop", "--time", "10", h.ProviderID)
 	if runnerErr != nil && strings.Contains(strings.ToLower(runnerErr.Error()), "no such") {
 		runnerErr = nil
-	}
-	if sidecarID != "" {
-		_, sidecarErr := p.run.Run(ctx, p.cfg.DockerBinary, "stop", "--time", "10", sidecarID)
-		if sidecarErr != nil && !strings.Contains(strings.ToLower(sidecarErr.Error()), "no such") && runnerErr == nil {
-			return sidecarErr
-		}
-	} else if workerID != "" {
-		_, sidecarErr := p.run.Run(ctx, p.cfg.DockerBinary, "stop", "--time", "10", workerContainerName(workerID)+"-dind")
-		if sidecarErr != nil && !strings.Contains(strings.ToLower(sidecarErr.Error()), "no such") && runnerErr == nil {
-			return sidecarErr
-		}
 	}
 	return runnerErr
 }
@@ -682,18 +685,24 @@ func (p *Provider) Delete(ctx context.Context, h provider.WorkerHandle) error {
 		if err != nil {
 			return fmt.Errorf("find Docker-in-Docker sidecar before delete: %w", err)
 		}
-		_, err = p.run.Run(ctx, p.cfg.DockerBinary, "rm", "-f", h.ProviderID)
+	}
+
+	// A DinD sidecar joins the runner's network namespace with
+	// --network container:<runner>. Docker can reject removal of the runner
+	// while that dependent sidecar still exists, so always remove it first.
+	sidecarTarget := sidecarID
+	if sidecarTarget == "" && workerID != "" {
+		sidecarTarget = workerContainerName(workerID) + "-dind"
+	}
+	if sidecarTarget != "" {
+		_, err := p.run.Run(ctx, p.cfg.DockerBinary, "rm", "-f", sidecarTarget)
 		if err != nil && !strings.Contains(strings.ToLower(err.Error()), "no such") {
 			return err
 		}
 	}
-	if sidecarID != "" {
-		_, err := p.run.Run(ctx, p.cfg.DockerBinary, "rm", "-f", sidecarID)
-		if err != nil && !strings.Contains(strings.ToLower(err.Error()), "no such") {
-			return err
-		}
-	} else if workerID != "" {
-		_, err := p.run.Run(ctx, p.cfg.DockerBinary, "rm", "-f", workerContainerName(workerID)+"-dind")
+
+	if h.ProviderID != "" {
+		_, err := p.run.Run(ctx, p.cfg.DockerBinary, "rm", "-f", h.ProviderID)
 		if err != nil && !strings.Contains(strings.ToLower(err.Error()), "no such") {
 			return err
 		}
