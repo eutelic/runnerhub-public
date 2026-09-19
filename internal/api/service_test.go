@@ -1,7 +1,7 @@
 package api
 
 import(
-"bytes";"context";"encoding/json";"errors";"net/http";"net/http/httptest";"testing";"time";"github.com/eutelic/runnerhub/internal/agent";"github.com/eutelic/runnerhub/internal/agenthub";"github.com/eutelic/runnerhub/internal/auth";cachepkg "github.com/eutelic/runnerhub/internal/cache";"github.com/eutelic/runnerhub/internal/core";"github.com/eutelic/runnerhub/internal/fleet";"github.com/eutelic/runnerhub/internal/githubrunner";"github.com/eutelic/runnerhub/internal/policy";"github.com/eutelic/runnerhub/internal/provider";"github.com/eutelic/runnerhub/internal/scheduler";"github.com/eutelic/runnerhub/internal/store")
+"bytes";"context";"encoding/json";"errors";"net/http";"net/http/httptest";"testing";"time";"github.com/eutelic/runnerhub/internal/agent";"github.com/eutelic/runnerhub/internal/agenthub";"github.com/eutelic/runnerhub/internal/auth";cachepkg "github.com/eutelic/runnerhub/internal/cache";"github.com/eutelic/runnerhub/internal/core";"github.com/eutelic/runnerhub/internal/fleet";"github.com/eutelic/runnerhub/internal/githubrunner";"github.com/eutelic/runnerhub/internal/policy";"github.com/eutelic/runnerhub/internal/provider";"github.com/eutelic/runnerhub/internal/scheduler";"github.com/eutelic/runnerhub/internal/store";"github.com/eutelic/runnerhub/internal/telemetry")
 type failingCommandStore struct{store.Store;fail bool}
 func(s *failingCommandStore)EnqueueCommand(ctx context.Context,hostID string,c agent.Command)error{if s.fail{return errors.New("simulated command persistence failure")};return s.Store.EnqueueCommand(ctx,hostID,c)}
 type apiFakeGH struct{deleted []int64}
@@ -136,4 +136,60 @@ func TestScaleEventTreatsLateTerminalEventForDeletedWorkerAsSuccess(t *testing.T
 	got,err:=st.GetWorker(ctx,"w-late")
 	if err!=nil{t.Fatal(err)}
 	if got.State!=core.WorkerDeleted{t.Fatalf("late completion resurrected worker: %+v",got)}
+}
+
+
+func TestPoolRecommendationsUsePoolSpecificQueueAndCapacity(t *testing.T){
+	ctx:=context.Background()
+	st,err:=store.OpenSQLite(":memory:")
+	if err!=nil{t.Fatal(err)}
+	defer st.Close()
+
+	fast:=core.RunnerPool{ID:"fast",Name:"fast",Isolation:core.IsolationContainerTrusted,HostSelector:map[string]string{"lane":"fast"},Resources:core.Resources{CPUMillis:2500,MemoryBytes:4<<30},MaxConcurrency:1}
+	slow:=core.RunnerPool{ID:"slow",Name:"slow",Isolation:core.IsolationContainerTrusted,HostSelector:map[string]string{"lane":"slow"},Resources:core.Resources{CPUMillis:2500,MemoryBytes:4<<30},MaxConcurrency:1}
+	if err:=st.UpsertPool(ctx,fast);err!=nil{t.Fatal(err)}
+	if err:=st.UpsertPool(ctx,slow);err!=nil{t.Fatal(err)}
+	for _,h:=range []core.Host{
+		{ID:"fast-host",Name:"fast-host",Provider:"docker",State:core.HostOnline,Tags:map[string]string{"lane":"fast","isolation.container-trusted":"true"},Capacity:core.Resources{CPUMillis:6000,MemoryBytes:16<<30}},
+		{ID:"slow-host",Name:"slow-host",Provider:"docker",State:core.HostOnline,Tags:map[string]string{"lane":"slow","isolation.container-trusted":"true"},Capacity:core.Resources{CPUMillis:6000,MemoryBytes:16<<30}},
+	}{
+		if err:=st.UpsertHost(ctx,h);err!=nil{t.Fatal(err)}
+	}
+	if err:=st.UpsertWorker(ctx,core.Worker{ID:"slow-worker",PoolID:"slow",HostID:"slow-host",ProviderID:"docker",Isolation:core.IsolationContainerTrusted,State:core.WorkerBusy,Resources:slow.Resources,CreatedAt:time.Now().Add(-time.Minute),UpdatedAt:time.Now()});err!=nil{t.Fatal(err)}
+
+	metrics:=&telemetry.Metrics{}
+	metrics.Queue("fast",2*time.Second)
+	metrics.Queue("slow",90*time.Second)
+	svc:=&Service{Store:st,Metrics:metrics}
+
+	read:=func(poolID string)map[string]any{
+		req:=httptest.NewRequest(http.MethodGet,"/api/v1/pools/"+poolID+"/recommendation",nil)
+		rr:=httptest.NewRecorder()
+		svc.Handler().ServeHTTP(rr,req)
+		if rr.Code!=http.StatusOK{t.Fatalf("%s status=%d body=%s",poolID,rr.Code,rr.Body.String())}
+		var got map[string]any
+		if err:=json.NewDecoder(rr.Body).Decode(&got);err!=nil{t.Fatal(err)}
+		return got
+	}
+	fastRec:=read("fast")
+	slowRec:=read("slow")
+	if int(fastRec["recommended"].(float64))!=1{t.Fatalf("fast recommendation=%v",fastRec)}
+	if int(slowRec["recommended"].(float64))!=2{t.Fatalf("slow recommendation=%v",slowRec)}
+	if fastRec["averageQueue"]==slowRec["averageQueue"]{t.Fatalf("pool queue averages should differ: fast=%v slow=%v",fastRec,slowRec)}
+	slowCapacity:=slowRec["capacity"].(map[string]any)
+	if int(slowCapacity["additionalWorkers"].(float64))!=1||int(slowCapacity["capacityLimit"].(float64))!=2{t.Fatalf("slow capacity=%v",slowCapacity)}
+}
+
+func TestSummarizePoolLatenciesSeparatesLifecyclePhases(t *testing.T){
+	base:=time.Date(2026,9,19,12,0,0,0,time.UTC)
+	metrics:=&telemetry.Metrics{}
+	metrics.Queue("p",40*time.Second)
+	workers:=[]core.Worker{{
+		PoolID:"p",State:core.WorkerDeleted,CreatedAt:base,RegistrationStartedAt:base.Add(5*time.Second),RegisteredAt:base.Add(8*time.Second),
+		StartedAt:base.Add(50*time.Second),CompletedAt:base.Add(2*time.Minute),UpdatedAt:base.Add(2*time.Minute+7*time.Second),
+	}}
+	got:=summarizePoolLatencies("p",workers,metrics)
+	if got.Queue!="40s"||got.Provision!="5s"||got.Registration!="3s"||got.Execution!="1m10s"||got.Cleanup!="7s"{
+		t.Fatalf("latencies=%+v",got)
+	}
 }

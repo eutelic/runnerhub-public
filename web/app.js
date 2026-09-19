@@ -33,6 +33,10 @@ function show(el,on){el.classList.toggle('hidden',!on)}
 function message(text,kind=''){els.msg.className=kind;els.msg.textContent=text||''}
 function gib(bytes){return bytes?Number((bytes/1073741824).toFixed(2)):0}
 function cpuCores(millis){return millis?Number((millis/1000).toFixed(2)):0}
+function fmtDuration(value){return value&&value!=='0s'?value:'—'}
+function bottleneckLabel(value){return ({pool_concurrency:'pool limit',host_resources:'host resources',no_compatible_host:'no compatible host'})[value]||value||'—'}
+function reservedCPU(capacity){const used=cpuCores(capacity?.reserved?.cpuMillis);const total=cpuCores(capacity?.capacity?.cpuMillis);return total?used+' / '+total+' cores':'—'}
+function reservedRAM(capacity){const used=gib(capacity?.reserved?.memoryBytes);const total=gib(capacity?.capacity?.memoryBytes);return total?used+' / '+total+' GiB':'—'}
 function repoName(pool){return pool?.scope?.repository?pool.scope.owner+'/'+pool.scope.repository:pool?.scope?.owner||''}
 function isPublisherPool(pool){return Boolean(pool)&&(String(pool.scaleSetName||'').toLowerCase()==='runnerhub-publisher'||(pool.labels||[]).some(x=>String(x).toLowerCase()==='runnerhub-publisher'))}
 function isPublisherEnabled(pool){return Boolean(pool)&&Number(pool.githubInstallationId)>0}
@@ -72,7 +76,7 @@ function tab(rows,cols){
     rows.map(r=>'<tr>'+cols.map(c=>'<td>'+esc(c[1](r))+'</td>').join('')+'</tr>').join('')+'</table></div>';
 }
 
-function renderWorkers(workers){
+function renderWorkers(workers,poolByID){
   const all=Array.isArray(workers)?workers:[];
   const terminal=new Set(['deleted','completed','failed']);
   const active=all.filter(w=>!terminal.has(String(w.state||'').toLowerCase()));
@@ -98,6 +102,7 @@ function renderWorkers(workers){
 
   els.workers.innerHTML=tab(visible,[
     ['Repository',x=>x.repository||repoName(x)||'—'],
+    ['Class',x=>isPublisherPool(poolByID?.get(x.poolId))?'publisher':'standard'],
     ['Job',x=>x.jobName||'startup'],
     ['Result',x=>workerDisplayState(x)],
     ['CPU',x=>x.resources?.cpuMillis?cpuCores(x.resources.cpuMillis):'—'],
@@ -152,6 +157,12 @@ async function refresh(){
     const [h,p,w,a,statuses,runtimeHealth,repos]=results;
     const listenerByPool=new Map((statuses||[]).map(x=>[x.poolId,x]));
     const runtimeByPool=new Map((runtimeHealth||[]).map(x=>[x.poolId,x]));
+    const poolByID=new Map((p||[]).map(x=>[x.id,x]));
+    const recommendationPairs=await Promise.all((p||[]).map(async pool=>{
+      try{return [pool.id,await j('/api/v1/pools/'+encodeURIComponent(pool.id)+'/recommendation')]}
+      catch{return [pool.id,null]}
+    }));
+    const recommendationByPool=new Map(recommendationPairs);
 
     els.hosts.innerHTML=tab(h,[
       ['Name',x=>x.name],
@@ -162,13 +173,24 @@ async function refresh(){
     els.pools.innerHTML=tab(p,[
       ['Repository',x=>repoName(x)],
       ['Class',x=>isPublisherPool(x)?'publisher':'standard'],
-      ['CPU',x=>cpuCores(x.resources?.cpuMillis)+' cores'],
-      ['RAM',x=>gib(x.resources?.memoryBytes)+' GiB'],
-      ['Max',x=>x.maxConcurrency],
+      ['Request',x=>cpuCores(x.resources?.cpuMillis)+' cores / '+gib(x.resources?.memoryBytes)+' GiB'],
+      ['Active',x=>{const r=recommendationByPool.get(x.id);return r?(r.capacity.activeWorkers+' / '+x.maxConcurrency):'—'}],
+      ['Hosts',x=>recommendationByPool.get(x.id)?.capacity?.compatibleHosts??'—'],
+      ['Queue',x=>fmtDuration(recommendationByPool.get(x.id)?.latencies?.queue)],
+      ['Provision',x=>fmtDuration(recommendationByPool.get(x.id)?.latencies?.provision)],
+      ['Register',x=>fmtDuration(recommendationByPool.get(x.id)?.latencies?.registration)],
+      ['Execute',x=>fmtDuration(recommendationByPool.get(x.id)?.latencies?.execution)],
+      ['Cleanup',x=>fmtDuration(recommendationByPool.get(x.id)?.latencies?.cleanup)],
+      ['CPU reserved',x=>reservedCPU(recommendationByPool.get(x.id)?.capacity)],
+      ['RAM reserved',x=>reservedRAM(recommendationByPool.get(x.id)?.capacity)],
+      ['Can fit',x=>{const n=recommendationByPool.get(x.id)?.capacity?.additionalWorkers;return Number.isFinite(n)?'+'+n:'—'}],
+      ['Bottleneck',x=>bottleneckLabel(recommendationByPool.get(x.id)?.capacity?.bottleneck)],
+      ['Reason',x=>recommendationByPool.get(x.id)?.capacity?.reason||'—'],
+      ['Recommend',x=>recommendationByPool.get(x.id)?.recommended??'—'],
       ['Listener',x=>listenerByPool.get(x.id)?.state||'pending'],
       ['Runtime',x=>runtimeByPool.get(x.id)?.state||'unknown']
     ]);
-    renderWorkers(w);
+    renderWorkers(w,poolByID);
     els.audit.innerHTML=tab(a,[
       ['When',x=>fmtTime(x.createdAt)],
       ['Action',x=>x.action],

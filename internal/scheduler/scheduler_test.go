@@ -160,3 +160,50 @@ func TestDinDStillConsumesHostDiskCapacity(t *testing.T) {
 		t.Fatalf("dind disk accounting=%d, want %d", got, int64(20<<30))
 	}
 }
+
+
+func TestSummarizeCapacityAccountsForOtherPools(t *testing.T) {
+	host := core.Host{
+		ID: "a", Name: "a", Provider: "docker", State: core.HostOnline,
+		Tags: map[string]string{"isolation.container-trusted": "true"},
+		Capacity: core.Resources{CPUMillis: 6000, MemoryBytes: 16 << 30},
+	}
+	pool := testPool()
+	pool.Resources = core.Resources{CPUMillis: 2500, MemoryBytes: 4 << 30}
+	pool.MaxConcurrency = 4
+	workers := []core.Worker{{
+		ID: "other", PoolID: "other", HostID: "a", ProviderID: "docker",
+		Isolation: core.IsolationContainerTrusted, State: core.WorkerBusy,
+		Resources: core.Resources{CPUMillis: 2500, MemoryBytes: 4 << 30},
+	}}
+
+	got := SummarizeCapacity(pool, []core.Host{host}, workers)
+	if got.CompatibleHosts != 1 || got.AdditionalWorkers != 1 || got.CapacityLimit != 1 {
+		t.Fatalf("capacity summary=%+v", got)
+	}
+	if got.Reserved.CPUMillis != 2500 || got.Reserved.MemoryBytes != 4<<30 {
+		t.Fatalf("reserved=%+v", got.Reserved)
+	}
+	if got.Bottleneck != "host_resources" {
+		t.Fatalf("bottleneck=%q, want host_resources", got.Bottleneck)
+	}
+}
+
+func TestSummarizeCapacityIdentifiesPoolLimit(t *testing.T) {
+	host := core.Host{
+		ID: "a", Name: "a", Provider: "docker", State: core.HostOnline,
+		Tags: map[string]string{"isolation.container-trusted": "true"},
+		Capacity: core.Resources{CPUMillis: 6000, MemoryBytes: 16 << 30},
+	}
+	pool := testPool()
+	pool.Resources = core.Resources{CPUMillis: 2500, MemoryBytes: 4 << 30}
+	pool.MaxConcurrency = 1
+
+	got := SummarizeCapacity(pool, []core.Host{host}, nil)
+	if got.AdditionalWorkers != 2 || got.CapacityLimit != 2 {
+		t.Fatalf("capacity summary=%+v", got)
+	}
+	if got.Bottleneck != "pool_concurrency" {
+		t.Fatalf("bottleneck=%q, want pool_concurrency", got.Bottleneck)
+	}
+}
