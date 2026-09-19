@@ -169,9 +169,9 @@ jobs:
           # Because the DinD daemon shares the runner network namespace, a port
           # published by the inner Docker daemon must be reachable from the
           # outer runner on localhost, matching host-style Actions services.
-          docker exec "$runner" sh -c '
+          docker exec "$runner" /bin/bash -lc '
             for i in $(seq 1 30); do
-              if nc -z 127.0.0.1 6379 >/dev/null 2>&1; then
+              if (echo > /dev/tcp/127.0.0.1/6379) >/dev/null 2>&1; then
                 exit 0
               fi
               sleep 1

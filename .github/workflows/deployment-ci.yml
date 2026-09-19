@@ -141,6 +141,10 @@ jobs:
           root="$tmp/runnerhub"
           compose_file="$tmp/compose.yaml"
           project="runnerhub-truenas-ci"
+          docker_socket="${DOCKER_HOST#unix://}"
+          test "$docker_socket" != "$DOCKER_HOST"
+          test -S "$docker_socket"
+          export RUNNERHUB_DOCKER_SOCKET_PATH="$docker_socket"
           port="$(python3 - <<'PY'
           import socket
           s = socket.socket()

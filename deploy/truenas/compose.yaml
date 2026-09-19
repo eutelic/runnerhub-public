@@ -116,7 +116,7 @@ services:
       RUNNERHUB_DIAGNOSTICS_ENABLED: *diagnostics-enabled
     volumes:
       - type: bind
-        source: /var/run/docker.sock
+        source: ${RUNNERHUB_DOCKER_SOCKET_PATH:-/var/run/docker.sock}
         target: /var/run/docker.sock
       - type: bind
         source: *state-path

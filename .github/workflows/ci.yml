@@ -101,6 +101,9 @@ jobs:
           envfile="$tmp/runnerhub.env"
           keyfile="$tmp/github-app.pem"
           project="runnerhub-ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          docker_socket="${DOCKER_HOST#unix://}"
+          test "$docker_socket" != "$DOCKER_HOST"
+          test -S "$docker_socket"
 
           cleanup() {
             docker compose --env-file "$envfile" -f deploy/docker/compose.yaml -p "$project" --profile autoscale down -v >/dev/null 2>&1 || true
@@ -120,7 +123,7 @@ jobs:
           sed -i 's|REPLACE_WITH_INSTALLATION_ID|12345678|' "$envfile"
           sed -i 's|https://github.com/OWNER/REPOSITORY|https://github.com/acme/app|' "$envfile"
           sed -i "s|/absolute/path/to/runnerhub-github-app.pem|$keyfile|" "$envfile"
-          printf '\nRUNNERHUB_HOST_NAME=ci-docker-host\n' >> "$envfile"
+          printf '\nRUNNERHUB_HOST_NAME=ci-docker-host\nRUNNERHUB_DOCKER_SOCKET_PATH=%s\n' "$docker_socket" >> "$envfile"
           admin_key="$(sed -n 's/^RUNNERHUB_ADMIN_KEY=//p' "$envfile")"
           scaleset_key="$(sed -n 's/^RUNNERHUB_SCALESET_KEY=//p' "$envfile")"
           test -n "$admin_key"

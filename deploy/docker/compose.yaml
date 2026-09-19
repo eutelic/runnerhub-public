@@ -49,7 +49,7 @@ services:
       # create ephemeral workers. Worker containers themselves never receive
       # this socket. Keep the state path identical inside/outside the agent so
       # bind-mounted JIT/DinD files are resolvable by the host Docker daemon.
-      - /var/run/docker.sock:/var/run/docker.sock
+      - ${RUNNERHUB_DOCKER_SOCKET_PATH:-/var/run/docker.sock}:/var/run/docker.sock
       - /var/lib/runnerhub:/var/lib/runnerhub
 
   scaleset:
