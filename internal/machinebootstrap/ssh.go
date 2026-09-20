@@ -205,6 +205,8 @@ docker_cmd $args "$IMAGE" >/dev/null
 }
 
 func finalizeScript(req Request, tokenPath string) string {
+	req.RegistryUsername = ""
+	req.RegistryPassword = ""
 	return commonScript(req) + "\nTOKEN_PATH=" + shellQuote(tokenPath) + "\n" +
 		`ensure_docker
 docker_cmd rm -f runnerhub-agent >/dev/null 2>&1 || true
@@ -322,6 +324,8 @@ pull_agent_image() {
 }
 
 func diagnosticsScript(req Request) string {
+	req.RegistryUsername = ""
+	req.RegistryPassword = ""
 	return commonScript(req) + `
 ensure_docker
 docker_cmd logs --tail 40 runnerhub-agent 2>&1 || true
