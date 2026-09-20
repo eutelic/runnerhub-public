@@ -2,6 +2,8 @@ const els={
   token:document.getElementById('apitoken'),
   hosts:document.getElementById('hosts'),
   pools:document.getElementById('pools'),
+  activeRunners:document.getElementById('active-runners'),
+  activeRunnerSummary:document.getElementById('active-runner-summary'),
   workers:document.getElementById('workers'),
   workerSummary:document.getElementById('worker-summary'),
   audit:document.getElementById('audit'),
@@ -58,6 +60,19 @@ function fmtTime(value){
   return d.toLocaleString([],{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'});
 }
 function workerTimestamp(worker){return worker.updatedAt||worker.failedAt||worker.completedAt||worker.startedAt||worker.registeredAt||worker.createdAt||''}
+function fmtAge(value){
+  if(isZeroTime(value))return '—';
+  const started=new Date(value).getTime();
+  if(!Number.isFinite(started))return '—';
+  const seconds=Math.max(0,Math.floor((Date.now()-started)/1000));
+  if(seconds<60)return seconds+'s';
+  const minutes=Math.floor(seconds/60);
+  if(minutes<60)return minutes+'m';
+  const hours=Math.floor(minutes/60);
+  if(hours<24)return hours+'h '+(minutes%60)+'m';
+  const days=Math.floor(hours/24);
+  return days+'d '+(hours%24)+'h';
+}
 function workerDisplayState(worker){
   if(worker.jobResult){
     const r=String(worker.jobResult).toLowerCase();
@@ -98,6 +113,41 @@ function renderHosts(hosts){
       '<td><input class="inline-tags" data-host-tag-input="'+esc(h.id)+'" value="'+esc(hostTagText(h))+'" placeholder="fast, high-memory"></td>'+
       '<td><button class="secondary compact" data-host-tags="'+esc(h.id)+'">Save</button></td>'+
     '</tr>').join('')+'</table></div>';
+}
+
+function renderActiveRunners(workers,poolByID,hostByID,progressByWorker){
+  const all=Array.isArray(workers)?workers:[];
+  const terminal=new Set(['deleted','completed','failed']);
+  const active=all.filter(w=>!terminal.has(String(w.state||'').toLowerCase())).sort((a,b)=>{
+    const rank={busy:0,ready:1,registering:2,starting:3,provisioning:4,requested:5,deleting:6,cleanup_pending:7};
+    const ar=rank[String(a.state||'').toLowerCase()]??8;
+    const br=rank[String(b.state||'').toLowerCase()]??8;
+    if(ar!==br)return ar-br;
+    return new Date(a.createdAt||0)-new Date(b.createdAt||0);
+  });
+  const cpu=active.reduce((sum,w)=>sum+Number(w.resources?.cpuMillis||0),0);
+  const memory=active.reduce((sum,w)=>sum+Number(w.resources?.memoryBytes||0),0);
+  els.activeRunnerSummary.textContent=active.length+' active · '+cpuCores(cpu)+' cores · '+gib(memory)+' GiB allocated';
+  if(!active.length){
+    els.activeRunners.innerHTML='<div class="empty">No active runners.</div>';
+    return;
+  }
+
+  els.activeRunners.innerHTML=tab(active,[
+    ['Repository',x=>x.repository||repoName(poolByID?.get(x.poolId))||'—'],
+    ['Type',x=>runnerClass(poolByID?.get(x.poolId))],
+    ['Job',x=>x.jobName||(String(x.state||'').toLowerCase()==='ready'?'idle / waiting':'startup')],
+    ['Status',x=>x.state||'unknown'],
+    ['Step progress',x=>{const p=progressByWorker?.get(x.id);return p?.available&&p.totalSteps>0?p.completedSteps+' / '+p.totalSteps+' · '+p.percent+'%':'—'}],
+    ['Current step',x=>progressByWorker?.get(x.id)?.currentStep||'—'],
+    ['Host',x=>hostByID?.get(x.hostId)?.name||x.hostId||'pending'],
+    ['CPU',x=>x.resources?.cpuMillis?cpuCores(x.resources.cpuMillis)+' cores':'—'],
+    ['RAM',x=>x.resources?.memoryBytes?gib(x.resources.memoryBytes)+' GiB':'—'],
+    ['Disk',x=>x.resources?.diskBytes?gib(x.resources.diskBytes)+' GiB':'—'],
+    ['Runner started',x=>fmtTime(x.createdAt)],
+    ['Job started',x=>fmtTime(x.startedAt)],
+    ['Age',x=>fmtAge(x.createdAt)]
+  ]);
 }
 
 function renderWorkers(workers,poolByID){
@@ -165,7 +215,8 @@ async function refresh(){
   await loadAuth();
   const canAPI=auth.authenticated||Boolean(els.token.value);
   if(!canAPI){
-    els.hosts.innerHTML=els.pools.innerHTML=els.workers.innerHTML=els.audit.innerHTML='<span class="muted">Sign in to view.</span>';
+    els.hosts.innerHTML=els.pools.innerHTML=els.activeRunners.innerHTML=els.workers.innerHTML=els.audit.innerHTML='<span class="muted">Sign in to view.</span>';
+    els.activeRunnerSummary.textContent='';
     els.workerSummary.textContent='';
     els.repos.innerHTML='';
     return;
@@ -175,16 +226,19 @@ async function refresh(){
       j('/api/v1/hosts'),
       j('/api/v1/pools'),
       j('/api/v1/workers'),
+      j('/api/v1/workers/progress').catch(()=>[]),
       j('/api/v1/audit?limit=12'),
       j('/api/v1/scalesets/status'),
       j('/api/v1/runtime-health')
     ];
     if(auth.authenticated)requests.push(j('/api/v1/github/connected-repositories'));
     const results=await Promise.all(requests);
-    const [h,p,w,a,statuses,runtimeHealth,repos]=results;
+    const [h,p,w,progress,a,statuses,runtimeHealth,repos]=results;
     const listenerByPool=new Map((statuses||[]).map(x=>[x.poolId,x]));
     const runtimeByPool=new Map((runtimeHealth||[]).map(x=>[x.poolId,x]));
     const poolByID=new Map((p||[]).map(x=>[x.id,x]));
+    const hostByID=new Map((h||[]).map(x=>[x.id,x]));
+    const progressByWorker=new Map((progress||[]).map(x=>[x.workerId,x]));
     const recommendationPairs=await Promise.all((p||[]).map(async pool=>{
       try{return [pool.id,await j('/api/v1/pools/'+encodeURIComponent(pool.id)+'/recommendation')]}
       catch{return [pool.id,null]}
@@ -215,6 +269,7 @@ async function refresh(){
       ['Listener',x=>listenerByPool.get(x.id)?.state||'pending'],
       ['Runtime',x=>runtimeByPool.get(x.id)?.state||'unknown']
     ]);
+    renderActiveRunners(w,poolByID,hostByID,progressByWorker);
     renderWorkers(w,poolByID);
     els.audit.innerHTML=tab(a,[
       ['When',x=>fmtTime(x.createdAt)],
