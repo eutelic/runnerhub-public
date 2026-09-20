@@ -2,6 +2,7 @@ package telemetry
 
 import (
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -172,6 +173,12 @@ func RecommendResources(pool core.RunnerPool, workers []core.Worker) ResourceRec
 			terminal = true
 		}
 		if !terminal {
+			continue
+		}
+		result := strings.ToLower(strings.TrimSpace(worker.JobResult))
+		successful := result == "success" || result == "succeeded" || result == "completed" ||
+			(result == "" && worker.FailedAt.IsZero() && !worker.CompletedAt.IsZero())
+		if !successful && !worker.ProviderOOMKilled {
 			continue
 		}
 		at := worker.CompletedAt
