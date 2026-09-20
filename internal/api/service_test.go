@@ -208,7 +208,7 @@ func TestRecordWorkerUsageTracksCurrentPeakAndAverage(t *testing.T){
 func TestAutoTunePoolUsesObservedCompletedJobs(t *testing.T){
 	ctx:=context.Background()
 	st,err:=store.OpenSQLite(":memory:");if err!=nil{t.Fatal(err)};defer st.Close()
-	pool:=core.RunnerPool{ID:"auto",Name:"auto",Scope:core.GitHubScope{Kind:core.ScopeRepository,Owner:"eutelic",Repository:"runnerhub"},Isolation:core.IsolationContainerTrusted,Resources:core.Resources{CPUMillis:2000,MemoryBytes:4<<30,DiskBytes:20<<30},MaxConcurrency:2,RunnerGroupID:1,AutoTuneResources:true}
+	pool:=core.RunnerPool{ID:"auto",Name:"auto",Scope:core.GitHubScope{Kind:core.ScopeRepository,Owner:"eutelic",Repository:"runnerhub"},Isolation:core.IsolationContainerTrusted,Resources:core.Resources{CPUMillis:2000,MemoryBytes:4<<30,DiskBytes:20<<30},MaxConcurrency:2,RunnerGroupID:1,Labels:[]string{"runnerhub"},AutoTuneResources:true}
 	if err:=st.UpsertPool(ctx,pool);err!=nil{t.Fatal(err)}
 	host:=core.Host{ID:"host",Name:"host",Provider:"docker",State:core.HostOnline,Capacity:core.Resources{CPUMillis:6000,MemoryBytes:32<<30,DiskBytes:100<<30}}
 	if err:=st.UpsertHost(ctx,host);err!=nil{t.Fatal(err)}
