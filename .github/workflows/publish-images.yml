@@ -28,9 +28,11 @@ permissions:
   actions: read
   packages: write
 
+# Release/image publication must serialize per ref, but an in-progress publish must
+# finish rather than being canceled by a newer commit.
 concurrency:
   group: publish-images-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 # Docker-capable release and image work runs on RunnerHub's isolated publisher pool.
 # End-to-end RunnerHub release validation trigger.
