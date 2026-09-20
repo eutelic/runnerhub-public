@@ -300,17 +300,17 @@ pull_agent_image() {
     fi
     cfg="$(mktemp -d /tmp/runnerhub-docker-config.XXXXXX)"
     chmod 700 "$cfg"
+    trap 'rm -rf "$cfg"' 0 1 2 15
     if ! printf '%s' "$REGISTRY_PASSWORD" | docker_cmd --config "$cfg" login "$REGISTRY" -u "$REGISTRY_USER" --password-stdin >/dev/null; then
-      rm -rf "$cfg"
       echo "RunnerHub agent registry authentication failed for $REGISTRY" >&2
       exit 45
     fi
     if ! docker_cmd --config "$cfg" pull "$IMAGE" >/dev/null; then
-      rm -rf "$cfg"
       echo "RunnerHub agent image pull failed for $IMAGE after registry authentication" >&2
       exit 46
     fi
     rm -rf "$cfg"
+    trap - 0 1 2 15
     return
   fi
   if ! docker_cmd pull "$IMAGE" >/dev/null; then
