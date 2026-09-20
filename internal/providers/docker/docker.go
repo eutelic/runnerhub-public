@@ -27,66 +27,8 @@ const (
 	dindSocketPath      = dindSocketDir + "/docker.sock"
 )
 
-var detachedContainerIDPattern = regexp.MustCompile(`^[0-9a-f]{64}package docker
-
-import (
-	"context"
-	"encoding/json"
-	"errors"
-	"fmt"
-	"os"
-	"os/exec"
-	"path/filepath"
-	"regexp"
-	"runtime"
-	"strconv"
-	"strings"
-
-	"github.com/eutelic/runnerhub/internal/core"
-	"github.com/eutelic/runnerhub/internal/hostinfo"
-	"github.com/eutelic/runnerhub/internal/images"
-	"github.com/eutelic/runnerhub/internal/provider"
-)
-
-const (
-	maxDiagnosticsBytes = 4096
-	runnerUID           = 1001
-	runnerGID           = 1001
-	dindSocketDir       = "/run/runnerhub-docker"
-	dindSocketPath      = dindSocketDir + "/docker.sock"
-)
-
-)
-var dockerBytePattern = regexp.MustCompile(`(?i)^([0-9]+(?:\\.[0-9]+)?)\\s*([kmgt]?i?b)package docker
-
-import (
-	"context"
-	"encoding/json"
-	"errors"
-	"fmt"
-	"os"
-	"os/exec"
-	"path/filepath"
-	"regexp"
-	"runtime"
-	"strconv"
-	"strings"
-
-	"github.com/eutelic/runnerhub/internal/core"
-	"github.com/eutelic/runnerhub/internal/hostinfo"
-	"github.com/eutelic/runnerhub/internal/images"
-	"github.com/eutelic/runnerhub/internal/provider"
-)
-
-const (
-	maxDiagnosticsBytes = 4096
-	runnerUID           = 1001
-	runnerGID           = 1001
-	dindSocketDir       = "/run/runnerhub-docker"
-	dindSocketPath      = dindSocketDir + "/docker.sock"
-)
-
-)
+var detachedContainerIDPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
+var dockerBytePattern = regexp.MustCompile(`(?i)^([0-9]+(?:\.[0-9]+)?)\s*([kmgt]?i?b)$`)
 
 var diagnosticSecretPatterns = []struct {
 	re   *regexp.Regexp
