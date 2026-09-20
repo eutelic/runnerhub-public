@@ -104,3 +104,40 @@ func TestRecommendResourcesWaitsForEnoughJobs(t *testing.T) {
 		t.Fatalf("resource limits changed before enough samples: %+v", got)
 	}
 }
+
+
+func TestRecommendResourcesIgnoresOrdinaryFailedJobsButKeepsOOMPressure(t *testing.T) {
+	pool := core.RunnerPool{ID: "p1", Resources: core.Resources{CPUMillis: 2500, MemoryBytes: 8 << 30}}
+	base := time.Date(2026, 9, 20, 2, 0, 0, 0, time.UTC)
+	var workers []core.Worker
+	for i := 0; i < 5; i++ {
+		workers = append(workers, core.Worker{
+			ID: fmt.Sprintf("ok-%d", i), PoolID: pool.ID, State: core.WorkerDeleted,
+			StartedAt: base.Add(time.Duration(i) * time.Minute),
+			CompletedAt: base.Add(time.Duration(i)*time.Minute + 30*time.Second),
+			JobResult: "succeeded",
+			Usage: core.ResourceUsageSummary{PeakCPUMillis: 1000, PeakMemoryBytes: 2 << 30, Samples: 2},
+		})
+	}
+	workers = append(workers,
+		core.Worker{
+			ID: "early-failure", PoolID: pool.ID, State: core.WorkerDeleted,
+			StartedAt: base.Add(10 * time.Minute), FailedAt: base.Add(10*time.Minute + 5*time.Second),
+			JobResult: "failed",
+			Usage: core.ResourceUsageSummary{PeakCPUMillis: 100, PeakMemoryBytes: 128 << 20, Samples: 1},
+		},
+		core.Worker{
+			ID: "oom", PoolID: pool.ID, State: core.WorkerDeleted,
+			StartedAt: base.Add(11 * time.Minute), FailedAt: base.Add(11*time.Minute + 20*time.Second),
+			JobResult: "failed", ProviderOOMKilled: true,
+			Usage: core.ResourceUsageSummary{PeakCPUMillis: 1000, PeakMemoryBytes: 7 << 30, Samples: 2},
+		},
+	)
+	got := RecommendResources(pool, workers)
+	if !got.Ready || got.Jobs != 6 {
+		t.Fatalf("eligible jobs=%d ready=%v, want 6 and ready", got.Jobs, got.Ready)
+	}
+	if got.MemoryPeakP95Bytes != 7<<30 {
+		t.Fatalf("memory p95=%d, want OOM pressure %d", got.MemoryPeakP95Bytes, int64(7<<30))
+	}
+}
