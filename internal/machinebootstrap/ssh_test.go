@@ -86,6 +86,26 @@ func TestTailscaleControlPlaneAddsMagicDNSResolverToAgent(t *testing.T) {
 	}
 }
 
+func TestBootstrapCanAdvertisePublisherSupport(t *testing.T) {
+	req := Request{
+		HostName:               "compute",
+		ControlPlaneURL:        "http://runnerhub.example:8788",
+		AgentImage:             "ghcr.io/eutelic/runnerhub-agent:latest",
+		AllowPrivilegedWorkers: true,
+	}
+	for name, script := range map[string]string{
+		"start":    startScript(req, "token", "/tmp/token"),
+		"finalize": finalizeScript(req, "/tmp/token"),
+	} {
+		if !strings.Contains(script, `PRIVILEGED=true`) {
+			t.Fatalf("%s script does not enable privileged worker support:\n%s", name, script)
+		}
+		if !strings.Contains(script, `RUNNERHUB_ALLOW_PRIVILEGED_WORKERS=true`) {
+			t.Fatalf("%s script does not pass privileged worker support to agent:\n%s", name, script)
+		}
+	}
+}
+
 func TestNonTailscaleControlPlaneDoesNotForceDNS(t *testing.T) {
 	if got := agentDNSForControlURL("https://runnerhub.example"); got != "" {
 		t.Fatalf("agentDNSForControlURL returned %q for ordinary DNS", got)
