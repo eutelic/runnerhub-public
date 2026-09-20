@@ -22,7 +22,7 @@ The bootstrap does not report success merely because the listener container star
 
 The default Docker path uses the same GitHub App private key as the control plane plus the app client ID and installation ID required by the standalone scale-set client. The PEM is mounted as a Compose secret, copied into a mode-0600 runtime path, and the listener drops privileges before starting.
 
-For repository-scoped scale sets, follow GitHub's current Actions Runner Controller guidance for GitHub App permissions: repository Administration read/write and Metadata read-only. Organization-scoped scale sets require the corresponding organization self-hosted-runner permission and should use a deliberately restricted runner group.
+For repository-scoped scale sets, follow GitHub's current Actions Runner Controller guidance for GitHub App permissions: repository Administration read/write, Actions read-only, and Metadata read-only. Organization-scoped scale sets require the corresponding organization self-hosted-runner permission and should use a deliberately restricted runner group.
 
 ## Lifecycle behavior
 

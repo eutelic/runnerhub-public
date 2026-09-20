@@ -136,3 +136,33 @@ func TestHTTPBackendDoesNotEchoTokenOnError(t *testing.T) {
 		t.Fatal("error leaked github token")
 	}
 }
+
+
+func TestHTTPBackendListWorkflowJobs(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/repos/eutelic/runnerhub/actions/runs/987/jobs" {
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+		if r.URL.Query().Get("filter") != "latest" || r.URL.Query().Get("per_page") != "100" {
+			t.Fatalf("unexpected query: %s", r.URL.RawQuery)
+		}
+		_, _ = w.Write([]byte(`{"total_count":1,"jobs":[{"id":1234,"name":"test","status":"in_progress","conclusion":null,"runner_name":"runnerhub-abc","steps":[{"name":"Set up job","status":"completed","conclusion":"success","number":1},{"name":"Run tests","status":"in_progress","conclusion":null,"number":2},{"name":"Complete job","status":"queued","conclusion":null,"number":3}]}]}`))
+	}))
+	defer server.Close()
+
+	backend, _ := NewHTTPBackendWithBaseURL(server.Client(), staticTokenSource("secret-token"), server.URL)
+	jobs, err := backend.ListWorkflowJobs(context.Background(), core.GitHubScope{Kind: core.ScopeRepository, Owner: "eutelic", Repository: "runnerhub"}, 987)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(jobs) != 1 {
+		t.Fatalf("expected one job, got %d", len(jobs))
+	}
+	job := jobs[0]
+	if job.ID != 1234 || job.RunnerName != "runnerhub-abc" || len(job.Steps) != 3 {
+		t.Fatalf("unexpected job: %+v", job)
+	}
+	if job.Steps[1].Name != "Run tests" || job.Steps[1].Status != "in_progress" {
+		t.Fatalf("unexpected steps: %+v", job.Steps)
+	}
+}

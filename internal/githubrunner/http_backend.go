@@ -22,6 +22,39 @@ func NewHTTPBackendWithBaseURL(c *http.Client,t TokenSource,raw string)(*HTTPBac
 func(b *HTTPBackend)GenerateJITConfig(ctx context.Context,r JITConfigRequest)(JITConfig,error){if err:=ValidateJITConfigRequest(r);err!=nil{return JITConfig{},err};work:=r.WorkFolder;if work==""{work="_work"};payload:=struct{Name string `json:"name"`;RunnerGroupID int64 `json:"runner_group_id"`;Labels []string `json:"labels"`;WorkFolder string `json:"work_folder"`}{r.RunnerName,r.RunnerGroupID,r.Labels,work};var out struct{Runner struct{ID int64 `json:"id"`;Name string `json:"name"`} `json:"runner"`;Encoded string `json:"encoded_jit_config"`};if err:=b.doJSON(ctx,r.Scope,http.MethodPost,b.jitPath(r.Scope),payload,http.StatusCreated,&out);err!=nil{return JITConfig{},err};if out.Runner.ID<=0||out.Runner.Name==""||out.Encoded==""{return JITConfig{},errors.New("github returned incomplete jit configuration")};return JITConfig{RunnerID:out.Runner.ID,RunnerName:out.Runner.Name,EncodedConfig:out.Encoded},nil}
 func(b *HTTPBackend)GetRunner(ctx context.Context,scope core.GitHubScope,id int64)(Runner,error){if err:=core.ValidateGitHubScope(scope);err!=nil{return Runner{},err};if id<=0{return Runner{},errors.New("runner id must be positive")};var out struct{ID int64 `json:"id"`;Name string `json:"name"`;OS string `json:"os"`;Status string `json:"status"`;Busy bool `json:"busy"`;Ephemeral bool `json:"ephemeral"`;Version string `json:"version"`;Labels []struct{Name string `json:"name"`} `json:"labels"`};if err:=b.doJSON(ctx,scope,http.MethodGet,b.runnerPath(scope,id),nil,http.StatusOK,&out);err!=nil{return Runner{},err};labels:=make([]string,0,len(out.Labels));for _,l:=range out.Labels{labels=append(labels,l.Name)};return Runner{ID:out.ID,Name:out.Name,OS:out.OS,Status:out.Status,Busy:out.Busy,Ephemeral:out.Ephemeral,Version:out.Version,Labels:labels},nil}
 func(b *HTTPBackend)DeleteRunner(ctx context.Context,scope core.GitHubScope,id int64)error{if err:=core.ValidateGitHubScope(scope);err!=nil{return err};if id<=0{return errors.New("runner id must be positive")};return b.doJSON(ctx,scope,http.MethodDelete,b.runnerPath(scope,id),nil,http.StatusNoContent,nil)}
+func(b *HTTPBackend)ListWorkflowJobs(ctx context.Context,scope core.GitHubScope,runID int64)([]WorkflowJob,error){
+	if err:=core.ValidateGitHubScope(scope);err!=nil{return nil,err}
+	if scope.Kind!=core.ScopeRepository{return nil,errors.New("workflow jobs require a repository scope")}
+	if runID<=0{return nil,errors.New("workflow run id must be positive")}
+	out:=[]WorkflowJob{}
+	for page:=1;;page++{
+		var response struct{
+			TotalCount int `json:"total_count"`
+			Jobs []struct{
+				ID int64 `json:"id"`
+				Name string `json:"name"`
+				Status string `json:"status"`
+				Conclusion string `json:"conclusion"`
+				RunnerName string `json:"runner_name"`
+				Steps []struct{
+					Name string `json:"name"`
+					Status string `json:"status"`
+					Conclusion string `json:"conclusion"`
+					Number int `json:"number"`
+				} `json:"steps"`
+			} `json:"jobs"`
+		}
+		path:=b.scopeBasePath(scope)+"/actions/runs/"+strconv.FormatInt(runID,10)+"/jobs?filter=latest&per_page=100&page="+strconv.Itoa(page)
+		if err:=b.doJSON(ctx,scope,http.MethodGet,path,nil,http.StatusOK,&response);err!=nil{return nil,err}
+		for _,job:=range response.Jobs{
+			steps:=make([]JobStep,0,len(job.Steps))
+			for _,step:=range job.Steps{steps=append(steps,JobStep{Name:step.Name,Status:step.Status,Conclusion:step.Conclusion,Number:step.Number})}
+			out=append(out,WorkflowJob{ID:job.ID,Name:job.Name,Status:job.Status,Conclusion:job.Conclusion,RunnerName:job.RunnerName,Steps:steps})
+		}
+		if len(response.Jobs)<100||len(out)>=response.TotalCount{break}
+	}
+	return out,nil
+}
 func(b *HTTPBackend)doJSON(ctx context.Context,scope core.GitHubScope,method,path string,body any,want int,out any)error{token,err:=b.tokens.Token(ctx,scope);if err!=nil{return fmt.Errorf("get github token: %w",err)};if strings.TrimSpace(token)==""{return errors.New("github token source returned an empty token")};var rd io.Reader;if body!=nil{raw,err:=json.Marshal(body);if err!=nil{return err};rd=bytes.NewReader(raw)};endpoint,err:=apiEndpoint(b.baseURL,path);if err!=nil{return err};req,err:=http.NewRequestWithContext(ctx,method,endpoint,rd);if err!=nil{return err};req.Header.Set("Accept","application/vnd.github+json");req.Header.Set("Authorization","Bearer "+token);req.Header.Set("X-GitHub-Api-Version",b.apiVersion);if body!=nil{req.Header.Set("Content-Type","application/json")};resp,err:=b.httpClient.Do(req);if err!=nil{return fmt.Errorf("github request failed: %w",err)};defer resp.Body.Close();if resp.StatusCode==http.StatusNotFound{return ErrNotFound};if resp.StatusCode!=want{raw,_:=io.ReadAll(io.LimitReader(resp.Body,8<<10));return fmt.Errorf("github api %s %s returned %d: %s",method,path,resp.StatusCode,sanitizeErrorBody(raw,token))};if out==nil{_,_=io.Copy(io.Discard,resp.Body);return nil};if err:=json.NewDecoder(resp.Body).Decode(out);err!=nil{return fmt.Errorf("decode github response: %w",err)};return nil}
 func(b *HTTPBackend)scopeBasePath(s core.GitHubScope)string{o:=url.PathEscape(s.Owner);if s.Kind==core.ScopeOrganization{return "/orgs/"+o};return "/repos/"+o+"/"+url.PathEscape(s.Repository)}
 func(b *HTTPBackend)jitPath(s core.GitHubScope)string{return b.scopeBasePath(s)+"/actions/runners/generate-jitconfig"}

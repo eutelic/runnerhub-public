@@ -28,6 +28,7 @@ Repository permissions:
 
 ```text
 Administration: Read & write
+Actions: Read-only
 Metadata: Read-only
 ```
 
