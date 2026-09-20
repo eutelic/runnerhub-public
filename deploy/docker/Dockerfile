@@ -20,7 +20,7 @@ RUN CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o /out/runnerhub-scaleset
 # persistent bind mounts do not become unreadable when Debian's automatic
 # system-user allocation changes. 10001 is reserved for RunnerHub containers.
 FROM debian:bookworm-slim AS control
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl util-linux && rm -rf /var/lib/apt/lists/* && \
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl openssh-client sshpass util-linux && rm -rf /var/lib/apt/lists/* && \
     groupadd --gid 10001 runnerhub && useradd --uid 10001 --gid runnerhub --home-dir /nonexistent --shell /usr/sbin/nologin --no-create-home runnerhub && \
     mkdir -p /data && chown runnerhub:runnerhub /data
 COPY --from=build /out/runnerhubd /usr/local/bin/runnerhubd

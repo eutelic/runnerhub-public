@@ -20,8 +20,12 @@ let auth={enabled:false,authenticated:false};
 els.token.value=sessionStorage.getItem('runnerhub-token')||'';
 els.token.addEventListener('input',()=>{sessionStorage.setItem('runnerhub-token',els.token.value);refresh()});
 document.getElementById('create').addEventListener('click',createPool);
+document.getElementById('add-machine').addEventListener('click',addMachine);
 els.logout.addEventListener('click',logout);
+els.hosts.addEventListener('click',e=>{const button=e.target.closest('button[data-host-tags]');if(button)saveHostTags(button)});
 els.repos.addEventListener('click',e=>{
+  const profile=e.target.closest('button[data-profile-action]');
+  if(profile){saveRunnerProfile(profile);return}
   const publisher=e.target.closest('button[data-publisher-action]');
   if(publisher){savePublisher(publisher);return}
   const button=e.target.closest('button[data-resource-action]');
@@ -39,6 +43,8 @@ function reservedCPU(capacity){const used=cpuCores(capacity?.reserved?.cpuMillis
 function reservedRAM(capacity){const used=gib(capacity?.reserved?.memoryBytes);const total=gib(capacity?.capacity?.memoryBytes);return total?used+' / '+total+' GiB':'—'}
 function repoName(pool){return pool?.scope?.repository?pool.scope.owner+'/'+pool.scope.repository:pool?.scope?.owner||''}
 function isPublisherPool(pool){return Boolean(pool)&&(String(pool.scaleSetName||'').toLowerCase()==='runnerhub-publisher'||(pool.labels||[]).some(x=>String(x).toLowerCase()==='runnerhub-publisher'))}
+function isStandardPool(pool){const name=String(pool?.scaleSetName||'').toLowerCase();return Boolean(pool)&&(name===''||name==='runnerhub')}
+function runnerClass(pool){if(!pool)return 'standard';if(isPublisherPool(pool))return 'publisher';if(isStandardPool(pool))return 'standard';return pool.scaleSetName||'custom'}
 function isPublisherEnabled(pool){return Boolean(pool)&&Number(pool.githubInstallationId)>0}
 function isZeroTime(value){return !value||String(value).startsWith('0001-01-01')}
 function fmtTime(value){
@@ -76,6 +82,20 @@ function tab(rows,cols){
     rows.map(r=>'<tr>'+cols.map(c=>'<td>'+esc(c[1](r))+'</td>').join('')+'</tr>').join('')+'</table></div>';
 }
 
+function hostTagText(host){return Object.keys(host?.userTags||{}).sort().join(', ')}
+function renderHosts(hosts){
+  if(!Array.isArray(hosts)||!hosts.length){els.hosts.innerHTML='<span class="muted">None</span>';return}
+  els.hosts.innerHTML='<div class="table-wrap"><table><tr><th>Name</th><th>State</th><th>CPU</th><th>Memory</th><th>Tags</th><th></th></tr>'+
+    hosts.map(h=>'<tr>'+
+      '<td>'+esc(h.name)+'</td>'+
+      '<td>'+esc(h.state)+'</td>'+
+      '<td>'+esc(h.capacity?.cpuMillis?cpuCores(h.capacity.cpuMillis)+' cores':'unknown')+'</td>'+
+      '<td>'+esc(h.capacity?.memoryBytes?gib(h.capacity.memoryBytes)+' GiB':'unknown')+'</td>'+
+      '<td><input class="inline-tags" data-host-tag-input="'+esc(h.id)+'" value="'+esc(hostTagText(h))+'" placeholder="fast, high-memory"></td>'+
+      '<td><button class="secondary compact" data-host-tags="'+esc(h.id)+'">Save</button></td>'+
+    '</tr>').join('')+'</table></div>';
+}
+
 function renderWorkers(workers,poolByID){
   const all=Array.isArray(workers)?workers:[];
   const terminal=new Set(['deleted','completed','failed']);
@@ -102,7 +122,7 @@ function renderWorkers(workers,poolByID){
 
   els.workers.innerHTML=tab(visible,[
     ['Repository',x=>x.repository||repoName(x)||'—'],
-    ['Class',x=>isPublisherPool(poolByID?.get(x.poolId))?'publisher':'standard'],
+    ['Class',x=>runnerClass(poolByID?.get(x.poolId))],
     ['Job',x=>x.jobName||'startup'],
     ['Result',x=>workerDisplayState(x)],
     ['CPU',x=>x.resources?.cpuMillis?cpuCores(x.resources.cpuMillis):'—'],
@@ -164,15 +184,10 @@ async function refresh(){
     }));
     const recommendationByPool=new Map(recommendationPairs);
 
-    els.hosts.innerHTML=tab(h,[
-      ['Name',x=>x.name],
-      ['State',x=>x.state],
-      ['CPU',x=>x.capacity?.cpuMillis?cpuCores(x.capacity.cpuMillis)+' cores':'unknown'],
-      ['Memory',x=>x.capacity?.memoryBytes?gib(x.capacity.memoryBytes)+' GiB':'unknown']
-    ]);
+    renderHosts(h);
     els.pools.innerHTML=tab(p,[
       ['Repository',x=>repoName(x)],
-      ['Class',x=>isPublisherPool(x)?'publisher':'standard'],
+      ['Class',x=>runnerClass(x)],
       ['Request',x=>cpuCores(x.resources?.cpuMillis)+' cores / '+gib(x.resources?.memoryBytes)+' GiB'],
       ['Active',x=>{const r=recommendationByPool.get(x.id);return r?(r.capacity.activeWorkers+' / '+x.maxConcurrency):'—'}],
       ['Hosts',x=>recommendationByPool.get(x.id)?.capacity?.compatibleHosts??'—'],
@@ -259,13 +274,39 @@ function publisherEditor(repo,pool,status,runtime,hostAvailable,standardConnecte
   '</details>';
 }
 
+function runnerProfileEditor(repo,profiles,standardConnected){
+  const active=(profiles||[]).filter(p=>Number(p.githubInstallationId)>0);
+  const existing=(profiles||[]).map(p=>{
+    const tags=Object.keys(p.hostSelector||{}).join(', ')||'—';
+    const enabled=Number(p.githubInstallationId)>0;
+    return '<div class="profile-row"><div><code>runs-on: '+esc(p.scaleSetName)+'</code><div class="muted small">machines: '+esc(tags)+' · '+esc(cpuCores(p.resources?.cpuMillis))+' CPU · '+esc(gib(p.resources?.memoryBytes))+' GiB</div></div>'+
+      (enabled?'<button class="secondary compact" data-profile-action="disable" data-profile-name="'+esc(p.scaleSetName)+'" data-repo="'+esc(repo.fullName)+'" data-installation="'+esc(repo.installationId)+'">Disable</button>':'<span class="badge neutral">disabled</span>')+
+    '</div>';
+  }).join('');
+  const disabled=standardConnected?'':' disabled';
+  return '<details class="repo-config profile-config">'+
+    '<summary>Custom runner profiles'+(active.length?' ('+active.length+')':'')+'</summary>'+
+    '<div class="resource-note muted">Route jobs to tagged machines with names such as <code>runnerhub-fast</code>.</div>'+
+    (existing?'<div class="profile-list">'+existing+'</div>':'')+
+    '<div class="resource-grid">'+
+      '<label>Profile name<input data-profile-field="name" placeholder="fast"'+disabled+'></label>'+
+      '<label>Required machine tags<input data-profile-field="tags" placeholder="fast"'+disabled+'></label>'+
+      '<label>CPU / runner<input data-profile-field="cpu" type="number" min="0.25" step="0.25" value="2.5"'+disabled+'></label>'+
+      '<label>RAM / runner (GiB)<input data-profile-field="memory" type="number" min="1" step="0.5" value="4"'+disabled+'></label>'+
+      '<label>Max concurrent<input data-profile-field="concurrency" type="number" min="1" step="1" value="2"'+disabled+'></label>'+
+    '</div>'+
+    '<button data-profile-action="enable" data-repo="'+esc(repo.fullName)+'" data-installation="'+esc(repo.installationId)+'"'+disabled+'>Create / update profile</button>'+
+  '</details>';
+}
+
 function renderRepos(repos,pools,statuses,runtimeHealth,hosts){
   const poolsByRepo=new Map();
   (pools||[]).filter(p=>p.scope?.kind==='repository').forEach(p=>{
     const key=(p.scope.owner+'/'+p.scope.repository).toLowerCase();
-    const entry=poolsByRepo.get(key)||{standard:null,publisher:null};
+    const entry=poolsByRepo.get(key)||{standard:null,publisher:null,profiles:[]};
     if(isPublisherPool(p))entry.publisher=p;
-    else if(!entry.standard||String(p.scaleSetName||'').toLowerCase()==='runnerhub')entry.standard=p;
+    else if(isStandardPool(p))entry.standard=p;
+    else entry.profiles.push(p);
     poolsByRepo.set(key,entry);
   });
   const statusByPool=new Map((statuses||[]).map(s=>[s.poolId,s]));
@@ -284,7 +325,7 @@ function renderRepos(repos,pools,statuses,runtimeHealth,hosts){
   });
 
   els.repos.innerHTML=sorted.map(repo=>{
-    const entry=poolsByRepo.get(repo.fullName.toLowerCase())||{standard:null,publisher:null};
+    const entry=poolsByRepo.get(repo.fullName.toLowerCase())||{standard:null,publisher:null,profiles:[]};
     const pool=entry.standard;
     const publisher=entry.publisher;
     const status=pool?statusByPool.get(pool.id):null;
@@ -321,9 +362,74 @@ function renderRepos(repos,pools,statuses,runtimeHealth,hosts){
         statusHtml+detail+
       '</div>'+
       (repo.private?resourceEditor(repo,pool):'')+
+      (repo.private?runnerProfileEditor(repo,entry.profiles,Boolean(pool)):'')+
       (repo.private?publisherEditor(repo,publisher,publisherStatus,publisherRuntime,publisherHostAvailable,Boolean(pool)):'')+
       '</article>';
   }).join('');
+}
+
+async function addMachine(){
+  const button=document.getElementById('add-machine');
+  const body={
+    address:document.getElementById('machine-address').value.trim(),
+    user:document.getElementById('machine-user').value.trim(),
+    name:document.getElementById('machine-name').value.trim(),
+    tags:document.getElementById('machine-tags').value.split(',').map(x=>x.trim()).filter(Boolean),
+    password:document.getElementById('machine-password').value,
+    privateKey:document.getElementById('machine-private-key').value,
+    installDocker:document.getElementById('machine-install-docker').checked
+  };
+  if(!body.address||!body.user||!body.name)return message('Machine address, SSH user, and RunnerHub name are required.','error');
+  button.disabled=true;
+  try{
+    message('Connecting to '+body.address+' and enrolling '+body.name+'…');
+    const host=await j('/api/v1/hosts/bootstrap',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});
+    document.getElementById('machine-password').value='';
+    document.getElementById('machine-private-key').value='';
+    message(host.name+' is online and available for RunnerHub CI.','success');
+    await refresh();
+  }catch(e){message(e.message,'error')}finally{button.disabled=false}
+}
+
+async function saveHostTags(button){
+  const id=button.dataset.hostTags;
+  const input=els.hosts.querySelector('[data-host-tag-input="'+CSS.escape(id)+'"]');
+  const tags={};
+  (input?.value||'').split(',').map(x=>x.trim()).filter(Boolean).forEach(tag=>{tags[tag]='true'});
+  button.disabled=true;
+  try{
+    await j('/api/v1/hosts/'+encodeURIComponent(id),{method:'PATCH',headers:{'content-type':'application/json'},body:JSON.stringify({tags})});
+    message('Machine tags updated.','success');
+    await refresh();
+  }catch(e){message(e.message,'error')}finally{button.disabled=false}
+}
+
+async function saveRunnerProfile(button){
+  const panel=button.closest('.profile-config');
+  const enabled=button.dataset.profileAction!=='disable';
+  const body={installationId:Number(button.dataset.installation),repository:button.dataset.repo,enabled};
+  if(enabled){
+    body.name=panel.querySelector('[data-profile-field="name"]').value.trim();
+    body.tags=panel.querySelector('[data-profile-field="tags"]').value.split(',').map(x=>x.trim()).filter(Boolean);
+    const cpu=Number(panel.querySelector('[data-profile-field="cpu"]').value);
+    const memory=Number(panel.querySelector('[data-profile-field="memory"]').value);
+    const concurrency=Number(panel.querySelector('[data-profile-field="concurrency"]').value);
+    if(!body.name)return message('Profile name is required.','error');
+    if(!body.tags.length)return message('At least one required machine tag is required.','error');
+    if(!Number.isFinite(cpu)||cpu<=0||!Number.isFinite(memory)||memory<=0||!Number.isInteger(concurrency)||concurrency<1)return message('Profile CPU, RAM, and concurrency must be valid.','error');
+    body.resources={cpuMillis:Math.round(cpu*1000),memoryBytes:Math.round(memory*1073741824),diskBytes:21474836480};
+    body.maxConcurrency=concurrency;
+  }else{
+    body.name=button.dataset.profileName;
+  }
+  button.disabled=true;
+  try{
+    await j('/api/v1/github/profile',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});
+    const name=String(body.name).startsWith('runnerhub-')?body.name:'runnerhub-'+body.name;
+    message(enabled?'Profile '+name+' configured. Use runs-on: '+name+'.':'Profile '+name+' disabled.','success');
+    panel.open=false;
+    await refresh();
+  }catch(e){message(e.message,'error');button.disabled=false}
 }
 
 async function saveRepositoryResources(button){
