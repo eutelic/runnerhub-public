@@ -26,9 +26,10 @@ type Request struct {
 	RegistryPassword  string
 	HostName          string
 	ControlPlaneURL   string
-	AgentImage        string
-	InstallDocker     bool
-	AllowInsecureHTTP bool
+	AgentImage              string
+	InstallDocker           bool
+	AllowInsecureHTTP       bool
+	AllowPrivilegedWorkers  bool
 }
 
 type WaitForHost func(context.Context, string) (core.Host, error)
@@ -196,6 +197,7 @@ pull_agent_image
 docker_cmd rm -f runnerhub-agent >/dev/null 2>&1 || true
 args="run -d --name runnerhub-agent --restart unless-stopped -v /var/run/docker.sock:/var/run/docker.sock -v /var/lib/runnerhub:/var/lib/runnerhub -v $TOKEN_PATH:/run/runnerhub-enrollment-token:ro -e RUNNERHUB_CONTROL_PLANE_URL=$CONTROL -e RUNNERHUB_ENROLLMENT_TOKEN_FILE=/run/runnerhub-enrollment-token -e RUNNERHUB_HOST_NAME=$HOST_NAME -e RUNNERHUB_PROVIDER=docker"
 if [ "$INSECURE" = true ]; then args="$args -e RUNNERHUB_ALLOW_INSECURE_HTTP=true"; fi
+if [ "$PRIVILEGED" = true ]; then args="$args -e RUNNERHUB_ALLOW_PRIVILEGED_WORKERS=true"; fi
 if [ -n "$AGENT_DNS" ]; then args="$args --dns=$AGENT_DNS"; fi
 # Values are validated/quoted before reaching this shell; use positional expansion only for fixed option shapes.
 docker_cmd $args "$IMAGE" >/dev/null
@@ -208,6 +210,7 @@ func finalizeScript(req Request, tokenPath string) string {
 docker_cmd rm -f runnerhub-agent >/dev/null 2>&1 || true
 args="run -d --name runnerhub-agent --restart unless-stopped -v /var/run/docker.sock:/var/run/docker.sock -v /var/lib/runnerhub:/var/lib/runnerhub -e RUNNERHUB_CONTROL_PLANE_URL=$CONTROL -e RUNNERHUB_HOST_NAME=$HOST_NAME -e RUNNERHUB_PROVIDER=docker"
 if [ "$INSECURE" = true ]; then args="$args -e RUNNERHUB_ALLOW_INSECURE_HTTP=true"; fi
+if [ "$PRIVILEGED" = true ]; then args="$args -e RUNNERHUB_ALLOW_PRIVILEGED_WORKERS=true"; fi
 if [ -n "$AGENT_DNS" ]; then args="$args --dns=$AGENT_DNS"; fi
 docker_cmd $args "$IMAGE" >/dev/null
 rm -rf "$TOKEN_PATH"
@@ -227,6 +230,10 @@ func commonScript(req Request) string {
 	if req.AllowInsecureHTTP {
 		insecure = "true"
 	}
+	privileged := "false"
+	if req.AllowPrivilegedWorkers {
+		privileged = "true"
+	}
 	registry := registryHost(req.AgentImage)
 	agentDNS := agentDNSForControlURL(req.ControlPlaneURL)
 	return `set -eu
@@ -240,6 +247,7 @@ REGISTRY_PASSWORD=` + shellQuote(req.RegistryPassword) + `
 AGENT_DNS=` + shellQuote(agentDNS) + `
 INSTALL_DOCKER=` + install + `
 INSECURE=` + insecure + `
+PRIVILEGED=` + privileged + `
 sudo_try() {
   if sudo -n "$@" >/dev/null 2>&1; then return 0; fi
   if [ -n "$SUDO_PASSWORD" ]; then
