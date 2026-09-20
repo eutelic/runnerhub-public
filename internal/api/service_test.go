@@ -208,11 +208,11 @@ func TestRecordWorkerUsageTracksCurrentPeakAndAverage(t *testing.T){
 func TestAutoTunePoolUsesObservedCompletedJobs(t *testing.T){
 	ctx:=context.Background()
 	st,err:=store.OpenSQLite(":memory:");if err!=nil{t.Fatal(err)};defer st.Close()
-	pool:=core.RunnerPool{ID:"auto",Name:"auto",Isolation:core.IsolationContainerTrusted,Resources:core.Resources{CPUMillis:2000,MemoryBytes:4<<30,DiskBytes:20<<30},MaxConcurrency:2,AutoTuneResources:true}
+	pool:=core.RunnerPool{ID:"auto",Name:"auto",Scope:core.GitHubScope{Kind:core.ScopeRepository,Owner:"eutelic",Repository:"runnerhub"},Isolation:core.IsolationContainerTrusted,Resources:core.Resources{CPUMillis:2000,MemoryBytes:4<<30,DiskBytes:20<<30},MaxConcurrency:2,AutoTuneResources:true}
 	if err:=st.UpsertPool(ctx,pool);err!=nil{t.Fatal(err)}
 	host:=core.Host{ID:"host",Name:"host",Provider:"docker",State:core.HostOnline,Capacity:core.Resources{CPUMillis:6000,MemoryBytes:32<<30,DiskBytes:100<<30}}
 	if err:=st.UpsertHost(ctx,host);err!=nil{t.Fatal(err)}
-	cpu:=[]int64{1000,1200,1400,1600,1800}
+	cpu:=[]int64{1000,1200,1400,1600,2000}
 	mem:=[]int64{2<<30,5<<29,3<<30,7<<29,4<<30}
 	base:=time.Date(2026,9,20,1,0,0,0,time.UTC)
 	for i:=range cpu{
@@ -222,6 +222,6 @@ func TestAutoTunePoolUsesObservedCompletedJobs(t *testing.T){
 	svc:=&Service{Store:st,Policy:policy.Engine{}}
 	if err:=svc.maybeAutoTunePool(ctx,pool.ID);err!=nil{t.Fatal(err)}
 	got,err:=st.GetPool(ctx,pool.ID);if err!=nil{t.Fatal(err)}
-	if got.Resources.CPUMillis!=2250{t.Fatalf("cpu=%d, want 2250",got.Resources.CPUMillis)}
+	if got.Resources.CPUMillis!=2500{t.Fatalf("cpu=%d, want 2500",got.Resources.CPUMillis)}
 	if got.Resources.MemoryBytes!=5<<30{t.Fatalf("memory=%d, want %d",got.Resources.MemoryBytes,int64(5<<30))}
 }
