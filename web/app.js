@@ -448,7 +448,8 @@ async function addMachine(){
     privateKey:document.getElementById('machine-private-key').value,
     registryUsername:document.getElementById('machine-registry-username').value.trim(),
     registryPassword:document.getElementById('machine-registry-password').value,
-    installDocker:document.getElementById('machine-install-docker').checked
+    installDocker:document.getElementById('machine-install-docker').checked,
+    allowPrivilegedWorkers:document.getElementById('machine-allow-privileged').checked
   };
   if(!body.address||!body.user||!body.name)return message('Machine address, SSH user, and RunnerHub name are required.','error');
   button.disabled=true;
