@@ -46,6 +46,7 @@ Repository permissions:
 
 ```text
 Administration: Read & write
+Actions: Read-only
 Metadata: Read-only
 ```
 
@@ -424,6 +425,6 @@ If sign-in redirects to the wrong host, `RUNNERHUB_PUBLIC_URL` does not match th
 
 If a repo does not appear, use **Install / manage repositories** and verify that repository is selected in the GitHub App installation.
 
-If a repo appears but connecting it fails, verify it is private and that the App still has Administration read/write and Metadata read-only on it.
+If a repo appears but connecting it fails, verify it is private and that the App still has Administration read/write, Actions read-only, and Metadata read-only on it.
 
 No inbound GitHub webhook is required.
