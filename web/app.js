@@ -444,7 +444,10 @@ async function addMachine(){
     name:document.getElementById('machine-name').value.trim(),
     tags:document.getElementById('machine-tags').value.split(',').map(x=>x.trim()).filter(Boolean),
     password:document.getElementById('machine-password').value,
+    sudoPassword:document.getElementById('machine-sudo-password').value,
     privateKey:document.getElementById('machine-private-key').value,
+    registryUsername:document.getElementById('machine-registry-username').value.trim(),
+    registryPassword:document.getElementById('machine-registry-password').value,
     installDocker:document.getElementById('machine-install-docker').checked
   };
   if(!body.address||!body.user||!body.name)return message('Machine address, SSH user, and RunnerHub name are required.','error');
@@ -453,7 +456,9 @@ async function addMachine(){
     message('Connecting to '+body.address+' and enrolling '+body.name+'…');
     const host=await j('/api/v1/hosts/bootstrap',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});
     document.getElementById('machine-password').value='';
+    document.getElementById('machine-sudo-password').value='';
     document.getElementById('machine-private-key').value='';
+    document.getElementById('machine-registry-password').value='';
     message(host.name+' is online and available for RunnerHub CI.','success');
     await refresh();
   }catch(e){message(e.message,'error')}finally{button.disabled=false}
