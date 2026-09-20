@@ -51,7 +51,7 @@ func TestRecommendResourcesUsesP95PeakWithHeadroom(t *testing.T) {
 		ID: "p1",
 		Resources: core.Resources{CPUMillis: 2000, MemoryBytes: 4 << 30, DiskBytes: 20 << 30},
 	}
-	cpuPeaks := []int64{1000, 1200, 1400, 1600, 1800}
+	cpuPeaks := []int64{1000, 1200, 1400, 1600, 2000}
 	memoryPeaks := []int64{2 << 30, 5 << 29, 3 << 30, 7 << 29, 4 << 30}
 	workers := make([]core.Worker, 0, len(cpuPeaks))
 	base := time.Date(2026, 9, 20, 1, 0, 0, 0, time.UTC)
@@ -73,11 +73,11 @@ func TestRecommendResourcesUsesP95PeakWithHeadroom(t *testing.T) {
 	if !got.Ready || got.Jobs != 5 {
 		t.Fatalf("recommendation not ready: %+v", got)
 	}
-	if got.CPUPeakP95Millis != 1800 {
-		t.Fatalf("cpu p95=%d, want 1800", got.CPUPeakP95Millis)
+	if got.CPUPeakP95Millis != 2000 {
+		t.Fatalf("cpu p95=%d, want 2000", got.CPUPeakP95Millis)
 	}
-	if got.Recommended.CPUMillis != 2250 {
-		t.Fatalf("recommended cpu=%d, want 2250", got.Recommended.CPUMillis)
+	if got.Recommended.CPUMillis != 2500 {
+		t.Fatalf("recommended cpu=%d, want 2500", got.Recommended.CPUMillis)
 	}
 	if got.MemoryPeakP95Bytes != 4<<30 {
 		t.Fatalf("memory p95=%d, want %d", got.MemoryPeakP95Bytes, int64(4<<30))
