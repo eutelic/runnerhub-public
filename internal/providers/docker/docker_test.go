@@ -604,3 +604,57 @@ func TestSanitizeDiagnosticsStopsBeforeWorkflowOutput(t *testing.T) {
 		t.Fatalf("job boundary marker missing: %q", got)
 	}
 }
+
+
+func TestInspectReportsCombinedRunnerAndDinDUsage(t *testing.T) {
+	f := &fakeRunner{fn: func(_ string, a ...string) (string, error) {
+		joined := strings.Join(a, " ")
+		switch {
+		case strings.HasPrefix(joined, "inspect runner123 --format"):
+			return `{"Running":true,"ExitCode":0,"Status":"running"}`, nil
+		case len(a) > 0 && a[0] == "ps":
+			return "dind123\n", nil
+		case strings.HasPrefix(joined, "inspect dind123 --format"):
+			return `{"Running":true,"ExitCode":0,"Status":"running"}`, nil
+		case strings.HasPrefix(joined, "stats --no-stream --format"):
+			return "125.5%|512MiB / 8GiB\n50%|1GiB / 8GiB\n", nil
+		default:
+			return "", nil
+		}
+	}}
+	p, err := newWithRunner(Config{StateDir: t.TempDir(), AllowedImages: []string{"img"}}, f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, err := p.Inspect(context.Background(), provider.WorkerHandle{ProviderID: "runner123"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Usage == nil {
+		t.Fatal("expected runtime usage")
+	}
+	if st.Usage.CPUMillis != 1755 {
+		t.Fatalf("cpu=%d, want 1755 millicores", st.Usage.CPUMillis)
+	}
+	if st.Usage.MemoryBytes != (512<<20)+(1<<30) {
+		t.Fatalf("memory=%d, want %d", st.Usage.MemoryBytes, int64((512<<20)+(1<<30)))
+	}
+}
+
+func TestParseDockerBytes(t *testing.T) {
+	tests := map[string]int64{
+		"512MiB": 512 << 20,
+		"1.5GiB": 3 << 29,
+		"250MB": 250000000,
+		"0B": 0,
+	}
+	for input, want := range tests {
+		got, err := parseDockerBytes(input)
+		if err != nil {
+			t.Fatalf("%s: %v", input, err)
+		}
+		if got != want {
+			t.Fatalf("%s=%d, want %d", input, got, want)
+		}
+	}
+}
