@@ -37,6 +37,10 @@ function show(el,on){el.classList.toggle('hidden',!on)}
 function message(text,kind=''){els.msg.className=kind;els.msg.textContent=text||''}
 function gib(bytes){return bytes?Number((bytes/1073741824).toFixed(2)):0}
 function cpuCores(millis){return millis?Number((millis/1000).toFixed(2)):0}
+function usageCPU(millis){return Number.isFinite(Number(millis))&&Number(millis)>=0?cpuCores(Number(millis))+' cores':'—'}
+function usageRAM(bytes){return Number.isFinite(Number(bytes))&&Number(bytes)>=0?gib(Number(bytes))+' GiB':'—'}
+function sizingText(rec){const s=rec?.resourceSizing;if(!s?.ready)return s?.jobs?('learning ('+s.jobs+' jobs)'):'learning';return cpuCores(s.recommended?.cpuMillis)+' cores / '+gib(s.recommended?.memoryBytes)+' GiB'}
+function observedText(rec){const s=rec?.resourceSizing;if(!s?.ready)return s?.jobs?('learning ('+s.jobs+' jobs)'):'—';return cpuCores(s.cpuPeakP95Millis)+' cores / '+gib(s.memoryPeakP95Bytes)+' GiB'}
 function fmtDuration(value){return value&&value!=='0s'?value:'—'}
 function bottleneckLabel(value){return ({pool_concurrency:'pool limit',host_resources:'host resources',no_compatible_host:'no compatible host'})[value]||value||'—'}
 function reservedCPU(capacity){const used=cpuCores(capacity?.reserved?.cpuMillis);const total=cpuCores(capacity?.capacity?.cpuMillis);return total?used+' / '+total+' cores':'—'}
@@ -125,8 +129,11 @@ function renderWorkers(workers,poolByID){
     ['Class',x=>runnerClass(poolByID?.get(x.poolId))],
     ['Job',x=>x.jobName||'startup'],
     ['Result',x=>workerDisplayState(x)],
-    ['CPU',x=>x.resources?.cpuMillis?cpuCores(x.resources.cpuMillis):'—'],
-    ['RAM',x=>x.resources?.memoryBytes?gib(x.resources.memoryBytes)+' GiB':'—'],
+    ['CPU now',x=>!terminal.has(String(x.state||'').toLowerCase())&&x.usage?.updatedAt?usageCPU(x.usage.currentCpuMillis):'—'],
+    ['CPU peak',x=>x.usage?.samples?usageCPU(x.usage.peakCpuMillis):'—'],
+    ['RAM now',x=>!terminal.has(String(x.state||'').toLowerCase())&&x.usage?.updatedAt?usageRAM(x.usage.currentMemoryBytes):'—'],
+    ['RAM peak',x=>x.usage?.samples?usageRAM(x.usage.peakMemoryBytes):'—'],
+    ['Allocated',x=>(x.resources?.cpuMillis?cpuCores(x.resources.cpuMillis)+' CPU':'—')+' / '+(x.resources?.memoryBytes?gib(x.resources.memoryBytes)+' GiB':'—')],
     ['Updated',x=>fmtTime(workerTimestamp(x))],
     ['Failure',x=>x.failureReason||'']
   ])+'<div class="muted small workers-note">Historical and deleted worker records are hidden here. Diagnostics retains the full history.</div>';
@@ -198,6 +205,9 @@ async function refresh(){
       ['Cleanup',x=>fmtDuration(recommendationByPool.get(x.id)?.latencies?.cleanup)],
       ['CPU reserved',x=>reservedCPU(recommendationByPool.get(x.id)?.capacity)],
       ['RAM reserved',x=>reservedRAM(recommendationByPool.get(x.id)?.capacity)],
+      ['Observed p95',x=>observedText(recommendationByPool.get(x.id))],
+      ['Suggested size',x=>sizingText(recommendationByPool.get(x.id))],
+      ['Auto-size',x=>x.autoTuneResources?'on':'off'],
       ['Can fit',x=>{const n=recommendationByPool.get(x.id)?.capacity?.additionalWorkers;return Number.isFinite(n)?'+'+n:'—'}],
       ['Bottleneck',x=>bottleneckLabel(recommendationByPool.get(x.id)?.capacity?.bottleneck)],
       ['Reason',x=>recommendationByPool.get(x.id)?.capacity?.reason||'—'],
@@ -230,7 +240,8 @@ function resourceEditor(repo,pool){
       '<label>RAM / runner (GiB)<input data-field="memory" type="number" min="1" step="0.5" value="'+esc(memory)+'"></label>'+
       '<label>Max concurrent<input data-field="concurrency" type="number" min="1" step="1" value="'+esc(max)+'"></label>'+
     '</div>'+
-    '<div class="resource-note muted">Limits apply to newly created runners. CPU may be fractional.</div>'+
+    '<label class="check-row"><input data-field="autotune" type="checkbox"'+(pool?.autoTuneResources?' checked':'')+'> Auto-size CPU/RAM from observed job usage</label>'+
+    '<div class="resource-note muted">Auto-size waits for at least 5 completed jobs, then uses p95 peak usage + 25% headroom. Limits apply to newly created runners.</div>'+
     '<button data-resource-action="'+(connected?'update':'connect')+'" data-repo="'+esc(repo.fullName)+'" data-installation="'+esc(repo.installationId)+'"'+poolAttr+'>'+esc(action)+'</button>'+
   '</details>';
 }
@@ -259,7 +270,8 @@ function publisherEditor(repo,pool,status,runtime,hostAvailable,standardConnecte
       '<label>Publisher RAM (GiB)<input data-publisher-field="memory" type="number" min="1" step="0.5" value="'+esc(memory)+'"></label>'+
       '<label>Max publishers<input data-publisher-field="concurrency" type="number" min="1" step="1" value="'+esc(max)+'"></label>'+
     '</div>'+
-    '<div class="resource-note muted">Max publishers is an upper bound. RunnerHub still enforces host-wide CPU, RAM, and disk capacity before starting another runner.</div>';
+    '<label class="check-row"><input data-publisher-field="autotune" type="checkbox"'+(pool?.autoTuneResources?' checked':'')+'> Auto-size publisher CPU/RAM from observed jobs</label>'+
+    '<div class="resource-note muted">Max publishers is an upper bound. Auto-size waits for at least 5 completed publisher jobs and keeps host compatibility checks.</div>';
   let buttons='';
   if(enabled){
     buttons='<div class="publisher-actions"><button data-publisher-action="update" data-repo="'+esc(repo.fullName)+'" data-installation="'+esc(repo.installationId)+'">Save publisher settings</button><button class="secondary" data-publisher-action="disable" data-repo="'+esc(repo.fullName)+'" data-installation="'+esc(repo.installationId)+'">Disable publisher</button></div>';
@@ -295,6 +307,7 @@ function runnerProfileEditor(repo,profiles,standardConnected){
       '<label>RAM / runner (GiB)<input data-profile-field="memory" type="number" min="1" step="0.5" value="4"'+disabled+'></label>'+
       '<label>Max concurrent<input data-profile-field="concurrency" type="number" min="1" step="1" value="2"'+disabled+'></label>'+
     '</div>'+
+    '<label class="check-row"><input data-profile-field="autotune" type="checkbox"'+disabled+'> Auto-size CPU/RAM from observed jobs</label>'+
     '<button data-profile-action="enable" data-repo="'+esc(repo.fullName)+'" data-installation="'+esc(repo.installationId)+'"'+disabled+'>Create / update profile</button>'+
   '</details>';
 }
@@ -419,6 +432,7 @@ async function saveRunnerProfile(button){
     if(!Number.isFinite(cpu)||cpu<=0||!Number.isFinite(memory)||memory<=0||!Number.isInteger(concurrency)||concurrency<1)return message('Profile CPU, RAM, and concurrency must be valid.','error');
     body.resources={cpuMillis:Math.round(cpu*1000),memoryBytes:Math.round(memory*1073741824),diskBytes:21474836480};
     body.maxConcurrency=concurrency;
+    body.autoTuneResources=panel.querySelector('[data-profile-field="autotune"]').checked;
   }else{
     body.name=button.dataset.profileName;
   }
@@ -443,13 +457,14 @@ async function saveRepositoryResources(button){
   if(!Number.isInteger(concurrency)||concurrency<1)return message('Max concurrent runners must be at least 1.','error');
   button.disabled=true;
   const resources={cpuMillis:Math.round(cpu*1000),memoryBytes:Math.round(memory*1073741824)};
+  const autoTuneResources=panel.querySelector('[data-field="autotune"]').checked;
   try{
     if(button.dataset.resourceAction==='update'){
       message('Updating '+button.dataset.repo+' runner resources…');
       await j('/api/v1/pools/'+encodeURIComponent(button.dataset.poolId)+'/resources',{
         method:'PATCH',
         headers:{'content-type':'application/json'},
-        body:JSON.stringify({resources,maxConcurrency:concurrency,isolation})
+        body:JSON.stringify({resources,maxConcurrency:concurrency,isolation,autoTuneResources})
       });
       message(button.dataset.repo+' runner settings updated. New runners will use the new limits.','success');
     }else{
@@ -457,7 +472,7 @@ async function saveRepositoryResources(button){
       await j('/api/v1/github/connect',{
         method:'POST',
         headers:{'content-type':'application/json'},
-        body:JSON.stringify({installationId:Number(button.dataset.installation),repository:button.dataset.repo,scaleSetName:'runnerhub',maxConcurrency:concurrency,isolation,resources})
+        body:JSON.stringify({installationId:Number(button.dataset.installation),repository:button.dataset.repo,scaleSetName:'runnerhub',maxConcurrency:concurrency,isolation,resources,autoTuneResources})
       });
       message(button.dataset.repo+' connection requested. Waiting for the GitHub scale-set listener to become ready.','success');
     }
@@ -479,6 +494,7 @@ async function savePublisher(button){
     if(!Number.isInteger(concurrency)||concurrency<1)return message('Publisher concurrency must be at least 1.','error');
     body.resources={cpuMillis:Math.round(cpu*1000),memoryBytes:Math.round(memory*1073741824),diskBytes:42949672960};
     body.maxConcurrency=concurrency;
+    body.autoTuneResources=panel.querySelector('[data-publisher-field="autotune"]').checked;
   }
   button.disabled=true;
   try{
