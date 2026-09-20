@@ -49,7 +49,7 @@ func TestQueueMetricsPoolTrackingIsBounded(t *testing.T) {
 func TestRecommendResourcesUsesP95PeakWithHeadroom(t *testing.T) {
 	pool := core.RunnerPool{
 		ID: "p1",
-		Resources: core.Resources{CPUMillis: 2500, MemoryBytes: 8 << 30, DiskBytes: 20 << 30},
+		Resources: core.Resources{CPUMillis: 2000, MemoryBytes: 4 << 30, DiskBytes: 20 << 30},
 	}
 	cpuPeaks := []int64{1000, 1200, 1400, 1600, 1800}
 	memoryPeaks := []int64{2 << 30, 5 << 29, 3 << 30, 7 << 29, 4 << 30}
@@ -139,5 +139,32 @@ func TestRecommendResourcesIgnoresOrdinaryFailedJobsButKeepsOOMPressure(t *testi
 	}
 	if got.MemoryPeakP95Bytes != 7<<30 {
 		t.Fatalf("memory p95=%d, want OOM pressure %d", got.MemoryPeakP95Bytes, int64(7<<30))
+	}
+}
+
+
+func TestRecommendResourcesDownsizesOnlyWithHighConfidenceHistory(t *testing.T) {
+	pool := core.RunnerPool{ID: "p1", Resources: core.Resources{CPUMillis: 2500, MemoryBytes: 8 << 30}}
+	base := time.Date(2026, 9, 20, 3, 0, 0, 0, time.UTC)
+	makeWorkers := func(n int) []core.Worker {
+		workers := make([]core.Worker, 0, n)
+		for i := 0; i < n; i++ {
+			workers = append(workers, core.Worker{
+				ID: fmt.Sprintf("light-%d", i), PoolID: pool.ID, State: core.WorkerDeleted,
+				StartedAt: base.Add(time.Duration(i) * time.Minute),
+				CompletedAt: base.Add(time.Duration(i)*time.Minute + 30*time.Second),
+				JobResult: "succeeded",
+				Usage: core.ResourceUsageSummary{PeakCPUMillis: 1000, PeakMemoryBytes: 2 << 30, Samples: 2},
+			})
+		}
+		return workers
+	}
+	early := RecommendResources(pool, makeWorkers(5))
+	if early.Recommended.CPUMillis != pool.Resources.CPUMillis || early.Recommended.MemoryBytes != pool.Resources.MemoryBytes {
+		t.Fatalf("downsized too early: %+v", early)
+	}
+	mature := RecommendResources(pool, makeWorkers(25))
+	if mature.Recommended.CPUMillis != 1250 || mature.Recommended.MemoryBytes != 5<<29 {
+		t.Fatalf("mature recommendation=%+v, want 1250m / 2.5GiB", mature)
 	}
 }
