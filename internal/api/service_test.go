@@ -1,7 +1,7 @@
 package api
 
 import(
-"bytes";"context";"encoding/json";"errors";"net/http";"net/http/httptest";"testing";"time";"github.com/eutelic/runnerhub/internal/agent";"github.com/eutelic/runnerhub/internal/agenthub";"github.com/eutelic/runnerhub/internal/auth";cachepkg "github.com/eutelic/runnerhub/internal/cache";"github.com/eutelic/runnerhub/internal/core";"github.com/eutelic/runnerhub/internal/fleet";"github.com/eutelic/runnerhub/internal/githubrunner";"github.com/eutelic/runnerhub/internal/policy";"github.com/eutelic/runnerhub/internal/provider";"github.com/eutelic/runnerhub/internal/scheduler";"github.com/eutelic/runnerhub/internal/store";"github.com/eutelic/runnerhub/internal/telemetry")
+"bytes";"context";"encoding/json";"errors";"fmt";"net/http";"net/http/httptest";"testing";"time";"github.com/eutelic/runnerhub/internal/agent";"github.com/eutelic/runnerhub/internal/agenthub";"github.com/eutelic/runnerhub/internal/auth";cachepkg "github.com/eutelic/runnerhub/internal/cache";"github.com/eutelic/runnerhub/internal/core";"github.com/eutelic/runnerhub/internal/fleet";"github.com/eutelic/runnerhub/internal/githubrunner";"github.com/eutelic/runnerhub/internal/policy";"github.com/eutelic/runnerhub/internal/provider";"github.com/eutelic/runnerhub/internal/scheduler";"github.com/eutelic/runnerhub/internal/store";"github.com/eutelic/runnerhub/internal/telemetry")
 type failingCommandStore struct{store.Store;fail bool}
 func(s *failingCommandStore)EnqueueCommand(ctx context.Context,hostID string,c agent.Command)error{if s.fail{return errors.New("simulated command persistence failure")};return s.Store.EnqueueCommand(ctx,hostID,c)}
 type apiFakeGH struct{deleted []int64}
@@ -192,4 +192,36 @@ func TestSummarizePoolLatenciesSeparatesLifecyclePhases(t *testing.T){
 	if got.Queue!="40s"||got.Provision!="5s"||got.Registration!="3s"||got.Execution!="1m10s"||got.Cleanup!="7s"{
 		t.Fatalf("latencies=%+v",got)
 	}
+}
+
+
+func TestRecordWorkerUsageTracksCurrentPeakAndAverage(t *testing.T){
+	var wk core.Worker
+	now:=time.Date(2026,9,20,2,0,0,0,time.UTC)
+	recordWorkerUsage(&wk,&provider.WorkerUsage{CPUMillis:1000,MemoryBytes:2<<30},now,true)
+	recordWorkerUsage(&wk,&provider.WorkerUsage{CPUMillis:2000,MemoryBytes:4<<30},now.Add(time.Second),true)
+	if wk.Usage.Samples!=2{t.Fatalf("samples=%d",wk.Usage.Samples)}
+	if wk.Usage.CurrentCPUMillis!=2000||wk.Usage.PeakCPUMillis!=2000||wk.Usage.AverageCPUMillis!=1500{t.Fatalf("cpu usage=%+v",wk.Usage)}
+	if wk.Usage.CurrentMemoryBytes!=4<<30||wk.Usage.PeakMemoryBytes!=4<<30||wk.Usage.AverageMemoryBytes!=3<<30{t.Fatalf("memory usage=%+v",wk.Usage)}
+}
+
+func TestAutoTunePoolUsesObservedCompletedJobs(t *testing.T){
+	ctx:=context.Background()
+	st,err:=store.OpenSQLite(":memory:");if err!=nil{t.Fatal(err)};defer st.Close()
+	pool:=core.RunnerPool{ID:"auto",Name:"auto",Isolation:core.IsolationContainerTrusted,Resources:core.Resources{CPUMillis:2500,MemoryBytes:8<<30,DiskBytes:20<<30},MaxConcurrency:2,AutoTuneResources:true}
+	if err:=st.UpsertPool(ctx,pool);err!=nil{t.Fatal(err)}
+	host:=core.Host{ID:"host",Name:"host",Provider:"docker",State:core.HostOnline,Capacity:core.Resources{CPUMillis:6000,MemoryBytes:32<<30,DiskBytes:100<<30}}
+	if err:=st.UpsertHost(ctx,host);err!=nil{t.Fatal(err)}
+	cpu:=[]int64{1000,1200,1400,1600,1800}
+	mem:=[]int64{2<<30,5<<29,3<<30,7<<29,4<<30}
+	base:=time.Date(2026,9,20,1,0,0,0,time.UTC)
+	for i:=range cpu{
+		wk:=core.Worker{ID:fmt.Sprintf("auto-%d",i),PoolID:pool.ID,HostID:host.ID,State:core.WorkerDeleted,StartedAt:base.Add(time.Duration(i)*time.Minute),CompletedAt:base.Add(time.Duration(i)*time.Minute+30*time.Second),Usage:core.ResourceUsageSummary{PeakCPUMillis:cpu[i],PeakMemoryBytes:mem[i],Samples:2}}
+		if err:=st.UpsertWorker(ctx,wk);err!=nil{t.Fatal(err)}
+	}
+	svc:=&Service{Store:st,Policy:policy.Engine{}}
+	if err:=svc.maybeAutoTunePool(ctx,pool.ID);err!=nil{t.Fatal(err)}
+	got,err:=st.GetPool(ctx,pool.ID);if err!=nil{t.Fatal(err)}
+	if got.Resources.CPUMillis!=2250{t.Fatalf("cpu=%d, want 2250",got.Resources.CPUMillis)}
+	if got.Resources.MemoryBytes!=5<<30{t.Fatalf("memory=%d, want %d",got.Resources.MemoryBytes,int64(5<<30))}
 }
