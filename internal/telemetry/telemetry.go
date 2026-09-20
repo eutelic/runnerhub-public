@@ -230,10 +230,18 @@ func RecommendResources(pool core.RunnerPool, workers []core.Worker) ResourceRec
 	if closeEnough(memoryTarget, pool.Resources.MemoryBytes, memoryStepBytes) {
 		memoryTarget = pool.Resources.MemoryBytes
 	}
+	// Upsizing should react quickly to sustained pressure, but downsizing needs
+	// a larger history because interval sampling can miss short CPU/RAM bursts.
+	if out.Jobs < 25 && cpuTarget < pool.Resources.CPUMillis {
+		cpuTarget = pool.Resources.CPUMillis
+	}
+	if out.Jobs < 25 && memoryTarget < pool.Resources.MemoryBytes {
+		memoryTarget = pool.Resources.MemoryBytes
+	}
 	out.Recommended.CPUMillis = cpuTarget
 	out.Recommended.MemoryBytes = memoryTarget
 	out.Ready = true
-	out.Reason = "p95 observed peak plus 25% headroom"
+	out.Reason = "p95 observed peak plus 25% headroom; downsizing requires 25 jobs"
 	return out
 }
 
