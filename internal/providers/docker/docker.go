@@ -27,7 +27,66 @@ const (
 	dindSocketPath      = dindSocketDir + "/docker.sock"
 )
 
-var detachedContainerIDPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
+var detachedContainerIDPattern = regexp.MustCompile(`^[0-9a-f]{64}package docker
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"regexp"
+	"runtime"
+	"strconv"
+	"strings"
+
+	"github.com/eutelic/runnerhub/internal/core"
+	"github.com/eutelic/runnerhub/internal/hostinfo"
+	"github.com/eutelic/runnerhub/internal/images"
+	"github.com/eutelic/runnerhub/internal/provider"
+)
+
+const (
+	maxDiagnosticsBytes = 4096
+	runnerUID           = 1001
+	runnerGID           = 1001
+	dindSocketDir       = "/run/runnerhub-docker"
+	dindSocketPath      = dindSocketDir + "/docker.sock"
+)
+
+)
+var dockerBytePattern = regexp.MustCompile(`(?i)^([0-9]+(?:\\.[0-9]+)?)\\s*([kmgt]?i?b)package docker
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"regexp"
+	"runtime"
+	"strconv"
+	"strings"
+
+	"github.com/eutelic/runnerhub/internal/core"
+	"github.com/eutelic/runnerhub/internal/hostinfo"
+	"github.com/eutelic/runnerhub/internal/images"
+	"github.com/eutelic/runnerhub/internal/provider"
+)
+
+const (
+	maxDiagnosticsBytes = 4096
+	runnerUID           = 1001
+	runnerGID           = 1001
+	dindSocketDir       = "/run/runnerhub-docker"
+	dindSocketPath      = dindSocketDir + "/docker.sock"
+)
+
+)
 
 var diagnosticSecretPatterns = []struct {
 	re   *regexp.Regexp
@@ -116,6 +175,7 @@ func (p *Provider) Capabilities(ctx context.Context) (provider.Capabilities, err
 		"dockerSocket":     false,
 		"dockerInDocker":   false,
 		"containerActions": false,
+		"resourceUsage":    true,
 	}
 	labels := map[string]string{
 		"isolation.container-trusted": "true",
@@ -551,7 +611,8 @@ func (p *Provider) Inspect(ctx context.Context, h provider.WorkerHandle) (provid
 				return provider.WorkerState{State: core.WorkerFailed, ExitCode: &code, OOMKilled: dindState.OOMKilled, SafeDetail: "Docker-in-Docker sidecar exited", Diagnostics: p.collectDiagnostics(ctx, sidecar)}, nil
 			}
 		}
-		return provider.WorkerState{State: core.WorkerReady, SafeDetail: "container running"}, nil
+		usage, _ := p.containerUsage(ctx, h.ProviderID, sidecar)
+		return provider.WorkerState{State: core.WorkerReady, SafeDetail: "container running", Usage: usage}, nil
 	}
 	code := state.ExitCode
 	detail := "container exited"
@@ -574,6 +635,76 @@ type containerState struct {
 	Status    string `json:"Status"`
 	OOMKilled bool   `json:"OOMKilled"`
 	Error     string `json:"Error"`
+}
+
+func (p *Provider) containerUsage(ctx context.Context, runnerID, sidecarID string) (*provider.WorkerUsage, error) {
+	ids := []string{strings.TrimSpace(runnerID)}
+	if id := strings.TrimSpace(sidecarID); id != "" {
+		ids = append(ids, id)
+	}
+	args := []string{"stats", "--no-stream", "--format", "{{.CPUPerc}}|{{.MemUsage}}"}
+	args = append(args, ids...)
+	out, err := p.run.Run(ctx, p.cfg.DockerBinary, args...)
+	if err != nil {
+		return nil, err
+	}
+	usage := &provider.WorkerUsage{}
+	seen := 0
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		parts := strings.SplitN(line, "|", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		cpuText := strings.TrimSpace(strings.TrimSuffix(parts[0], "%"))
+		cpu, err := strconv.ParseFloat(cpuText, 64)
+		if err != nil || cpu < 0 {
+			continue
+		}
+		memText := strings.TrimSpace(strings.SplitN(parts[1], "/", 2)[0])
+		mem, err := parseDockerBytes(memText)
+		if err != nil {
+			continue
+		}
+		usage.CPUMillis += int64(cpu*10 + 0.5)
+		usage.MemoryBytes += mem
+		seen++
+	}
+	if seen == 0 {
+		return nil, errors.New("docker stats returned no parseable usage")
+	}
+	return usage, nil
+}
+
+func parseDockerBytes(value string) (int64, error) {
+	m := dockerBytePattern.FindStringSubmatch(strings.TrimSpace(value))
+	if len(m) != 3 {
+		return 0, fmt.Errorf("unsupported docker byte value %q", value)
+	}
+	n, err := strconv.ParseFloat(m[1], 64)
+	if err != nil || n < 0 {
+		return 0, fmt.Errorf("invalid docker byte value %q", value)
+	}
+	unit := strings.ToLower(m[2])
+	multipliers := map[string]float64{
+		"b": 1,
+		"kb": 1000,
+		"mb": 1000 * 1000,
+		"gb": 1000 * 1000 * 1000,
+		"tb": 1000 * 1000 * 1000 * 1000,
+		"kib": 1 << 10,
+		"mib": 1 << 20,
+		"gib": 1 << 30,
+		"tib": 1 << 40,
+	}
+	mult, ok := multipliers[unit]
+	if !ok {
+		return 0, fmt.Errorf("unsupported docker byte unit %q", unit)
+	}
+	return int64(n*mult + 0.5), nil
 }
 
 func (p *Provider) collectDiagnostics(ctx context.Context, id string) string {
