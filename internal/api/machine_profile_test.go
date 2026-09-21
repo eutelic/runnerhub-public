@@ -67,3 +67,68 @@ func TestUpdateHostTagsPreservesSystemCapabilities(t *testing.T) {
 		t.Fatalf("user tags=%v", got.UserTags)
 	}
 }
+
+
+func TestUpdateHostPriority(t *testing.T) {
+	st, err := store.OpenSQLite(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	host := core.Host{ID: "host-1", Name: "box", Provider: "docker", State: core.HostOnline}
+	if err := st.UpsertHost(context.Background(), host); err != nil {
+		t.Fatal(err)
+	}
+	svc := &Service{
+		Store: st,
+		Auth: auth.New(auth.Config{APIKeys: map[string]auth.Principal{
+			"admin-secret": {Name: "test-admin", Role: auth.RoleAdmin},
+		}}),
+	}
+	req := httptest.NewRequest(http.MethodPatch, "/api/v1/hosts/host-1", bytes.NewBufferString(`{"priority":100}`))
+	req.Header.Set("Authorization", "Bearer admin-secret")
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	svc.Handler().ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	got, err := st.GetHost(context.Background(), "host-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Priority != 100 {
+		t.Fatalf("priority=%d, want 100", got.Priority)
+	}
+}
+
+func TestProfileIsolationDefaultsAndAllowsDinD(t *testing.T) {
+	got, err := profileIsolation("", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != core.IsolationContainerTrusted {
+		t.Fatalf("default isolation=%q, want %q", got, core.IsolationContainerTrusted)
+	}
+
+	got, err = profileIsolation(core.IsolationContainerDinD, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != core.IsolationContainerDinD {
+		t.Fatalf("DinD isolation=%q", got)
+	}
+
+	existing := &core.RunnerPool{Isolation: core.IsolationContainerDinD}
+	got, err = profileIsolation("", existing)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != core.IsolationContainerDinD {
+		t.Fatalf("existing isolation=%q, want preserved DinD", got)
+	}
+
+	if _, err := profileIsolation(core.IsolationMicroVM, nil); err == nil {
+		t.Fatal("unsupported custom profile isolation should fail")
+	}
+}
