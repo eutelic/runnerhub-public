@@ -247,7 +247,7 @@ func (m *BootstrapManager) Install(ctx context.Context, req BootstrapRequest) (B
 		InsecureSkipVerify: req.InsecureSkipVerify,
 	})
 	if err != nil {
-		return BootstrapResult{}, err
+		return rollback(err)
 	}
 	if err := client.EnsureCustomApp(ctx, defaultDeployerApp, compose); err != nil {
 		return rollback(fmt.Errorf("install standalone deployer: %w", err))
