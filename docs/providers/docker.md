@@ -28,7 +28,7 @@ Both settings are required. The control plane rejects a DinD pool when privilege
 For every DinD worker, RunnerHub creates:
 
 - the normal ephemeral Actions runner container;
-- a separate `docker:dind` sidecar dedicated to that worker;
+- a separate `docker:29.1.3-dind@sha256:173f284a4299164772a90f52b373e73e087583c0963f1334c9995f190ef6f3f5` sidecar dedicated to that worker;
 - a private shared Unix-socket directory exposed to the runner as `DOCKER_HOST=unix:///var/run/docker.sock`;
 - shared work and runner-externals paths so the inner Docker daemon can launch GitHub container actions correctly;
 - a shared **runner network namespace** (`--network container:<runner-id>`) so service-container ports published by the inner Docker daemon are reachable from normal runner steps at the expected host-style addresses.
@@ -42,7 +42,7 @@ The DinD sidecar itself uses Docker `--privileged`. Docker treats privileged con
 The infrastructure image is configurable:
 
 ```dotenv
-RUNNERHUB_DIND_IMAGE=docker:dind
+RUNNERHUB_DIND_IMAGE=docker:29.1.3-dind@sha256:173f284a4299164772a90f52b373e73e087583c0963f1334c9995f190ef6f3f5
 ```
 
 For reproducible installations, pin this to a tested Docker DinD version/digest rather than relying indefinitely on the moving tag.
