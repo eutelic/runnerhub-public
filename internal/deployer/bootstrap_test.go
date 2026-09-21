@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -20,6 +21,12 @@ func (f *fakeAppInstaller) EnsureCustomApp(_ context.Context, app, compose strin
 	f.app = app
 	f.compose = compose
 	return nil
+}
+
+type failingAppInstaller struct{}
+
+func (failingAppInstaller) EnsureCustomApp(context.Context, string, string) error {
+	return errors.New("simulated TrueNAS install failure")
 }
 
 func TestBootstrapManagerInstallWritesPrivateConfigAndInstallsApp(t *testing.T) {
@@ -92,6 +99,55 @@ func TestBootstrapManagerInstallWritesPrivateConfigAndInstallsApp(t *testing.T) 
 	}
 	if target.App != "runnerhub" || target.Repository != "eutelic/runnerhub" {
 		t.Fatalf("unexpected target: %#v", target)
+	}
+}
+
+func TestBootstrapManagerRestoresExistingFilesWhenInstallFails(t *testing.T) {
+	root := t.TempDir()
+	for _, dir := range []string{"config", "secrets", "data"} {
+		if err := os.MkdirAll(filepath.Join(root, dir), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	keyPath := filepath.Join(root, "secrets", "truenas-api-key")
+	policyPath := filepath.Join(root, "config", "deployments.json")
+	statePath := filepath.Join(root, "state.json")
+	original := map[string]string{
+		keyPath:    "old-key\n",
+		policyPath: "{\"old\":true}\n",
+		statePath:  "{\"old\":true}\n",
+	}
+	for path, value := range original {
+		if err := os.WriteFile(path, []byte(value), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	manager := &BootstrapManager{
+		Root: root,
+		NewClient: func(TrueNASConfig) (TrueNASAppInstaller, error) {
+			return failingAppInstaller{}, nil
+		},
+	}
+	_, err := manager.Install(context.Background(), BootstrapRequest{
+		Endpoint:     "wss://truenas.example/api/current",
+		Username:     "runnerhub_deployer",
+		APIKey:       "new-secret-api-key",
+		HostDataPath: "/mnt/tank/runnerhub/data",
+		RunnerHubApp: "runnerhub",
+		HealthURL:    "http://truenas.example:8788/healthz",
+	})
+	if err == nil {
+		t.Fatal("expected install failure")
+	}
+	for path, want := range original {
+		got, readErr := os.ReadFile(path)
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		if string(got) != want {
+			t.Fatalf("bootstrap rollback changed %s: got %q want %q", path, string(got), want)
+		}
 	}
 }
 
