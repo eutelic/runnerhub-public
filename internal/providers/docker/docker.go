@@ -447,7 +447,10 @@ exit 1`
 	}
 	dindArgs = append(dindArgs,
 		p.cfg.DinDImage,
-		"dockerd", "--host=unix://"+dindSocketPath, "--group="+runnerDockerGroup,
+		"dockerd",
+		"--host=unix://"+dindSocketPath,
+		"--group="+runnerDockerGroup,
+		"--registry-mirror=https://mirror.gcr.io",
 	)
 	if _, err := p.run.Run(ctx, p.cfg.DockerBinary, dindArgs...); err != nil {
 		if existing, findErr := p.findExact(ctx, dindName); findErr != nil || existing == "" {
