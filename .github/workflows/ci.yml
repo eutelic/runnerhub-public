@@ -41,10 +41,10 @@ jobs:
     # Standard unprivileged CI stays on RunnerHub.
     runs-on: runnerhub
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
       - name: Validate workflow concurrency policy
         run: bash scripts/test-workflow-concurrency.sh
-      - uses: actions/setup-go@v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version: '1.26.6'
           cache: true
@@ -57,8 +57,8 @@ jobs:
     # Docker-heavy validation uses RunnerHub's isolated publisher pool.
     runs-on: runnerhub-publisher
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version: '1.26.6'
           cache: true
@@ -75,8 +75,8 @@ jobs:
     # Docker/CGO race validation uses RunnerHub's isolated publisher pool.
     runs-on: runnerhub-publisher
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version: '1.26.6'
           cache: true
@@ -95,8 +95,8 @@ jobs:
       run:
         working-directory: scaleset
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version: '1.26.6'
           cache-dependency-path: scaleset/go.sum
@@ -110,8 +110,8 @@ jobs:
       matrix:
         goos: [darwin, windows]
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version: '1.26.6'
           cache: true
@@ -121,9 +121,9 @@ jobs:
     # Docker stack validation uses RunnerHub's isolated publisher pool.
     runs-on: runnerhub-publisher
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
       - name: Set up Docker Compose
-        uses: docker/setup-compose-action@v2
+        uses: docker/setup-compose-action@54042514f505b273907334ae2b9cdbb9a0213c1a # v2
       - name: Boot Compose stack and enroll Docker agent
         run: |
           set -euo pipefail
