@@ -14,7 +14,12 @@ const els={
   login:document.getElementById('login'),
   install:document.getElementById('install'),
   logout:document.getElementById('logout'),
-  legacy:document.getElementById('legacy-auth')
+  legacy:document.getElementById('legacy-auth'),
+  deployerSummary:document.getElementById('deployer-summary'),
+  deployerStatus:document.getElementById('deployer-status'),
+  deployerSetup:document.getElementById('deployer-setup'),
+  deployerTokenResult:document.getElementById('deployer-token-result'),
+  deployerWorkflowToken:document.getElementById('deployer-workflow-token')
 };
 let csrf='';
 let auth={enabled:false,authenticated:false};
@@ -24,6 +29,12 @@ els.token.addEventListener('input',()=>{sessionStorage.setItem('runnerhub-token'
 document.getElementById('create').addEventListener('click',createPool);
 document.getElementById('machine-scan-fingerprint').addEventListener('click',scanMachineHostKey);
 document.getElementById('add-machine').addEventListener('click',addMachine);
+document.getElementById('install-deployer').addEventListener('click',installDeployer);
+document.getElementById('copy-deployer-token').addEventListener('click',copyDeployerToken);
+const deployerEndpoint=document.getElementById('deployer-endpoint');
+const deployerHealth=document.getElementById('deployer-health-url');
+if(!deployerEndpoint.value&&location.hostname)deployerEndpoint.value='wss://'+location.hostname+'/api/current';
+if(!deployerHealth.value)deployerHealth.value=location.origin.replace(/\/$/,'')+'/healthz';
 els.logout.addEventListener('click',logout);
 els.hosts.addEventListener('click',e=>{const button=e.target.closest('button[data-host-tags]');if(button)saveHostTags(button)});
 els.repos.addEventListener('click',e=>{
@@ -191,6 +202,70 @@ function renderWorkers(workers,poolByID){
   ])+'<div class="muted small workers-note">Historical and deleted worker records are hidden here. Diagnostics retains the full history.</div>';
 }
 
+function renderDeployerStatus(status){
+  if(!status||status.available===false){
+    els.deployerSummary.textContent='Unavailable';
+    els.deployerStatus.textContent=status?.detail||'Deployer bootstrap is unavailable on this RunnerHub instance.';
+    return;
+  }
+  if(!status.configured){
+    els.deployerSummary.textContent='Not configured';
+    els.deployerStatus.innerHTML='Standalone redeployer is not installed. Open <strong>Enable automatic redeploy</strong> to install it.';
+    return;
+  }
+  els.deployerSummary.textContent=status.healthy?'Healthy':'Needs attention';
+  els.deployerStatus.innerHTML=
+    '<div class="repo-status"><span class="badge'+(status.healthy?'':' warn')+'">'+esc(status.healthy?'Deployer healthy':'Deployer unreachable')+'</span></div>'+
+    '<div class="resource-summary">'+esc(status.deployerApp||'runnerhub-deployer')+' · '+esc(status.deployerUrl||'')+' · target '+esc(status.targetId||'runnerhub')+'</div>'+
+    '<div class="muted small">'+esc(status.detail||'')+(status.configuredAt?' · configured '+esc(fmtTime(status.configuredAt)):'')+'</div>';
+}
+
+async function installDeployer(){
+  const button=document.getElementById('install-deployer');
+  const body={
+    endpoint:document.getElementById('deployer-endpoint').value.trim(),
+    username:document.getElementById('deployer-username').value.trim(),
+    apiKey:document.getElementById('deployer-api-key').value.trim(),
+    hostDataPath:document.getElementById('deployer-host-data-path').value.trim(),
+    runnerHubApp:document.getElementById('deployer-runnerhub-app').value.trim(),
+    healthUrl:document.getElementById('deployer-health-url').value.trim(),
+    insecureSkipVerify:document.getElementById('deployer-insecure-tls').checked
+  };
+  if(!body.endpoint||!body.username||!body.apiKey||!body.hostDataPath||!body.healthUrl){
+    return message('TrueNAS URL, service user, API key, RunnerHub data path, and health URL are required.','error');
+  }
+  button.disabled=true;
+  show(els.deployerTokenResult,false);
+  try{
+    message('Installing the standalone RunnerHub redeployer on TrueNAS…');
+    const result=await j('/api/v1/deployer/install',{
+      method:'POST',
+      headers:{'content-type':'application/json'},
+      body:JSON.stringify(body)
+    });
+    document.getElementById('deployer-api-key').value='';
+    els.deployerWorkflowToken.textContent=result.workflowToken||'';
+    show(els.deployerTokenResult,Boolean(result.workflowToken));
+    message('Redeployer installed. Save the one-time workflow token as '+(result.workflowSecretName||'RUNNERHUB_DEPLOY_TOKEN')+' before closing this page.','success');
+    await refresh();
+  }catch(e){
+    message(e.message,'error');
+  }finally{
+    button.disabled=false;
+  }
+}
+
+async function copyDeployerToken(){
+  const token=els.deployerWorkflowToken.textContent.trim();
+  if(!token)return;
+  try{
+    await navigator.clipboard.writeText(token);
+    message('Deployment token copied.','success');
+  }catch{
+    message('Could not access the clipboard. Copy the token manually.','error');
+  }
+}
+
 async function loadAuth(){
   try{
     auth=await fetch('/auth/github/status').then(r=>r.json());
@@ -218,6 +293,8 @@ async function refresh(){
   const canAPI=auth.authenticated||Boolean(els.token.value);
   if(!canAPI){
     els.hosts.innerHTML=els.pools.innerHTML=els.activeRunners.innerHTML=els.workers.innerHTML=els.audit.innerHTML='<span class="muted">Sign in to view.</span>';
+    els.deployerSummary.textContent='';
+    els.deployerStatus.innerHTML='<span class="muted">Sign in to view.</span>';
     els.activeRunnerSummary.textContent='';
     els.workerSummary.textContent='';
     els.repos.innerHTML='';
@@ -231,11 +308,12 @@ async function refresh(){
       j('/api/v1/workers/progress').catch(()=>[]),
       j('/api/v1/audit?limit=12'),
       j('/api/v1/scalesets/status'),
-      j('/api/v1/runtime-health')
+      j('/api/v1/runtime-health'),
+      j('/api/v1/deployer/status').catch(e=>({available:false,configured:false,detail:e.message}))
     ];
     if(auth.authenticated)requests.push(j('/api/v1/github/connected-repositories'));
     const results=await Promise.all(requests);
-    const [h,p,w,progress,a,statuses,runtimeHealth,repos]=results;
+    const [h,p,w,progress,a,statuses,runtimeHealth,deployer,repos]=results;
     const listenerByPool=new Map((statuses||[]).map(x=>[x.poolId,x]));
     const runtimeByPool=new Map((runtimeHealth||[]).map(x=>[x.poolId,x]));
     const poolByID=new Map((p||[]).map(x=>[x.id,x]));
@@ -247,7 +325,7 @@ async function refresh(){
     }));
     const recommendationByPool=new Map(recommendationPairs);
 
-    renderHosts(h);
+    renderDeployerStatus(deployer);\n    renderHosts(h);
     els.pools.innerHTML=tab(p,[
       ['Repository',x=>repoName(x)],
       ['Class',x=>runnerClass(x)],
