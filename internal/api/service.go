@@ -41,6 +41,9 @@ type poolLatencySummary struct {
 type durationAccumulator struct{ total time.Duration; samples int }
 func (d *durationAccumulator)add(start,end time.Time){if start.IsZero()||end.IsZero()||!end.After(start){return};d.total+=end.Sub(start);d.samples++}
 func (d durationAccumulator)average()time.Duration{if d.samples==0{return 0};return d.total/time.Duration(d.samples)}
+func boundedSampleCount(v uint64)(int64,bool){if v>uint64((1<<63)-1){return 0,false};return int64(v),true} // #nosec G115 -- conversion is guarded by an explicit MaxInt64 bound
+func averageDuration(total time.Duration,samples uint64)time.Duration{n,ok:=boundedSampleCount(samples);if !ok||n==0{return 0};return total/time.Duration(n)}
+func rollingAverage(current,sample int64,samples uint64)int64{n,ok:=boundedSampleCount(samples);if !ok||n>=int64((1<<63)-1){return current};return current+(sample-current)/(n+1)}
 func summarizePoolLatencies(poolID string,workers []core.Worker,metrics *telemetry.Metrics)poolLatencySummary{
 	var provision,registration,execution,cleanup durationAccumulator
 	for _,wk:=range workers{
@@ -55,7 +58,7 @@ func summarizePoolLatencies(poolID string,workers []core.Worker,metrics *telemet
 	queue:=telemetry.PoolSnapshot{}
 	if metrics!=nil{queue=metrics.PoolSnapshot(poolID)}
 	queueAvg:=time.Duration(0)
-	if queue.QueueSamples>0{queueAvg=queue.QueueTotal/time.Duration(queue.QueueSamples)}
+	if queue.QueueSamples>0{queueAvg=averageDuration(queue.QueueTotal,queue.QueueSamples)}
 	return poolLatencySummary{
 		Queue:queueAvg.String(),Provision:provision.average().String(),Registration:registration.average().String(),
 		Execution:execution.average().String(),Cleanup:cleanup.average().String(),QueueSamples:queue.QueueSamples,
@@ -73,7 +76,7 @@ func(s *Service)poolRecommendation(w http.ResponseWriter,r *http.Request){
 	queueSnap:=telemetry.PoolSnapshot{}
 	if s.Metrics!=nil{queueSnap=s.Metrics.PoolSnapshot(p.ID)}
 	avgQueue:=time.Duration(0)
-	if queueSnap.QueueSamples>0{avgQueue=queueSnap.QueueTotal/time.Duration(queueSnap.QueueSamples)}
+	if queueSnap.QueueSamples>0{avgQueue=averageDuration(queueSnap.QueueTotal,queueSnap.QueueSamples)}
 	recommended:=telemetry.RecommendConcurrency(avgQueue,util,p.MaxConcurrency)
 	if recommended>capacity.CapacityLimit{recommended=capacity.CapacityLimit}
 	if recommended<capacity.ActiveWorkers{recommended=capacity.ActiveWorkers}
@@ -237,11 +240,11 @@ func recordWorkerUsage(wk *core.Worker,usage *provider.WorkerUsage,at time.Time,
 	wk.Usage.UpdatedAt=at
 	if !countSample{return}
 	n:=wk.Usage.Samples
-	wk.Usage.AverageCPUMillis=(wk.Usage.AverageCPUMillis*int64(n)+cpu)/int64(n+1)
-	wk.Usage.AverageMemoryBytes=(wk.Usage.AverageMemoryBytes*int64(n)+memory)/int64(n+1)
+	wk.Usage.AverageCPUMillis=rollingAverage(wk.Usage.AverageCPUMillis,cpu,n)
+	wk.Usage.AverageMemoryBytes=rollingAverage(wk.Usage.AverageMemoryBytes,memory,n)
 	if cpu>wk.Usage.PeakCPUMillis{wk.Usage.PeakCPUMillis=cpu}
 	if memory>wk.Usage.PeakMemoryBytes{wk.Usage.PeakMemoryBytes=memory}
-	wk.Usage.Samples=n+1
+	if n<^uint64(0){wk.Usage.Samples=n+1}
 }
 func(s *Service)maybeAutoTunePool(ctx context.Context,poolID string)error{
 	p,err:=s.Store.GetPool(ctx,poolID);if err!=nil{return err}
