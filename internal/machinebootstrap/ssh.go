@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -22,6 +23,7 @@ type Request struct {
 	Password          string
 	SudoPassword      string
 	PrivateKey        string
+	HostKeyFingerprint string
 	RegistryUsername  string
 	RegistryPassword  string
 	HostName          string
@@ -87,6 +89,11 @@ func (s SSH) Bootstrap(ctx context.Context, req Request, enrollmentToken string,
 	defer os.RemoveAll(tmp)
 
 	knownHosts := filepath.Join(tmp, "known_hosts")
+	if strings.TrimSpace(req.HostKeyFingerprint) != "" {
+		if err := pinHostKey(ctx, req.Address, req.HostKeyFingerprint, knownHosts); err != nil {
+			return core.Host{}, err
+		}
+	}
 	keyPath := ""
 	if strings.TrimSpace(req.PrivateKey) != "" {
 		keyPath = filepath.Join(tmp, "id")
@@ -145,10 +152,14 @@ func sshCommand(req Request, sshBin, passBin, knownHosts, keyPath string) ([]str
 	if err != nil {
 		return nil, nil, err
 	}
+	strictHostKeyChecking := "accept-new"
+	if strings.TrimSpace(req.HostKeyFingerprint) != "" {
+		strictHostKeyChecking = "yes"
+	}
 	args := []string{sshBin,
 		"-o", "ConnectTimeout=10",
 		"-o", "ServerAliveInterval=5",
-		"-o", "StrictHostKeyChecking=accept-new",
+		"-o", "StrictHostKeyChecking=" + strictHostKeyChecking,
 		"-o", "UserKnownHostsFile=" + knownHosts,
 		"-p", port,
 	}
@@ -167,6 +178,58 @@ func sshCommand(req Request, sshBin, passBin, knownHosts, keyPath string) ([]str
 	}
 	args = append(args, req.User+"@"+host, "sh", "-s")
 	return args, env, nil
+}
+
+func pinHostKey(ctx context.Context, address, expected, knownHosts string) error {
+	expected = strings.TrimSpace(expected)
+	if !strings.HasPrefix(expected, "SHA256:") || strings.ContainsAny(expected, " \t\r\n") {
+		return errors.New("SSH host key fingerprint must use SHA256:<fingerprint> format")
+	}
+	host, port, err := splitAddress(address)
+	if err != nil {
+		return err
+	}
+	scanBin, err := exec.LookPath("ssh-keyscan")
+	if err != nil {
+		return fmt.Errorf("SSH host-key pinning requires ssh-keyscan: %w", err)
+	}
+	keygenBin, err := exec.LookPath("ssh-keygen")
+	if err != nil {
+		return fmt.Errorf("SSH host-key pinning requires ssh-keygen: %w", err)
+	}
+	scan := exec.CommandContext(ctx, scanBin, "-T", "10", "-p", port, host)
+	out, err := scan.Output()
+	if err != nil {
+		return fmt.Errorf("scan SSH host key: %w", err)
+	}
+	if len(strings.TrimSpace(string(out))) == 0 {
+		return errors.New("SSH host-key scan returned no keys")
+	}
+	if err := os.WriteFile(knownHosts, out, 0o600); err != nil {
+		return err
+	}
+	fingerprintOut, err := exec.CommandContext(ctx, keygenBin, "-l", "-f", knownHosts, "-E", "sha256").Output()
+	if err != nil {
+		return fmt.Errorf("fingerprint SSH host key: %w", err)
+	}
+	observed := []string{}
+	for _, line := range strings.Split(string(fingerprintOut), "\n") {
+		for _, field := range strings.Fields(line) {
+			if !strings.HasPrefix(field, "SHA256:") {
+				continue
+			}
+			if field == expected {
+				return nil
+			}
+			if !slices.Contains(observed, field) {
+				observed = append(observed, field)
+			}
+		}
+	}
+	if len(observed) == 0 {
+		return errors.New("SSH host-key scan produced no SHA256 fingerprints")
+	}
+	return fmt.Errorf("SSH host key fingerprint mismatch: expected %s; observed %s", expected, strings.Join(observed, ", "))
 }
 
 func splitAddress(value string) (string, string, error) {
