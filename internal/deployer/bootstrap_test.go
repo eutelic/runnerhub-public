@@ -23,10 +23,18 @@ func (f *fakeAppInstaller) EnsureCustomApp(_ context.Context, app, compose strin
 	return nil
 }
 
+func (f *fakeAppInstaller) FindAppMount(context.Context, string, string) (string, error) {
+	return "/mnt/tank/runnerhub/data", nil
+}
+
 type failingAppInstaller struct{}
 
 func (failingAppInstaller) EnsureCustomApp(context.Context, string, string) error {
 	return errors.New("simulated TrueNAS install failure")
+}
+
+func (failingAppInstaller) FindAppMount(context.Context, string, string) (string, error) {
+	return "/mnt/tank/runnerhub/data", nil
 }
 
 func TestBootstrapManagerInstallWritesPrivateConfigAndInstallsApp(t *testing.T) {
@@ -34,7 +42,7 @@ func TestBootstrapManagerInstallWritesPrivateConfigAndInstallsApp(t *testing.T) 
 	fake := &fakeAppInstaller{}
 	manager := &BootstrapManager{
 		Root: root,
-		NewClient: func(TrueNASConfig) (TrueNASAppInstaller, error) {
+		NewClient: func(TrueNASConfig) (TrueNASBootstrapClient, error) {
 			return fake, nil
 		},
 	}
@@ -125,7 +133,7 @@ func TestBootstrapManagerRestoresExistingFilesWhenInstallFails(t *testing.T) {
 
 	manager := &BootstrapManager{
 		Root: root,
-		NewClient: func(TrueNASConfig) (TrueNASAppInstaller, error) {
+		NewClient: func(TrueNASConfig) (TrueNASBootstrapClient, error) {
 			return failingAppInstaller{}, nil
 		},
 	}
@@ -148,6 +156,30 @@ func TestBootstrapManagerRestoresExistingFilesWhenInstallFails(t *testing.T) {
 		if string(got) != want {
 			t.Fatalf("bootstrap rollback changed %s: got %q want %q", path, string(got), want)
 		}
+	}
+}
+
+func TestBootstrapManagerAutoDetectsHostDataPath(t *testing.T) {
+	root := t.TempDir()
+	fake := &fakeAppInstaller{}
+	manager := &BootstrapManager{
+		Root: root,
+		NewClient: func(TrueNASConfig) (TrueNASBootstrapClient, error) {
+			return fake, nil
+		},
+	}
+	_, err := manager.Install(context.Background(), BootstrapRequest{
+		Endpoint:     "wss://truenas.example/api/current",
+		Username:     "runnerhub_deployer",
+		APIKey:       "secret-api-key",
+		RunnerHubApp: "runnerhub",
+		HealthURL:    "http://truenas.example:8788/healthz",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(fake.compose, "/mnt/tank/runnerhub/data/deployer-bootstrap/data") {
+		t.Fatalf("auto-detected data path missing from Compose: %s", fake.compose)
 	}
 }
 
