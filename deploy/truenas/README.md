@@ -416,7 +416,7 @@ All RunnerHub services should always move together to the same release SHA.
 
 ### Dashboard setup
 
-Current RunnerHub releases can install or update the standalone TrueNAS redeployer from the **Deployments** card in the dashboard. The wizard asks for the TrueNAS WSS endpoint, a service account/API key with `APPS_READ` + `APPS_WRITE`, the host path corresponding to RunnerHub's persistent `/data` mount, and the RunnerHub health URL.
+Current RunnerHub releases can install or update the standalone TrueNAS redeployer from the **Deployments** card in the dashboard. The wizard asks for the TrueNAS WSS endpoint and a service account/API key with `APPS_READ` + `APPS_WRITE`. RunnerHub discovers the host path backing the current app's `/data` mount through TrueNAS; the UI keeps a data-path field only as an override. The RunnerHub app name and health URL are prefilled.
 
 RunnerHub then:
 
