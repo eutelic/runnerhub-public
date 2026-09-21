@@ -34,7 +34,8 @@ concurrency:
   group: publish-images-${{ github.ref }}
   cancel-in-progress: false
 
-# Docker-capable release and image work runs on RunnerHub's isolated publisher pool.
+# Docker-capable build/validation work uses an isolated DinD lane. Registry tag
+# publication is a daemonless crane operation on runnerhub-fast.
 # End-to-end RunnerHub release validation trigger.
 jobs:
   acceptance-config:
@@ -146,7 +147,7 @@ jobs:
           tags: |
             type=raw,value=sha-${{ github.sha }}
 
-      - name: Build and publish ${{ matrix.target }}
+      - name: Build and stage ${{ matrix.target }}
         uses: docker/build-push-action@v6
         with:
           context: .
