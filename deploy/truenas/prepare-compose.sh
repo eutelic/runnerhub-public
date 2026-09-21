@@ -121,6 +121,9 @@ fi
 if [[ "$isolation" == "container-dind" && "$allow_privileged" != "true" ]]; then
   fail '--isolation container-dind requires --allow-privileged-workers true'
 fi
+if [[ "$allow_privileged" == "true" && ! "$dind_image" =~ @sha256:[0-9a-f]{64}$ ]]; then
+  fail '--dind-image must be pinned by lowercase sha256 digest when privileged workers are enabled'
+fi
 
 for marker in \
   '/mnt/POOL/runnerhub' \
