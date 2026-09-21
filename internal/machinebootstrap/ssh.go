@@ -202,10 +202,44 @@ func pinHostKey(ctx context.Context, address, expected, knownHosts string) error
 	if err != nil {
 		return err
 	}
-	if slices.Contains(observed, expected) {
-		return nil
+	if !slices.Contains(observed, expected) {
+		return fmt.Errorf("SSH host key fingerprint mismatch: expected %s; observed %s", expected, strings.Join(observed, ", "))
 	}
-	return fmt.Errorf("SSH host key fingerprint mismatch: expected %s; observed %s", expected, strings.Join(observed, ", "))
+	return retainPinnedHostKeys(ctx, knownHosts, expected)
+}
+
+func retainPinnedHostKeys(ctx context.Context, knownHosts, expected string) error {
+	keygenBin, err := exec.LookPath("ssh-keygen")
+	if err != nil {
+		return fmt.Errorf("SSH host-key pinning requires ssh-keygen: %w", err)
+	}
+	data, err := os.ReadFile(knownHosts)
+	if err != nil {
+		return err
+	}
+	candidate := knownHosts + ".candidate"
+	defer os.Remove(candidate)
+	matched := []string{}
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		if err := os.WriteFile(candidate, []byte(line+"\n"), 0o600); err != nil {
+			return err
+		}
+		out, err := exec.CommandContext(ctx, keygenBin, "-l", "-f", candidate, "-E", "sha256").Output()
+		if err != nil {
+			continue
+		}
+		if strings.Contains(" "+string(out)+" ", " "+expected+" ") {
+			matched = append(matched, line)
+		}
+	}
+	if len(matched) == 0 {
+		return errors.New("verified SSH fingerprint could not be mapped back to a host key")
+	}
+	return os.WriteFile(knownHosts, []byte(strings.Join(matched, "\n")+"\n"), 0o600)
 }
 
 func scanHostKeys(ctx context.Context, address, knownHosts string) ([]string, error) {
