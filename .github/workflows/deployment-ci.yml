@@ -162,10 +162,10 @@ jobs:
           trap cleanup EXIT
 
           root_read() {
-            docker run --rm -v "$root:/state:ro" alpine:3.20 cat "/state/$1"
+            docker run --rm --user 0 --entrypoint /bin/sh -v "$root:/state:ro" runnerhub-ci-control -c 'cat "$1"' sh "/state/$1"
           }
           root_secret_hash() {
-            docker run --rm -v "$root:/state:ro" alpine:3.20 sh -c '
+            docker run --rm --user 0 --entrypoint /bin/sh -v "$root:/state:ro" runnerhub-ci-control -c '
               sha256sum /state/secrets/enrollment-token /state/secrets/agent-secret /state/secrets/admin-key /state/secrets/scaleset-key |
                 sha256sum | cut -d" " -f1
             '
