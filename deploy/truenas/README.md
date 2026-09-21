@@ -414,6 +414,23 @@ All RunnerHub services should always move together to the same release SHA.
 
 ## Optional automatic Custom App redeployments
 
+### Dashboard setup
+
+Current RunnerHub releases can install or update the standalone TrueNAS redeployer from the **Deployments** card in the dashboard. The wizard asks for the TrueNAS WSS endpoint and a service account/API key with `APPS_READ` + `APPS_WRITE`. RunnerHub discovers the host path backing the current app's `/data` mount through TrueNAS; the UI keeps a data-path field only as an override. The RunnerHub app name and health URL are prefilled.
+
+RunnerHub then:
+
+1. creates a random target-specific workflow token;
+2. writes the TrueNAS API key and deployment policy beneath `/data/deployer-bootstrap` with private permissions;
+3. generates the standalone deployer Compose configuration;
+4. creates or updates the separate `runnerhub-deployer` TrueNAS Custom App through `app.create` / `app.update`;
+5. records non-secret bootstrap state so the dashboard can show deployer health; and
+6. returns the workflow token once so it can be saved as the repository Actions secret `RUNNERHUB_DEPLOY_TOKEN`.
+
+The API key is never written to the RunnerHub database or embedded in the generated Compose YAML. Re-running the wizard rotates the deployment token and updates the standalone app.
+
+The manual setup below remains available for installations that do not want to grant the RunnerHub control plane one-time TrueNAS app-management access.
+
 RunnerHub can run a small deployment coordinator as a **separate TrueNAS Custom App**. Keep it separate from the main `runnerhub` app: this allows the deployer to update RunnerHub itself without being terminated by the redeploy it is coordinating.
 
 The deployer never gives a workflow the TrueNAS API key or the host Docker socket. A workflow receives only a target-specific RunnerHub deployment token. The server-side policy maps that target to one fixed TrueNAS app and optional health URL.
