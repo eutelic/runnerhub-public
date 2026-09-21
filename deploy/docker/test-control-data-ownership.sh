@@ -14,7 +14,7 @@ run_chown() {
     chown "$owner" "$path"
   else
     local rel="${path#"$tmp"/}"
-    docker run --rm -v "$tmp:/state" alpine:3.20 chown "$owner" "/state/$rel"
+    docker run --rm --user 0 --entrypoint /bin/sh -v "$tmp:/state" "$image" -c 'chown "$1" "$2"' sh "$owner" "/state/$rel"
   fi
 }
 
@@ -22,7 +22,7 @@ cleanup() {
   if [ "$host_uid" -eq 0 ]; then
     rm -rf "$tmp"
   else
-    docker run --rm -v "$tmp:/state" alpine:3.20 sh -c 'rm -rf /state/*' >/dev/null 2>&1 || true
+    docker run --rm --user 0 --entrypoint /bin/sh -v "$tmp:/state" "$image" -c 'rm -rf /state/*' >/dev/null 2>&1 || true
     rm -rf "$tmp" || true
   fi
 }
@@ -38,7 +38,7 @@ stat_uid() {
     stat -c '%u' "$path"
   else
     local rel="${path#"$tmp"/}"
-    docker run --rm -v "$tmp:/state:ro" alpine:3.20 stat -c '%u' "/state/$rel"
+    docker run --rm --user 0 --entrypoint /bin/sh -v "$tmp:/state:ro" "$image" -c 'stat -c "%u" "$1"' sh "/state/$rel"
   fi
 }
 
@@ -48,7 +48,7 @@ stat_gid() {
     stat -c '%g' "$path"
   else
     local rel="${path#"$tmp"/}"
-    docker run --rm -v "$tmp:/state:ro" alpine:3.20 stat -c '%g' "/state/$rel"
+    docker run --rm --user 0 --entrypoint /bin/sh -v "$tmp:/state:ro" "$image" -c 'stat -c "%g" "$1"' sh "/state/$rel"
   fi
 }
 
@@ -58,7 +58,7 @@ read_file() {
     cat "$path"
   else
     local rel="${path#"$tmp"/}"
-    docker run --rm -v "$tmp:/state:ro" alpine:3.20 cat "/state/$rel"
+    docker run --rm --user 0 --entrypoint /bin/sh -v "$tmp:/state:ro" "$image" -c 'cat "$1"' sh "/state/$rel"
   fi
 }
 
