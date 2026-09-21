@@ -23,6 +23,10 @@ func (c *captureMachineBootstrap) Bootstrap(_ context.Context, req machinebootst
 	return core.Host{ID: "host-new", Name: req.HostName, Provider: "docker", State: core.HostOnline}, nil
 }
 
+func (c *captureMachineBootstrap) ScanHostKey(_ context.Context, _ string) ([]string, error) {
+	return []string{"SHA256:observed-test-key"}, nil
+}
+
 func TestBootstrapHostPassesEphemeralCredentialsAndPublisherCapability(t *testing.T) {
 	st, err := store.OpenSQLite(":memory:")
 	if err != nil {
@@ -120,6 +124,7 @@ func TestBootstrapHostPrefersExplicitSudoPassword(t *testing.T) {
 		"user":"compute",
 		"password":"ssh-password",
 		"sudoPassword":"different-sudo-password",
+		"hostKeyFingerprint":"SHA256:trusted-host-key",
 		"name":"compute"
 	}`)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/hosts/bootstrap", bytes.NewReader(body))
@@ -133,5 +138,64 @@ func TestBootstrapHostPrefersExplicitSudoPassword(t *testing.T) {
 	}
 	if capture.req.SudoPassword != "different-sudo-password" {
 		t.Fatalf("sudo password=%q, want explicit value", capture.req.SudoPassword)
+	}
+}
+
+
+func TestScanSSHHostKeyRequiresAdminAndReturnsFingerprints(t *testing.T) {
+	st, err := store.OpenSQLite(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	capture := &captureMachineBootstrap{}
+	svc := &Service{
+		Store:            st,
+		MachineBootstrap: capture,
+		Auth: auth.New(auth.Config{APIKeys: map[string]auth.Principal{
+			"admin-secret": {Name: "test-admin", Role: auth.RoleAdmin},
+		}}),
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/hosts/ssh-fingerprints", bytes.NewBufferString(`{"address":"compute.example"}`))
+	req.Header.Set("Authorization", "Bearer admin-secret")
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	svc.Handler().ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	if !bytes.Contains(rr.Body.Bytes(), []byte("SHA256:observed-test-key")) {
+		t.Fatalf("unexpected body=%s", rr.Body.String())
+	}
+}
+
+func TestBootstrapHostRejectsMissingFingerprint(t *testing.T) {
+	st, err := store.OpenSQLite(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	hub, err := agenthub.New(st, "0123456789abcdef", "0123456789abcdef0123456789abcdef")
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := &Service{
+		Store: st, Hub: hub, MachineBootstrap: &captureMachineBootstrap{},
+		MachineBootstrapURL: "https://runnerhub.example",
+		Auth: auth.New(auth.Config{APIKeys: map[string]auth.Principal{
+			"admin-secret": {Name: "test-admin", Role: auth.RoleAdmin},
+		}}),
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/hosts/bootstrap", bytes.NewBufferString(`{"address":"compute.example","user":"compute","name":"compute"}`))
+	req.Header.Set("Authorization", "Bearer admin-secret")
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	svc.Handler().ServeHTTP(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	if !bytes.Contains(rr.Body.Bytes(), []byte("fingerprint is required")) {
+		t.Fatalf("unexpected body=%s", rr.Body.String())
 	}
 }
