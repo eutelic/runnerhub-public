@@ -447,6 +447,7 @@ async function addMachine(){
     name:document.getElementById('machine-name').value.trim(),
     tags:document.getElementById('machine-tags').value.split(',').map(x=>x.trim()).filter(Boolean),
     priority:Number(document.getElementById('machine-priority').value||0),
+    hostKeyFingerprint:document.getElementById('machine-host-fingerprint').value.trim(),
     password:document.getElementById('machine-password').value,
     sudoPassword:document.getElementById('machine-sudo-password').value,
     privateKey:document.getElementById('machine-private-key').value,
@@ -460,6 +461,7 @@ async function addMachine(){
   try{
     message('Connecting to '+body.address+' and enrolling '+body.name+'…');
     const host=await j('/api/v1/hosts/bootstrap',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});
+    document.getElementById('machine-host-fingerprint').value='';
     document.getElementById('machine-password').value='';
     document.getElementById('machine-sudo-password').value='';
     document.getElementById('machine-private-key').value='';
