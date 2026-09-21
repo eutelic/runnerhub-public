@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -19,12 +20,16 @@ type Request struct {
 	Address           string
 	User              string
 	Password          string
+	SudoPassword      string
 	PrivateKey        string
+	RegistryUsername  string
+	RegistryPassword  string
 	HostName          string
 	ControlPlaneURL   string
-	AgentImage        string
-	InstallDocker     bool
-	AllowInsecureHTTP bool
+	AgentImage              string
+	InstallDocker           bool
+	AllowInsecureHTTP       bool
+	AllowPrivilegedWorkers  bool
 }
 
 type WaitForHost func(context.Context, string) (core.Host, error)
@@ -90,26 +95,30 @@ func (s SSH) Bootstrap(ctx context.Context, req Request, enrollmentToken string,
 		}
 	}
 
-	run := func(command string) error {
+	runOutput := func(command string) (string, error) {
 		args, env, err := sshCommand(req, sshBin, passBin, knownHosts, keyPath)
 		if err != nil {
-			return err
+			return "", err
 		}
 		cmd := exec.CommandContext(ctx, args[0], args[1:]...)
 		cmd.Env = append(os.Environ(), env...)
 		cmd.Stdin = strings.NewReader(command)
 		out, err := cmd.CombinedOutput()
-		if err != nil {
-			msg := strings.TrimSpace(string(out))
-			if len(msg) > 1024 {
-				msg = msg[len(msg)-1024:]
-			}
-			if msg != "" {
-				return fmt.Errorf("remote bootstrap failed: %s: %w", msg, err)
-			}
-			return fmt.Errorf("remote bootstrap failed: %w", err)
+		msg := strings.TrimSpace(string(out))
+		if len(msg) > 2048 {
+			msg = msg[len(msg)-2048:]
 		}
-		return nil
+		if err != nil {
+			if msg != "" {
+				return msg, fmt.Errorf("remote bootstrap failed: %s: %w", msg, err)
+			}
+			return "", fmt.Errorf("remote bootstrap failed: %w", err)
+		}
+		return msg, nil
+	}
+	run := func(command string) error {
+		_, err := runOutput(command)
+		return err
 	}
 
 	tokenPath := "/tmp/runnerhub-enrollment-" + safeName(req.HostName) + ".token"
@@ -118,7 +127,11 @@ func (s SSH) Bootstrap(ctx context.Context, req Request, enrollmentToken string,
 	}
 	host, err := wait(ctx, req.HostName)
 	if err != nil {
+		diagnostics, _ := runOutput(diagnosticsScript(req))
 		_ = run(cleanupScript(tokenPath))
+		if diagnostics != "" {
+			return core.Host{}, fmt.Errorf("%w; agent diagnostics: %s", err, diagnostics)
+		}
 		return core.Host{}, err
 	}
 	if err := run(finalizeScript(req, tokenPath)); err != nil {
@@ -177,30 +190,37 @@ func startScript(req Request, token, tokenPath string) string {
 		"TOKEN=" + shellQuote(token) + "\n" +
 		"TOKEN_PATH=" + shellQuote(tokenPath) + "\n" +
 		`ensure_docker
+rm -rf "$TOKEN_PATH"
 umask 077
 printf '%s' "$TOKEN" > "$TOKEN_PATH"
-docker_cmd pull "$IMAGE" >/dev/null
+pull_agent_image
 docker_cmd rm -f runnerhub-agent >/dev/null 2>&1 || true
 args="run -d --name runnerhub-agent --restart unless-stopped -v /var/run/docker.sock:/var/run/docker.sock -v /var/lib/runnerhub:/var/lib/runnerhub -v $TOKEN_PATH:/run/runnerhub-enrollment-token:ro -e RUNNERHUB_CONTROL_PLANE_URL=$CONTROL -e RUNNERHUB_ENROLLMENT_TOKEN_FILE=/run/runnerhub-enrollment-token -e RUNNERHUB_HOST_NAME=$HOST_NAME -e RUNNERHUB_PROVIDER=docker"
 if [ "$INSECURE" = true ]; then args="$args -e RUNNERHUB_ALLOW_INSECURE_HTTP=true"; fi
+if [ "$PRIVILEGED" = true ]; then args="$args -e RUNNERHUB_ALLOW_PRIVILEGED_WORKERS=true"; fi
+if [ -n "$AGENT_DNS" ]; then args="$args --dns=$AGENT_DNS"; fi
 # Values are validated/quoted before reaching this shell; use positional expansion only for fixed option shapes.
 docker_cmd $args "$IMAGE" >/dev/null
 `
 }
 
 func finalizeScript(req Request, tokenPath string) string {
+	req.RegistryUsername = ""
+	req.RegistryPassword = ""
 	return commonScript(req) + "\nTOKEN_PATH=" + shellQuote(tokenPath) + "\n" +
 		`ensure_docker
 docker_cmd rm -f runnerhub-agent >/dev/null 2>&1 || true
 args="run -d --name runnerhub-agent --restart unless-stopped -v /var/run/docker.sock:/var/run/docker.sock -v /var/lib/runnerhub:/var/lib/runnerhub -e RUNNERHUB_CONTROL_PLANE_URL=$CONTROL -e RUNNERHUB_HOST_NAME=$HOST_NAME -e RUNNERHUB_PROVIDER=docker"
 if [ "$INSECURE" = true ]; then args="$args -e RUNNERHUB_ALLOW_INSECURE_HTTP=true"; fi
+if [ "$PRIVILEGED" = true ]; then args="$args -e RUNNERHUB_ALLOW_PRIVILEGED_WORKERS=true"; fi
+if [ -n "$AGENT_DNS" ]; then args="$args --dns=$AGENT_DNS"; fi
 docker_cmd $args "$IMAGE" >/dev/null
-rm -f "$TOKEN_PATH"
+rm -rf "$TOKEN_PATH"
 `
 }
 
 func cleanupScript(tokenPath string) string {
-	return "rm -f " + shellQuote(tokenPath) + "\n"
+	return "rm -rf " + shellQuote(tokenPath) + "\n"
 }
 
 func commonScript(req Request) string {
@@ -212,15 +232,44 @@ func commonScript(req Request) string {
 	if req.AllowInsecureHTTP {
 		insecure = "true"
 	}
+	privileged := "false"
+	if req.AllowPrivilegedWorkers {
+		privileged = "true"
+	}
+	registry := registryHost(req.AgentImage)
+	agentDNS := agentDNSForControlURL(req.ControlPlaneURL)
 	return `set -eu
 CONTROL=` + shellQuote(req.ControlPlaneURL) + `
 IMAGE=` + shellQuote(req.AgentImage) + `
 HOST_NAME=` + shellQuote(req.HostName) + `
+SUDO_PASSWORD=` + shellQuote(req.SudoPassword) + `
+REGISTRY=` + shellQuote(registry) + `
+REGISTRY_USER=` + shellQuote(req.RegistryUsername) + `
+REGISTRY_PASSWORD=` + shellQuote(req.RegistryPassword) + `
+AGENT_DNS=` + shellQuote(agentDNS) + `
 INSTALL_DOCKER=` + install + `
 INSECURE=` + insecure + `
+PRIVILEGED=` + privileged + `
+sudo_try() {
+  if sudo -n "$@" >/dev/null 2>&1; then return 0; fi
+  if [ -n "$SUDO_PASSWORD" ]; then
+    printf '%s\n' "$SUDO_PASSWORD" | sudo -S -p '' -- "$@"
+    return $?
+  fi
+  return 1
+}
+sudo_cmd() {
+  if sudo -n true >/dev/null 2>&1; then sudo -n "$@"; return; fi
+  if [ -n "$SUDO_PASSWORD" ]; then
+    printf '%s\n' "$SUDO_PASSWORD" | sudo -S -p '' -- "$@"
+    return
+  fi
+  echo "sudo requires authentication; provide a sudo password in Add machine" >&2
+  exit 44
+}
 docker_cmd() {
   if docker info >/dev/null 2>&1; then docker "$@"; return; fi
-  if command -v sudo >/dev/null 2>&1 && sudo -n docker info >/dev/null 2>&1; then sudo -n docker "$@"; return; fi
+  if command -v sudo >/dev/null 2>&1 && sudo_try docker info >/dev/null 2>&1; then sudo_cmd docker "$@"; return; fi
   echo "Docker is installed but this SSH user cannot access the daemon" >&2
   exit 43
 }
@@ -229,23 +278,83 @@ ensure_docker() {
     if [ "$INSTALL_DOCKER" != true ]; then echo "Docker is not installed" >&2; exit 42; fi
     if ! command -v sudo >/dev/null 2>&1; then echo "Docker installation requires sudo" >&2; exit 42; fi
     if command -v apt-get >/dev/null 2>&1; then
-      sudo -n apt-get update
-      sudo -n apt-get install -y docker.io
+      sudo_cmd apt-get update
+      sudo_cmd apt-get install -y docker.io
     elif command -v dnf >/dev/null 2>&1; then
-      sudo -n dnf install -y docker
+      sudo_cmd dnf install -y docker
     elif command -v yum >/dev/null 2>&1; then
-      sudo -n yum install -y docker
+      sudo_cmd yum install -y docker
     elif command -v pacman >/dev/null 2>&1; then
-      sudo -n pacman -Sy --noconfirm docker
+      sudo_cmd pacman -Sy --noconfirm docker
     else
       echo "Unsupported package manager; install Docker manually" >&2
       exit 42
     fi
-    if command -v systemctl >/dev/null 2>&1; then sudo -n systemctl enable --now docker; fi
+    if command -v systemctl >/dev/null 2>&1; then sudo_cmd systemctl enable --now docker; fi
   fi
   docker_cmd version >/dev/null
 }
+pull_agent_image() {
+  if [ -n "$REGISTRY_PASSWORD" ]; then
+    if [ -z "$REGISTRY_USER" ]; then
+      echo "registry username is required when a registry token/password is provided" >&2
+      exit 45
+    fi
+    cfg="$(mktemp -d /tmp/runnerhub-docker-config.XXXXXX)"
+    chmod 700 "$cfg"
+    trap 'rm -rf "$cfg"' 0 1 2 15
+    if ! printf '%s' "$REGISTRY_PASSWORD" | docker_cmd --config "$cfg" login "$REGISTRY" -u "$REGISTRY_USER" --password-stdin >/dev/null; then
+      echo "RunnerHub agent registry authentication failed for $REGISTRY" >&2
+      exit 45
+    fi
+    if ! docker_cmd --config "$cfg" pull "$IMAGE" >/dev/null; then
+      echo "RunnerHub agent image pull failed for $IMAGE after registry authentication" >&2
+      exit 46
+    fi
+    rm -rf "$cfg"
+    trap - 0 1 2 15
+    return
+  fi
+  if ! docker_cmd pull "$IMAGE" >/dev/null; then
+    echo "RunnerHub agent image pull failed for $IMAGE; if the image is private, provide registry credentials in Add machine" >&2
+    exit 46
+  fi
+}
 `
+}
+
+func diagnosticsScript(req Request) string {
+	req.RegistryUsername = ""
+	req.RegistryPassword = ""
+	return commonScript(req) + `
+ensure_docker
+docker_cmd logs --tail 40 runnerhub-agent 2>&1 || true
+`
+}
+
+func registryHost(image string) string {
+	image = strings.TrimSpace(image)
+	parts := strings.SplitN(image, "/", 2)
+	if len(parts) == 1 {
+		return "docker.io"
+	}
+	first := parts[0]
+	if strings.Contains(first, ".") || strings.Contains(first, ":") || strings.EqualFold(first, "localhost") {
+		return first
+	}
+	return "docker.io"
+}
+
+func agentDNSForControlURL(controlURL string) string {
+	u, err := url.Parse(strings.TrimSpace(controlURL))
+	if err != nil {
+		return ""
+	}
+	host := strings.ToLower(strings.TrimSpace(u.Hostname()))
+	if strings.HasSuffix(host, ".ts.net") {
+		return "100.100.100.100"
+	}
+	return ""
 }
 
 func shellQuote(value string) string {

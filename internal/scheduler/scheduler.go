@@ -57,9 +57,10 @@ func (s Scheduler) SelectHost(ctx context.Context, pool core.RunnerPool) (Decisi
 		return Decision{}, fmt.Errorf("%w: pool concurrency exhausted (%d/%d)", ErrNoCapacity, poolActive, pool.MaxConcurrency)
 	}
 	type candidate struct {
-		h     core.Host
-		used  core.Resources
-		score int64
+		h        core.Host
+		used     core.Resources
+		priority int
+		score    int64
 	}
 	var candidates []candidate
 	var rejects []string
@@ -71,14 +72,19 @@ func (s Scheduler) SelectHost(ctx context.Context, pool core.RunnerPool) (Decisi
 		u := used[h.ID]
 		score := (h.Capacity.CPUMillis - u.CPUMillis - pool.Resources.CPUMillis) +
 			(h.Capacity.MemoryBytes-u.MemoryBytes-pool.Resources.MemoryBytes)/(1024*1024)
-		candidates = append(candidates, candidate{h: h, used: u, score: score})
+		candidates = append(candidates, candidate{h: h, used: u, priority: h.Priority, score: score})
 	}
 	if len(candidates) == 0 {
 		return Decision{}, fmt.Errorf("%w: %s", ErrNoCapacity, strings.Join(rejects, "; "))
 	}
-	sort.SliceStable(candidates, func(i, j int) bool { return candidates[i].score > candidates[j].score })
+	sort.SliceStable(candidates, func(i, j int) bool {
+		if candidates[i].priority != candidates[j].priority {
+			return candidates[i].priority > candidates[j].priority
+		}
+		return candidates[i].score > candidates[j].score
+	})
 	c := candidates[0]
-	return Decision{Host: c.h, Used: c.used, Reason: "best compatible online host with available requested capacity"}, nil
+	return Decision{Host: c.h, Used: c.used, Reason: fmt.Sprintf("best compatible host: priority=%d, residual-capacity-score=%d", c.priority, c.score)}, nil
 }
 
 func SummarizeCapacity(pool core.RunnerPool, hosts []core.Host, workers []core.Worker) CapacitySummary {

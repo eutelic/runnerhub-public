@@ -104,13 +104,14 @@ function tab(rows,cols){
 function hostTagText(host){return Object.keys(host?.userTags||{}).sort().join(', ')}
 function renderHosts(hosts){
   if(!Array.isArray(hosts)||!hosts.length){els.hosts.innerHTML='<span class="muted">None</span>';return}
-  els.hosts.innerHTML='<div class="table-wrap"><table><tr><th>Name</th><th>State</th><th>CPU</th><th>Memory</th><th>Tags</th><th></th></tr>'+
+  els.hosts.innerHTML='<div class="table-wrap"><table><tr><th>Name</th><th>State</th><th>CPU</th><th>Memory</th><th>Priority</th><th>Tags</th><th></th></tr>'+
     hosts.map(h=>'<tr>'+
       '<td>'+esc(h.name)+'</td>'+
       '<td>'+esc(h.state)+'</td>'+
       '<td>'+esc(h.capacity?.cpuMillis?cpuCores(h.capacity.cpuMillis)+' cores':'unknown')+'</td>'+
       '<td>'+esc(h.capacity?.memoryBytes?gib(h.capacity.memoryBytes)+' GiB':'unknown')+'</td>'+
-      '<td><input class="inline-tags" data-host-tag-input="'+esc(h.id)+'" value="'+esc(hostTagText(h))+'" placeholder="fast, high-memory"></td>'+
+      '<td><input class="inline-tags" data-host-priority-input="'+esc(h.id)+'" type="number" min="-1000" max="1000" step="1" value="'+esc(Number(h.priority||0))+'"></td>'+
+      '<td><input class="inline-tags" data-host-tag-input="'+esc(h.id)+'" value="'+esc(hostTagText(h))+'" placeholder="gpu, high-memory"></td>'+
       '<td><button class="secondary compact" data-host-tags="'+esc(h.id)+'">Save</button></td>'+
     '</tr>').join('')+'</table></div>';
 }
@@ -346,18 +347,20 @@ function runnerProfileEditor(repo,profiles,standardConnected){
   const existing=(profiles||[]).map(p=>{
     const tags=Object.keys(p.hostSelector||{}).join(', ')||'—';
     const enabled=Number(p.githubInstallationId)>0;
-    return '<div class="profile-row"><div><code>runs-on: '+esc(p.scaleSetName)+'</code><div class="muted small">machines: '+esc(tags)+' · '+esc(cpuCores(p.resources?.cpuMillis))+' CPU · '+esc(gib(p.resources?.memoryBytes))+' GiB</div></div>'+
+    const mode=p.isolation==='container-dind'?'Docker-capable':'standard';
+    return '<div class="profile-row"><div><code>runs-on: '+esc(p.scaleSetName)+'</code><div class="muted small">machines: '+esc(tags)+' · '+esc(mode)+' · '+esc(cpuCores(p.resources?.cpuMillis))+' CPU · '+esc(gib(p.resources?.memoryBytes))+' GiB</div></div>'+
       (enabled?'<button class="secondary compact" data-profile-action="disable" data-profile-name="'+esc(p.scaleSetName)+'" data-repo="'+esc(repo.fullName)+'" data-installation="'+esc(repo.installationId)+'">Disable</button>':'<span class="badge neutral">disabled</span>')+
     '</div>';
   }).join('');
   const disabled=standardConnected?'':' disabled';
   return '<details class="repo-config profile-config">'+
     '<summary>Custom runner profiles'+(active.length?' ('+active.length+')':'')+'</summary>'+
-    '<div class="resource-note muted">Route jobs to tagged machines with names such as <code>runnerhub-fast</code>.</div>'+
+    '<div class="resource-note muted">Tags are hard placement constraints. Use host priority for normal scheduling preference; use a custom profile when a workflow must explicitly target a machine class such as <code>runnerhub-fast</code>.</div>'+
     (existing?'<div class="profile-list">'+existing+'</div>':'')+
     '<div class="resource-grid">'+
       '<label>Profile name<input data-profile-field="name" placeholder="fast"'+disabled+'></label>'+
       '<label>Required machine tags<input data-profile-field="tags" placeholder="fast"'+disabled+'></label>'+
+      '<label>Mode<select data-profile-field="isolation"'+disabled+'><option value="container-trusted">Standard</option><option value="container-dind">Docker-capable</option></select></label>'+
       '<label>CPU / runner<input data-profile-field="cpu" type="number" min="0.25" step="0.25" value="2.5"'+disabled+'></label>'+
       '<label>RAM / runner (GiB)<input data-profile-field="memory" type="number" min="1" step="0.5" value="4"'+disabled+'></label>'+
       '<label>Max concurrent<input data-profile-field="concurrency" type="number" min="1" step="1" value="2"'+disabled+'></label>'+
@@ -443,9 +446,14 @@ async function addMachine(){
     user:document.getElementById('machine-user').value.trim(),
     name:document.getElementById('machine-name').value.trim(),
     tags:document.getElementById('machine-tags').value.split(',').map(x=>x.trim()).filter(Boolean),
+    priority:Number(document.getElementById('machine-priority').value||0),
     password:document.getElementById('machine-password').value,
+    sudoPassword:document.getElementById('machine-sudo-password').value,
     privateKey:document.getElementById('machine-private-key').value,
-    installDocker:document.getElementById('machine-install-docker').checked
+    registryUsername:document.getElementById('machine-registry-username').value.trim(),
+    registryPassword:document.getElementById('machine-registry-password').value,
+    installDocker:document.getElementById('machine-install-docker').checked,
+    allowPrivilegedWorkers:document.getElementById('machine-allow-privileged').checked
   };
   if(!body.address||!body.user||!body.name)return message('Machine address, SSH user, and RunnerHub name are required.','error');
   button.disabled=true;
@@ -453,7 +461,9 @@ async function addMachine(){
     message('Connecting to '+body.address+' and enrolling '+body.name+'…');
     const host=await j('/api/v1/hosts/bootstrap',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});
     document.getElementById('machine-password').value='';
+    document.getElementById('machine-sudo-password').value='';
     document.getElementById('machine-private-key').value='';
+    document.getElementById('machine-registry-password').value='';
     message(host.name+' is online and available for RunnerHub CI.','success');
     await refresh();
   }catch(e){message(e.message,'error')}finally{button.disabled=false}
@@ -462,12 +472,15 @@ async function addMachine(){
 async function saveHostTags(button){
   const id=button.dataset.hostTags;
   const input=els.hosts.querySelector('[data-host-tag-input="'+CSS.escape(id)+'"]');
+  const priorityInput=els.hosts.querySelector('[data-host-priority-input="'+CSS.escape(id)+'"]');
+  const priority=Number(priorityInput?.value||0);
+  if(!Number.isInteger(priority)||priority < -1000||priority > 1000)return message('Host priority must be an integer between -1000 and 1000.','error');
   const tags={};
   (input?.value||'').split(',').map(x=>x.trim()).filter(Boolean).forEach(tag=>{tags[tag]='true'});
   button.disabled=true;
   try{
-    await j('/api/v1/hosts/'+encodeURIComponent(id),{method:'PATCH',headers:{'content-type':'application/json'},body:JSON.stringify({tags})});
-    message('Machine tags updated.','success');
+    await j('/api/v1/hosts/'+encodeURIComponent(id),{method:'PATCH',headers:{'content-type':'application/json'},body:JSON.stringify({tags,priority})});
+    message('Machine scheduling settings updated.','success');
     await refresh();
   }catch(e){message(e.message,'error')}finally{button.disabled=false}
 }
@@ -479,13 +492,14 @@ async function saveRunnerProfile(button){
   if(enabled){
     body.name=panel.querySelector('[data-profile-field="name"]').value.trim();
     body.tags=panel.querySelector('[data-profile-field="tags"]').value.split(',').map(x=>x.trim()).filter(Boolean);
+    body.isolation=panel.querySelector('[data-profile-field="isolation"]').value;
     const cpu=Number(panel.querySelector('[data-profile-field="cpu"]').value);
     const memory=Number(panel.querySelector('[data-profile-field="memory"]').value);
     const concurrency=Number(panel.querySelector('[data-profile-field="concurrency"]').value);
     if(!body.name)return message('Profile name is required.','error');
     if(!body.tags.length)return message('At least one required machine tag is required.','error');
     if(!Number.isFinite(cpu)||cpu<=0||!Number.isFinite(memory)||memory<=0||!Number.isInteger(concurrency)||concurrency<1)return message('Profile CPU, RAM, and concurrency must be valid.','error');
-    body.resources={cpuMillis:Math.round(cpu*1000),memoryBytes:Math.round(memory*1073741824),diskBytes:21474836480};
+    body.resources={cpuMillis:Math.round(cpu*1000),memoryBytes:Math.round(memory*1073741824),diskBytes:body.isolation==='container-dind'?42949672960:21474836480};
     body.maxConcurrency=concurrency;
     body.autoTuneResources=panel.querySelector('[data-profile-field="autotune"]').checked;
   }else{

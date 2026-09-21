@@ -47,12 +47,24 @@
               <label>IP / hostname<input id="machine-address" placeholder="192.168.1.50"></label>
               <label>SSH user<input id="machine-user" placeholder="example-user"></label>
               <label>RunnerHub name<input id="machine-name" placeholder="runner-host-01"></label>
-              <label>Tags<input id="machine-tags" placeholder="fast, high-memory"></label>
+              <label>Tags<input id="machine-tags" placeholder="gpu, high-memory"></label>
+              <label>Scheduling priority<input id="machine-priority" type="number" min="-1000" max="1000" step="1" value="0"></label>
             </div>
+            <div class="resource-note muted">Higher scheduling priority is a soft preference for normal RunnerHub jobs. Tags are hard constraints for custom profiles.</div>
             <label>SSH password (optional)<input id="machine-password" type="password" autocomplete="new-password"></label>
+            <label>Sudo password (optional)<input id="machine-sudo-password" type="password" autocomplete="new-password" placeholder="Defaults to SSH password"></label>
             <label>SSH private key (optional)<textarea id="machine-private-key" rows="4" placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"></textarea></label>
+            <details class="advanced-details">
+              <summary>Private agent registry credentials</summary>
+              <div class="resource-grid">
+                <label>Registry username<input id="machine-registry-username" autocomplete="off" placeholder="GitHub username"></label>
+                <label>Registry token / password<input id="machine-registry-password" type="password" autocomplete="new-password" placeholder="PAT with read:packages for private GHCR"></label>
+              </div>
+              <div class="resource-note muted">Used only for the bootstrap image pull and not stored on the remote machine.</div>
+            </details>
             <label class="check-row"><input id="machine-install-docker" type="checkbox" checked> Install Docker automatically if it is missing</label>
-            <div class="resource-note muted">SSH is used only for setup. After enrollment, the machine connects outbound to RunnerHub and stores its own rotating credential.</div>
+            <label class="check-row"><input id="machine-allow-privileged" type="checkbox"> Allow isolated Docker/publisher runners on this machine</label>
+            <div class="resource-note muted">SSH is used only for setup. If sudo needs a password, RunnerHub uses the sudo password above or falls back to the SSH password. Publisher support enables privileged per-job Docker-in-Docker sidecars, not host Docker socket access inside workflow jobs. After enrollment, the machine connects outbound to RunnerHub and stores its own rotating credential.</div>
             <button id="add-machine">Add machine</button>
           </div>
         </details>

@@ -41,6 +41,64 @@ func TestSelectHost(t *testing.T) {
 	}
 }
 
+func TestSelectHostPrefersHigherPriorityBeforeCapacity(t *testing.T) {
+	st, _ := store.OpenSQLite(":memory:")
+	defer st.Close()
+	ctx := context.Background()
+	for _, h := range []core.Host{
+		{
+			ID: "fast", Name: "fast", Provider: "docker", State: core.HostOnline, Priority: 100,
+			Tags: map[string]string{"isolation.container-trusted": "true"},
+			Capacity: core.Resources{CPUMillis: 4000, MemoryBytes: 8 << 30},
+		},
+		{
+			ID: "large-low-priority", Name: "large-low-priority", Provider: "docker", State: core.HostOnline, Priority: 0,
+			Tags: map[string]string{"isolation.container-trusted": "true"},
+			Capacity: core.Resources{CPUMillis: 32000, MemoryBytes: 64 << 30},
+		},
+	} {
+		if err := st.UpsertHost(ctx, h); err != nil {
+			t.Fatal(err)
+		}
+	}
+	d, err := (Scheduler{Store: st}).SelectHost(ctx, testPool())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.Host.ID != "fast" {
+		t.Fatalf("selected host=%q, want higher-priority fast host; reason=%s", d.Host.ID, d.Reason)
+	}
+}
+
+func TestSelectHostFallsBackWhenHigherPriorityHostCannotFit(t *testing.T) {
+	st, _ := store.OpenSQLite(":memory:")
+	defer st.Close()
+	ctx := context.Background()
+	for _, h := range []core.Host{
+		{
+			ID: "fast", Name: "fast", Provider: "docker", State: core.HostOnline, Priority: 100,
+			Tags: map[string]string{"isolation.container-trusted": "true"},
+			Capacity: core.Resources{CPUMillis: 500, MemoryBytes: 512 << 20},
+		},
+		{
+			ID: "fallback", Name: "fallback", Provider: "docker", State: core.HostOnline, Priority: 0,
+			Tags: map[string]string{"isolation.container-trusted": "true"},
+			Capacity: core.Resources{CPUMillis: 8000, MemoryBytes: 16 << 30},
+		},
+	} {
+		if err := st.UpsertHost(ctx, h); err != nil {
+			t.Fatal(err)
+		}
+	}
+	d, err := (Scheduler{Store: st}).SelectHost(ctx, testPool())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.Host.ID != "fallback" {
+		t.Fatalf("selected host=%q, want compatible fallback host", d.Host.ID)
+	}
+}
+
 func TestPoolConcurrencyIsGlobalAcrossHosts(t *testing.T) {
 	st, _ := store.OpenSQLite(":memory:")
 	defer st.Close()

@@ -30,8 +30,11 @@ RUN chmod 0755 /usr/local/bin/runnerhub-control-entrypoint
 VOLUME ["/data"]
 ENTRYPOINT ["/usr/local/bin/runnerhub-control-entrypoint"]
 
-FROM debian:bookworm-slim AS agent
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates docker.io && rm -rf /var/lib/apt/lists/*
+# The agent talks to the host Docker daemon through /var/run/docker.sock.
+# Use Docker's maintained CLI image so the client API keeps pace with current
+# Docker Engine releases instead of Debian Bookworm's older docker.io client.
+FROM docker:29-cli AS agent
+RUN apk add --no-cache ca-certificates
 COPY --from=build /out/runnerhub-agent /usr/local/bin/runnerhub-agent
 COPY deploy/docker/secret-file.sh /usr/local/lib/runnerhub/secret-file.sh
 COPY deploy/docker/agent-entrypoint.sh /usr/local/bin/runnerhub-agent-entrypoint
