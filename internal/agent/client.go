@@ -1,6 +1,6 @@
 package agent
 
-import("bytes";"context";"encoding/json";"errors";"fmt";"io";"log";"math/rand";"net";"net/http";"net/url";"os";"path/filepath";"strings";"time";"github.com/eutelic/runnerhub/internal/provider")
+import("bytes";"context";"crypto/rand";"encoding/json";"errors";"fmt";"io";"log";"math/big";"net";"net/http";"net/url";"os";"path/filepath";"strings";"time";"github.com/eutelic/runnerhub/internal/provider")
 type ClientConfig struct{ControlPlaneURL string;EnrollmentToken string;CredentialFile string;Name string;Provider string;AgentVersion string;HTTPClient *http.Client;AllowInsecureHTTP bool}
 type storedCredential struct{HostID string `json:"hostId"`;Token string `json:"token"`}
 type Client struct{cfg ClientConfig;http *http.Client;providers map[string]provider.Provider;hostID string;token string;poll time.Duration}
@@ -15,6 +15,6 @@ func(c *Client)saveCredential()error{if c.cfg.CredentialFile==""{return nil};ret
 func loadCredential(path string)(storedCredential,error){b,err:=os.ReadFile(path);if err!=nil{return storedCredential{},err};var c storedCredential;if err:=json.Unmarshal(b,&c);err!=nil{return c,err};if strings.TrimSpace(c.HostID)==""||strings.TrimSpace(c.Token)==""{return c,errors.New("stored agent credential is incomplete")};return c,nil}
 func writeCredential(path string,c storedCredential)error{if strings.TrimSpace(c.HostID)==""||strings.TrimSpace(c.Token)==""{return errors.New("agent credential is incomplete")};dir:=filepath.Dir(path);if err:=os.MkdirAll(dir,0700);err!=nil{return err};b,err:=json.Marshal(c);if err!=nil{return err};f,err:=os.CreateTemp(dir,".runnerhub-agent-credential-*");if err!=nil{return err};tmp:=f.Name();defer os.Remove(tmp);if err:=f.Chmod(0600);err!=nil{_=f.Close();return err};if _,err:=f.Write(b);err!=nil{_=f.Close();return err};if err:=f.Sync();err!=nil{_=f.Close();return err};if err:=f.Close();err!=nil{return err};return os.Rename(tmp,path)}
 func safe(err error)string{s:=err.Error();if len(s)>512{s=s[:512]};return s}
-func waitBackoff(ctx context.Context,d time.Duration)error{jitter:=time.Duration(rand.Int63n(int64(maxDuration(d/4,time.Millisecond))));t:=time.NewTimer(d+jitter);defer t.Stop();select{case<-ctx.Done():return ctx.Err();case<-t.C:return nil}}
+func waitBackoff(ctx context.Context,d time.Duration)error{maxJitter:=maxDuration(d/4,time.Millisecond);jitter:=time.Duration(0);if n,err:=rand.Int(rand.Reader,big.NewInt(int64(maxJitter)));err==nil{jitter=time.Duration(n.Int64())};t:=time.NewTimer(d+jitter);defer t.Stop();select{case<-ctx.Done():return ctx.Err();case<-t.C:return nil}}
 func minDuration(a,b time.Duration)time.Duration{if a<b{return a};return b};func maxDuration(a,b time.Duration)time.Duration{if a>b{return a};return b}
 func loopbackHost(host string)bool{if strings.EqualFold(host,"localhost"){return true};ip:=net.ParseIP(host);return ip!=nil&&ip.IsLoopback()}
