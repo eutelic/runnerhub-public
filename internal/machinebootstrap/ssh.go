@@ -225,6 +225,7 @@ func retainPinnedHostKeys(ctx context.Context, knownHosts, expected string) erro
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
+		// #nosec G703 -- candidate is derived from RunnerHub's private os.MkdirTemp known_hosts path, not a user-selected filesystem path.
 		if err := os.WriteFile(candidate, []byte(line+"\n"), 0o600); err != nil {
 			return err
 		}
@@ -239,6 +240,7 @@ func retainPinnedHostKeys(ctx context.Context, knownHosts, expected string) erro
 	if len(matched) == 0 {
 		return errors.New("verified SSH fingerprint could not be mapped back to a host key")
 	}
+	// #nosec G703 -- knownHosts is created by RunnerHub inside a private os.MkdirTemp directory before this helper is called.
 	return os.WriteFile(knownHosts, []byte(strings.Join(matched, "\n")+"\n"), 0o600)
 }
 
