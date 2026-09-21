@@ -201,7 +201,7 @@ Useful options:
 --allow-privileged-workers true   # permits opt-in runnerhub-publisher pools
 --runnerhub-tag sha-FULL_COMMIT_SHA
 --runner-image ghcr.io/actions/actions-runner:2.337.0@sha256:e5496277be5d09bc968b3d64911b74e219ac4a3f2edce956a3ecf9271bea1ef4
---dind-image docker:dind
+--dind-image docker:29.1.3-dind@sha256:173f284a4299164772a90f52b373e73e087583c0963f1334c9995f190ef6f3f5
 ```
 
 There is intentionally no `--github-installation-id` and no `--github-url`.
