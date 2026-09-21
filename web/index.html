@@ -47,8 +47,10 @@
               <label>IP / hostname<input id="machine-address" placeholder="192.168.1.50"></label>
               <label>SSH user<input id="machine-user" placeholder="example-user"></label>
               <label>RunnerHub name<input id="machine-name" placeholder="runner-host-01"></label>
-              <label>Tags<input id="machine-tags" placeholder="fast, high-memory"></label>
+              <label>Tags<input id="machine-tags" placeholder="gpu, high-memory"></label>
+              <label>Scheduling priority<input id="machine-priority" type="number" min="-1000" max="1000" step="1" value="0"></label>
             </div>
+            <div class="resource-note muted">Higher scheduling priority is a soft preference for normal RunnerHub jobs. Tags are hard constraints for custom profiles.</div>
             <label>SSH password (optional)<input id="machine-password" type="password" autocomplete="new-password"></label>
             <label>Sudo password (optional)<input id="machine-sudo-password" type="password" autocomplete="new-password" placeholder="Defaults to SSH password"></label>
             <label>SSH private key (optional)<textarea id="machine-private-key" rows="4" placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"></textarea></label>
