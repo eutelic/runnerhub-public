@@ -2,6 +2,7 @@ package images
 import("errors";"sort";"strings";"github.com/eutelic/runnerhub/internal/core")
 const LegacyDefaultRunnerImage="ghcr.io/actions/actions-runner:latest"
 const DefaultRunnerImage="ghcr.io/actions/actions-runner:2.337.0@sha256:e5496277be5d09bc968b3d64911b74e219ac4a3f2edce956a3ecf9271bea1ef4"
+const DefaultDinDImage="docker:29.1.3-dind@sha256:173f284a4299164772a90f52b373e73e087583c0963f1334c9995f190ef6f3f5"
 func UpgradeLegacyDefault(image string)(string,bool){if strings.TrimSpace(image)==LegacyDefaultRunnerImage{return DefaultRunnerImage,true};return image,false}
 type InventoryEntry struct{Image string `json:"image"`;Pools []string `json:"pools"`;Workers int `json:"workers"`}
 func ValidatePinned(image string)error{image=strings.TrimSpace(image);ref,digest,ok:=strings.Cut(image,"@sha256:");if !ok||strings.TrimSpace(ref)==""||strings.ContainsAny(ref," \t\r\n")||len(digest)!=64{return errors.New("image must be pinned by sha256 digest")};for _,r:=range digest{if !((r>='0'&&r<='9')||(r>='a'&&r<='f')){return errors.New("image must be pinned by lowercase sha256 digest")}};return nil}
