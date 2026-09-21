@@ -7,41 +7,49 @@
   <link rel="stylesheet" href="/style.css">
 </head>
 <body>
-  <header>
-    <div>
-      <h1>RunnerHub</h1>
-      <div class="muted">GitHub Actions on compute you own</div>
-    </div>
-    <div id="account"></div>
-  </header>
-  <main>
-    <section class="card onboarding">
-      <div class="section-head">
-        <div>
-          <h2>Repositories</h2>
-          <div id="authstatus" class="muted">Checking authentication…</div>
-        </div>
-        <div class="actions">
-          <a class="button secondary" href="/diagnostics.html">Diagnostics</a>
-          <a id="login" class="button hidden" href="/auth/github/login">Sign in with GitHub</a>
-          <a id="install" class="button secondary hidden" href="/auth/github/install">Manage repositories</a>
-          <button id="logout" class="secondary hidden">Sign out</button>
-        </div>
+  <header class="app-header">
+    <div class="brand-lockup">
+      <div class="brand-mark" aria-hidden="true">RH</div>
+      <div>
+        <h1>RunnerHub</h1>
+        <div class="muted">GitHub Actions on compute you own</div>
       </div>
-      <div id="repos" class="repo-grid"></div>
-      <details id="legacy-auth" class="advanced-details">
-        <summary>Advanced: API token</summary>
-        <input id="apitoken" type="password" autocomplete="off" placeholder="API token">
-      </details>
-      <pre id="msg"></pre>
+    </div>
+    <div id="account" class="account-pill"></div>
+  </header>
+
+  <main class="dashboard-shell">
+    <nav class="page-nav" aria-label="Dashboard sections">
+      <a href="#active-runners-section">Active runners</a>
+      <a href="#compute-section">Compute</a>
+      <a href="#repositories-section">Repositories</a>
+      <a href="#activity-section">Activity</a>
+    </nav>
+
+    <section id="active-runners-section" class="card active-runners-card priority-card">
+      <div class="card-head">
+        <div>
+          <div class="section-kicker">Live fleet</div>
+          <h2>Active runners</h2>
+          <div class="muted small">Only runners that currently exist. Finished and historical jobs are not shown here.</div>
+        </div>
+        <div id="active-runner-summary" class="summary-pill"></div>
+      </div>
+      <div id="active-runners"></div>
     </section>
 
-    <div class="overview-grid">
+    <div id="compute-section" class="overview-grid">
       <section class="card hosts-card">
-        <div class="card-head"><h2>Hosts</h2><span class="muted small">Available compute</span></div>
+        <div class="card-head">
+          <div>
+            <div class="section-kicker">Infrastructure</div>
+            <h2>Hosts</h2>
+          </div>
+          <span class="muted small">Available compute</span>
+        </div>
         <div id="hosts"></div>
         <details class="machine-add">
-          <summary>+ Add machine</summary>
+          <summary>Add machine</summary>
           <div class="advanced-body">
             <div class="resource-grid">
               <label>IP / hostname<input id="machine-address" placeholder="192.168.1.50"></label>
@@ -62,37 +70,50 @@
               </div>
               <div class="resource-note muted">Used only for the bootstrap image pull and not stored on the remote machine.</div>
             </details>
-            <label class="check-row"><input id="machine-install-docker" type="checkbox" checked> Install Docker automatically if it is missing</label>
-            <label class="check-row"><input id="machine-allow-privileged" type="checkbox"> Allow isolated Docker/publisher runners on this machine</label>
-            <div class="resource-note muted">SSH is used only for setup. If sudo needs a password, RunnerHub uses the sudo password above or falls back to the SSH password. Publisher support enables privileged per-job Docker-in-Docker sidecars, not host Docker socket access inside workflow jobs. After enrollment, the machine connects outbound to RunnerHub and stores its own rotating credential.</div>
-            <button id="add-machine">Add machine</button>
-          </div>
-        </details>
       </section>
+
       <section class="card pools-card">
-        <div class="card-head"><h2>Pools</h2><span class="muted small">Connected runner pools</span></div>
+        <div class="card-head">
+          <div>
+            <div class="section-kicker">Scheduling</div>
+            <h2>Pools</h2>
+          </div>
+          <span class="muted small">Connected runner pools</span>
+        </div>
         <div id="pools"></div>
       </section>
     </div>
 
-    <section class="card active-runners-card">
-      <div class="card-head">
+    <section id="repositories-section" class="card onboarding">
+      <div class="section-head">
         <div>
-          <h2>Active runners</h2>
-          <div class="muted small">Only runners that currently exist. Finished and historical jobs are not shown here.</div>
+          <div class="section-kicker">Configuration</div>
+          <h2>Repositories</h2>
+          <div id="authstatus" class="muted">Checking authentication…</div>
         </div>
-        <div id="active-runner-summary" class="muted small"></div>
+        <div class="actions">
+          <a class="button secondary" href="/diagnostics.html">Diagnostics</a>
+          <a id="login" class="button hidden" href="/auth/github/login">Sign in with GitHub</a>
+          <a id="install" class="button secondary hidden" href="/auth/github/install">Manage repositories</a>
+          <button id="logout" class="secondary hidden">Sign out</button>
+        </div>
       </div>
-      <div id="active-runners"></div>
+      <div id="repos" class="repo-grid"></div>
+      <details id="legacy-auth" class="advanced-details">
+        <summary>Advanced: API token</summary>
+        <input id="apitoken" type="password" autocomplete="off" placeholder="API token">
+      </details>
+      <pre id="msg" class="status-message" aria-live="polite"></pre>
     </section>
 
-    <section class="card workers-card">
+    <section id="activity-section" class="card workers-card">
       <div class="card-head">
         <div>
+          <div class="section-kicker">Recent history</div>
           <h2>Runner activity</h2>
           <div class="muted small">Active runners and the most recent jobs. Full worker history is kept in Diagnostics.</div>
         </div>
-        <div id="worker-summary" class="muted small"></div>
+        <div id="worker-summary" class="summary-pill subtle"></div>
       </div>
       <div id="workers"></div>
     </section>
