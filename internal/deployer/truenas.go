@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -160,6 +161,79 @@ type trueNASAppInfo struct {
 	ID        string `json:"id"`
 	State     string `json:"state"`
 	CustomApp bool   `json:"custom_app"`
+}
+
+func (c *TrueNASClient) FindAppMount(ctx context.Context, app, destination string) (string, error) {
+	app = strings.TrimSpace(app)
+	destination = strings.TrimSpace(destination)
+	if app == "" || destination == "" {
+		return "", errors.New("TrueNAS app name and mount destination are required")
+	}
+
+	conn, _, err := c.dialer.DialContext(ctx, c.endpoint, nil)
+	if err != nil {
+		return "", fmt.Errorf("connect to TrueNAS: %w", err)
+	}
+	defer conn.Close()
+
+	var auth struct {
+		ResponseType string `json:"response_type"`
+	}
+	if err := c.call(ctx, conn, "auth.login_ex", []any{
+		map[string]any{
+			"mechanism": "API_KEY_PLAIN",
+			"username":  c.username,
+			"api_key":   c.apiKey,
+			"login_options": map[string]any{
+				"user_info": false,
+			},
+		},
+	}, &auth); err != nil {
+		return "", fmt.Errorf("authenticate to TrueNAS: %w", err)
+	}
+	if auth.ResponseType != "SUCCESS" {
+		return "", fmt.Errorf("authenticate to TrueNAS: response_type=%s", auth.ResponseType)
+	}
+
+	var instance struct {
+		ActiveWorkloads struct {
+			ContainerDetails []struct {
+				ServiceName  string `json:"service_name"`
+				VolumeMounts []struct {
+					Source      string `json:"source"`
+					Destination string `json:"destination"`
+					Type        string `json:"type"`
+				} `json:"volume_mounts"`
+			} `json:"container_details"`
+		} `json:"active_workloads"`
+	}
+	if err := c.call(ctx, conn, "app.get_instance", []any{app, map[string]any{}}, &instance); err != nil {
+		return "", fmt.Errorf("inspect TrueNAS app %q: %w", app, err)
+	}
+
+	find := func(serviceOnly bool) string {
+		for _, container := range instance.ActiveWorkloads.ContainerDetails {
+			if serviceOnly && container.ServiceName != "control" {
+				continue
+			}
+			for _, mount := range container.VolumeMounts {
+				if mount.Destination != destination || mount.Source == "" {
+					continue
+				}
+				if strings.HasPrefix(mount.Source, "/mnt/") {
+					return filepath.Clean(mount.Source)
+				}
+			}
+		}
+		return ""
+	}
+	if source := find(true); source != "" {
+		return source, nil
+	}
+	if source := find(false); source != "" {
+		return source, nil
+	}
+	return "", fmt.Errorf("TrueNAS app %q does not expose a host /mnt mount for %s", app, destination)
 }
 
 func (c *TrueNASClient) EnsureCustomApp(ctx context.Context, app, compose string) error {
