@@ -52,6 +52,7 @@ func TestBootstrapHostPassesEphemeralCredentialsAndPublisherCapability(t *testin
 		"password":"ssh-and-sudo-password",
 		"name":"compute",
 		"tags":["fast"],
+		"priority":100,
 		"registryUsername":"example-user",
 		"registryPassword":"registry-token",
 		"installDocker":true,
@@ -77,6 +78,13 @@ func TestBootstrapHostPassesEphemeralCredentialsAndPublisherCapability(t *testin
 	}
 	if !capture.req.InstallDocker {
 		t.Fatal("installDocker was not forwarded")
+	}
+	stored, err := st.GetHost(context.Background(), "host-new")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Priority != 100 {
+		t.Fatalf("stored priority=%d, want 100", stored.Priority)
 	}
 }
 
