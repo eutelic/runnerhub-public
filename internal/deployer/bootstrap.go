@@ -28,11 +28,12 @@ const (
 
 var appNamePattern = regexp.MustCompile(`^[a-z]([-a-z0-9]*[a-z0-9])?$`)
 
-type TrueNASAppInstaller interface {
+type TrueNASBootstrapClient interface {
 	EnsureCustomApp(context.Context, string, string) error
+	FindAppMount(context.Context, string, string) (string, error)
 }
 
-type BootstrapClientFactory func(TrueNASConfig) (TrueNASAppInstaller, error)
+type BootstrapClientFactory func(TrueNASConfig) (TrueNASBootstrapClient, error)
 
 type BootstrapManager struct {
 	Root      string
@@ -136,8 +137,8 @@ func (m *BootstrapManager) Install(ctx context.Context, req BootstrapRequest) (B
 	if req.RunnerHubApp == "" {
 		req.RunnerHubApp = "runnerhub"
 	}
-	if req.Endpoint == "" || req.Username == "" || req.APIKey == "" || req.HostDataPath == "" || req.HealthURL == "" {
-		return BootstrapResult{}, errors.New("TrueNAS URL, username, API key, RunnerHub data path, and health URL are required")
+	if req.Endpoint == "" || req.Username == "" || req.APIKey == "" || req.HealthURL == "" {
+		return BootstrapResult{}, errors.New("TrueNAS URL, username, API key, and health URL are required")
 	}
 	if !appNamePattern.MatchString(req.RunnerHubApp) || len(req.RunnerHubApp) > 40 {
 		return BootstrapResult{}, errors.New("RunnerHub TrueNAS app name is invalid")
@@ -149,6 +150,27 @@ func (m *BootstrapManager) Install(ctx context.Context, req BootstrapRequest) (B
 	health, err := url.Parse(req.HealthURL)
 	if err != nil || (health.Scheme != "http" && health.Scheme != "https") || health.Host == "" || health.User != nil {
 		return BootstrapResult{}, errors.New("health URL must be an absolute http(s) URL without credentials")
+	}
+	factory := m.NewClient
+	if factory == nil {
+		factory = func(cfg TrueNASConfig) (TrueNASBootstrapClient, error) {
+			return NewTrueNASClient(cfg)
+		}
+	}
+	client, err := factory(TrueNASConfig{
+		Endpoint:           req.Endpoint,
+		Username:           req.Username,
+		APIKey:             req.APIKey,
+		InsecureSkipVerify: req.InsecureSkipVerify,
+	})
+	if err != nil {
+		return BootstrapResult{}, err
+	}
+	if req.HostDataPath == "" {
+		req.HostDataPath, err = client.FindAppMount(ctx, req.RunnerHubApp, "/data")
+		if err != nil {
+			return BootstrapResult{}, fmt.Errorf("auto-detect RunnerHub TrueNAS data path: %w", err)
+		}
 	}
 	if err := validateHostDataPath(req.HostDataPath); err != nil {
 		return BootstrapResult{}, err
@@ -234,21 +256,6 @@ func (m *BootstrapManager) Install(ctx context.Context, req BootstrapRequest) (B
 	}
 
 	compose := bootstrapCompose(hostRoot, req.Endpoint, req.Username, req.InsecureSkipVerify)
-	factory := m.NewClient
-	if factory == nil {
-		factory = func(cfg TrueNASConfig) (TrueNASAppInstaller, error) {
-			return NewTrueNASClient(cfg)
-		}
-	}
-	client, err := factory(TrueNASConfig{
-		Endpoint:           req.Endpoint,
-		Username:           req.Username,
-		APIKey:             req.APIKey,
-		InsecureSkipVerify: req.InsecureSkipVerify,
-	})
-	if err != nil {
-		return rollback(err)
-	}
 	if err := client.EnsureCustomApp(ctx, defaultDeployerApp, compose); err != nil {
 		return rollback(fmt.Errorf("install standalone deployer: %w", err))
 	}
