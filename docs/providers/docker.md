@@ -25,6 +25,8 @@ RUNNERHUB_ALLOW_PRIVILEGED_WORKERS=true
 
 Both settings are required. The control plane rejects a DinD pool when privileged workers are disabled, and the Docker agent independently refuses and does not advertise `container-dind` unless the same privileged-worker flag is enabled on that host. This keeps a misconfigured control plane from silently turning a default Docker host into a privileged execution host.
 
+The private DinD daemon is started with Google's documented `mirror.gcr.io` Docker Hub cache as a registry mirror. Cached public Docker Hub pulls avoid Docker Hub pull-rate quota, while uncached images can fall back to Docker Hub.
+
 For every DinD worker, RunnerHub creates:
 
 - the normal ephemeral Actions runner container;
