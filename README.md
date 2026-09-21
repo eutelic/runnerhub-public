@@ -29,6 +29,17 @@ See [ROADMAP](ROADMAP.md), [security model](docs/SECURITY.md), [release guide](d
 - source-free release Compose packaging plus multi-architecture GHCR images for control, agent, bootstrap and scale-set services
 - TrueNAS SCALE 24.10+ Custom App deployment with host/image preflights, deterministic YAML generation, persistent state, automatic internal-secret generation, deploy-before-repository onboarding, dynamic scale-set readiness health and post-install verification
 
+## Scheduling and runner profiles
+
+RunnerHub separates **soft host preference** from **hard placement constraints**:
+
+- Give a machine a higher scheduling priority when normal `runs-on: runnerhub` work should prefer it. Priority is considered only after compatibility and resource checks, so jobs automatically fall back to lower-priority hosts when the preferred machine is offline or full.
+- Use machine tags for hard capabilities or intentional placement boundaries such as `gpu`, `high-memory`, or `fast`.
+- Use a custom runner profile when a workflow must explicitly select a machine class. A profile named `fast` is exposed to GitHub as `runs-on: runnerhub-fast`.
+- Custom profiles can use either `container-trusted` or `container-dind`. Docker-capable profiles require privileged-worker support on both the RunnerHub deployment and the selected host.
+
+This keeps ordinary workflows portable while still supporting explicit lanes for specialized hardware or Docker-heavy release jobs.
+
 ## Fastest local Docker install
 
 The default single-host setup keeps the control API on loopback and uses an outbound scale-set listener for automatic job demand:
