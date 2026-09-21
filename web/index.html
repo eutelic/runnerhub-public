@@ -22,7 +22,7 @@
     <nav class="page-nav" aria-label="Dashboard sections">
       <a href="#active-runners-section">Active runners</a>
       <a href="#compute-section">Compute</a>
-      <a href="#repositories-section">Repositories</a>
+      <a href="#deployments-section">Deployments</a>\n      <a href="#repositories-section">Repositories</a>
       <a href="#activity-section">Activity</a>
     </nav>
 
@@ -88,6 +88,41 @@
         <div id="pools"></div>
       </section>
     </div>
+
+    <section id="deployments-section" class="card">
+      <div class="card-head">
+        <div>
+          <div class="section-kicker">Automation</div>
+          <h2>Deployments</h2>
+          <div class="muted small">Install the standalone TrueNAS redeployer without hand-building YAML, token hashes, or policy files.</div>
+        </div>
+        <div id="deployer-summary" class="summary-pill subtle">Checking…</div>
+      </div>
+      <div id="deployer-status" class="resource-note muted"></div>
+      <details id="deployer-setup" class="advanced-details">
+        <summary>Enable automatic redeploy</summary>
+        <div class="advanced-body">
+          <div class="resource-grid">
+            <label>TrueNAS WebSocket URL<input id="deployer-endpoint" autocomplete="off" placeholder="wss://truenas.example/api/current"></label>
+            <label>TrueNAS service user<input id="deployer-username" autocomplete="username" value="runnerhub_deployer"></label>
+            <label>TrueNAS API key<input id="deployer-api-key" type="password" autocomplete="new-password"></label>
+            <label>RunnerHub TrueNAS app<input id="deployer-runnerhub-app" value="runnerhub"></label>
+            <label>RunnerHub data path on TrueNAS<input id="deployer-host-data-path" autocomplete="off" placeholder="/mnt/tank/runnerhub/data"></label>
+            <label>RunnerHub health URL<input id="deployer-health-url" autocomplete="off" placeholder="http://truenas.example:8788/healthz"></label>
+          </div>
+          <label class="check-row"><input id="deployer-insecure-tls" type="checkbox"> Allow a self-signed/private TrueNAS certificate without CA verification</label>
+          <div class="resource-note muted">The TrueNAS account needs <code>APPS_READ</code> and <code>APPS_WRITE</code>. The API key is written only to RunnerHub's persistent bootstrap directory and mounted into the standalone deployer as a file-backed secret. The deployer remains a separate TrueNAS app so it survives RunnerHub restarting itself.</div>
+          <button id="install-deployer">Install / update redeployer</button>
+          <div id="deployer-token-result" class="hidden">
+            <div class="resource-note"><strong>GitHub Actions secret:</strong> save this one-time token as <code>RUNNERHUB_DEPLOY_TOKEN</code> in <code>eutelic/runnerhub</code>.</div>
+            <div class="actions">
+              <code id="deployer-workflow-token"></code>
+              <button type="button" id="copy-deployer-token" class="secondary compact">Copy token</button>
+            </div>
+          </div>
+        </div>
+      </details>
+    </section>
 
     <section id="repositories-section" class="card onboarding">
       <div class="section-head">
