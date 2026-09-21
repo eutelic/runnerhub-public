@@ -40,6 +40,10 @@ type Bootstrapper interface {
 	Bootstrap(context.Context, Request, string, WaitForHost) (core.Host, error)
 }
 
+type HostKeyScanner interface {
+	ScanHostKey(context.Context, string) ([]string, error)
+}
+
 type SSH struct {
 	SSHBinary     string
 	SSHPassBinary string
@@ -180,56 +184,70 @@ func sshCommand(req Request, sshBin, passBin, knownHosts, keyPath string) ([]str
 	return args, env, nil
 }
 
+func (s SSH) ScanHostKey(ctx context.Context, address string) ([]string, error) {
+	tmp, err := os.MkdirTemp("", "runnerhub-hostkey-*")
+	if err != nil {
+		return nil, err
+	}
+	defer os.RemoveAll(tmp)
+	return scanHostKeys(ctx, address, filepath.Join(tmp, "known_hosts"))
+}
+
 func pinHostKey(ctx context.Context, address, expected, knownHosts string) error {
 	expected = strings.TrimSpace(expected)
 	if !strings.HasPrefix(expected, "SHA256:") || strings.ContainsAny(expected, " \t\r\n") {
 		return errors.New("SSH host key fingerprint must use SHA256:<fingerprint> format")
 	}
-	host, port, err := splitAddress(address)
+	observed, err := scanHostKeys(ctx, address, knownHosts)
 	if err != nil {
 		return err
 	}
+	if slices.Contains(observed, expected) {
+		return nil
+	}
+	return fmt.Errorf("SSH host key fingerprint mismatch: expected %s; observed %s", expected, strings.Join(observed, ", "))
+}
+
+func scanHostKeys(ctx context.Context, address, knownHosts string) ([]string, error) {
+	host, port, err := splitAddress(address)
+	if err != nil {
+		return nil, err
+	}
 	scanBin, err := exec.LookPath("ssh-keyscan")
 	if err != nil {
-		return fmt.Errorf("SSH host-key pinning requires ssh-keyscan: %w", err)
+		return nil, fmt.Errorf("SSH host-key scan requires ssh-keyscan: %w", err)
 	}
 	keygenBin, err := exec.LookPath("ssh-keygen")
 	if err != nil {
-		return fmt.Errorf("SSH host-key pinning requires ssh-keygen: %w", err)
+		return nil, fmt.Errorf("SSH host-key scan requires ssh-keygen: %w", err)
 	}
 	scan := exec.CommandContext(ctx, scanBin, "-T", "10", "-p", port, host)
 	out, err := scan.Output()
 	if err != nil {
-		return fmt.Errorf("scan SSH host key: %w", err)
+		return nil, fmt.Errorf("scan SSH host key: %w", err)
 	}
 	if len(strings.TrimSpace(string(out))) == 0 {
-		return errors.New("SSH host-key scan returned no keys")
+		return nil, errors.New("SSH host-key scan returned no keys")
 	}
 	if err := os.WriteFile(knownHosts, out, 0o600); err != nil {
-		return err
+		return nil, err
 	}
 	fingerprintOut, err := exec.CommandContext(ctx, keygenBin, "-l", "-f", knownHosts, "-E", "sha256").Output()
 	if err != nil {
-		return fmt.Errorf("fingerprint SSH host key: %w", err)
+		return nil, fmt.Errorf("fingerprint SSH host key: %w", err)
 	}
 	observed := []string{}
 	for _, line := range strings.Split(string(fingerprintOut), "\n") {
 		for _, field := range strings.Fields(line) {
-			if !strings.HasPrefix(field, "SHA256:") {
-				continue
-			}
-			if field == expected {
-				return nil
-			}
-			if !slices.Contains(observed, field) {
+			if strings.HasPrefix(field, "SHA256:") && !slices.Contains(observed, field) {
 				observed = append(observed, field)
 			}
 		}
 	}
 	if len(observed) == 0 {
-		return errors.New("SSH host-key scan produced no SHA256 fingerprints")
+		return nil, errors.New("SSH host-key scan produced no SHA256 fingerprints")
 	}
-	return fmt.Errorf("SSH host key fingerprint mismatch: expected %s; observed %s", expected, strings.Join(observed, ", "))
+	return observed, nil
 }
 
 func splitAddress(value string) (string, string, error) {
