@@ -48,10 +48,31 @@ jobs:
         with:
           go-version: '1.26.6'
           cache: true
+      - name: Lint GitHub Actions workflows
+        run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
       - run: go test ./...
       - run: go test -tags localtest ./tests/soak -count=1
       - run: go vet ./...
       - run: go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...
+
+  minimum-toolchains:
+    name: Minimum declared Go toolchains
+    runs-on: runnerhub
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - name: Test root module with declared minimum
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: go.mod
+          cache: false
+      - run: go test ./...
+      - name: Test scale-set module with declared minimum
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: scaleset/go.mod
+          cache: false
+      - run: go test ./...
+        working-directory: scaleset
 
   root-permission-regression:
     # Docker-heavy validation uses RunnerHub's isolated publisher pool.
