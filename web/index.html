@@ -59,8 +59,11 @@
               <label>Scheduling priority<input id="machine-priority" type="number" min="-1000" max="1000" step="1" value="0"></label>
             </div>
             <div class="resource-note muted">Higher scheduling priority is a soft preference for normal RunnerHub jobs. Tags are hard constraints for custom profiles.</div>
-            <label>SSH host key fingerprint (recommended)<input id="machine-host-fingerprint" autocomplete="off" placeholder="SHA256:…"></label>
-            <div class="resource-note muted">When supplied, RunnerHub verifies the server key before sending SSH, sudo, or registry credentials. Get it from a trusted console with <code>ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub -E sha256</code>.</div>
+            <div class="resource-grid">
+              <label>SSH host key fingerprint<input id="machine-host-fingerprint" autocomplete="off" placeholder="SHA256:…" required></label>
+              <label>Host key check<button type="button" id="machine-scan-fingerprint" class="secondary">Scan host key</button></label>
+            </div>
+            <div class="resource-note muted">Required before bootstrap. Use Scan host key to see what RunnerHub observes, then compare it with a trusted console such as <code>ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub -E sha256</code>. Only the verified key is trusted for the SSH session.</div>
             <label>SSH password (optional)<input id="machine-password" type="password" autocomplete="new-password"></label>
             <label>Sudo password (optional)<input id="machine-sudo-password" type="password" autocomplete="new-password" placeholder="Defaults to SSH password"></label>
             <label>SSH private key (optional)<textarea id="machine-private-key" rows="4" placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"></textarea></label>
