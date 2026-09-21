@@ -1,7 +1,7 @@
 package api
 
 import(
-"bytes";"context";"encoding/json";"errors";"fmt";"net/http";"net/http/httptest";"testing";"time";"github.com/eutelic/runnerhub/internal/agent";"github.com/eutelic/runnerhub/internal/agenthub";"github.com/eutelic/runnerhub/internal/auth";cachepkg "github.com/eutelic/runnerhub/internal/cache";"github.com/eutelic/runnerhub/internal/core";"github.com/eutelic/runnerhub/internal/fleet";"github.com/eutelic/runnerhub/internal/githubrunner";"github.com/eutelic/runnerhub/internal/policy";"github.com/eutelic/runnerhub/internal/provider";"github.com/eutelic/runnerhub/internal/scheduler";"github.com/eutelic/runnerhub/internal/store";"github.com/eutelic/runnerhub/internal/telemetry")
+"bytes";"context";"encoding/json";"errors";"fmt";"net/http";"net/http/httptest";"strings";"testing";"time";"github.com/eutelic/runnerhub/internal/agent";"github.com/eutelic/runnerhub/internal/agenthub";"github.com/eutelic/runnerhub/internal/auth";cachepkg "github.com/eutelic/runnerhub/internal/cache";"github.com/eutelic/runnerhub/internal/core";"github.com/eutelic/runnerhub/internal/fleet";"github.com/eutelic/runnerhub/internal/githubrunner";"github.com/eutelic/runnerhub/internal/policy";"github.com/eutelic/runnerhub/internal/provider";"github.com/eutelic/runnerhub/internal/scheduler";"github.com/eutelic/runnerhub/internal/store";"github.com/eutelic/runnerhub/internal/telemetry")
 type failingCommandStore struct{store.Store;fail bool}
 func(s *failingCommandStore)EnqueueCommand(ctx context.Context,hostID string,c agent.Command)error{if s.fail{return errors.New("simulated command persistence failure")};return s.Store.EnqueueCommand(ctx,hostID,c)}
 type apiFakeGH struct{deleted []int64}
@@ -224,4 +224,20 @@ func TestAutoTunePoolUsesObservedCompletedJobs(t *testing.T){
 	got,err:=st.GetPool(ctx,pool.ID);if err!=nil{t.Fatal(err)}
 	if got.Resources.CPUMillis!=2500{t.Fatalf("cpu=%d, want 2500",got.Resources.CPUMillis)}
 	if got.Resources.MemoryBytes!=5<<30{t.Fatalf("memory=%d, want %d",got.Resources.MemoryBytes,int64(5<<30))}
+}
+
+
+func TestRunnerPoolNameSanitizesRepositoryNames(t *testing.T){
+	cases:=map[string]string{
+		runnerPoolName("eutelic","erd_tool"):"eutelic-erd-tool",
+		runnerPoolName("EUTELIC","My Repo...__Name"):"eutelic-my-repo-name",
+		runnerPoolName("owner","---repo---"):"owner-repo",
+	}
+	for got,want:=range cases{if got!=want{t.Fatalf("runnerPoolName=%q want %q",got,want)}}
+}
+
+func TestRunnerPoolNameFitsValidationLimit(t *testing.T){
+	got:=runnerPoolName("owner",strings.Repeat("repo_name_",20))
+	if len(got)==0||len(got)>63{t.Fatalf("runnerPoolName length=%d value=%q",len(got),got)}
+	if strings.HasPrefix(got,"-")||strings.HasSuffix(got,"-")||strings.Contains(got,"_"){t.Fatalf("invalid runner pool name %q",got)}
 }

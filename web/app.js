@@ -26,11 +26,11 @@ let auth={enabled:false,authenticated:false};
 
 els.token.value=sessionStorage.getItem('runnerhub-token')||'';
 els.token.addEventListener('input',()=>{sessionStorage.setItem('runnerhub-token',els.token.value);refresh()});
-document.getElementById('create').addEventListener('click',createPool);
-document.getElementById('machine-scan-fingerprint').addEventListener('click',scanMachineHostKey);
-document.getElementById('add-machine').addEventListener('click',addMachine);
-document.getElementById('install-deployer').addEventListener('click',installDeployer);
-document.getElementById('copy-deployer-token').addEventListener('click',copyDeployerToken);
+bind('create','click',createPool);
+bind('machine-scan-fingerprint','click',scanMachineHostKey);
+bind('add-machine','click',addMachine);
+bind('install-deployer','click',installDeployer);
+bind('copy-deployer-token','click',copyDeployerToken);
 const deployerEndpoint=document.getElementById('deployer-endpoint');
 const deployerHealth=document.getElementById('deployer-health-url');
 if(!deployerEndpoint.value&&location.hostname)deployerEndpoint.value='wss://'+location.hostname+'/api/current';
@@ -48,6 +48,34 @@ els.repos.addEventListener('click',e=>{
 
 function esc(value){return String(value??'').replace(/[&<>"']/g,ch=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]))}
 function show(el,on){el.classList.toggle('hidden',!on)}
+function bind(id,event,handler){const el=document.getElementById(id);if(el)el.addEventListener(event,handler)}
+function initPageNav(){
+  const links=[...document.querySelectorAll('.page-nav a[data-page]')];
+  const views=[...document.querySelectorAll('[data-page-view]')];
+  if(!links.length||!views.length)return;
+  const pageFromHash=()=>{
+    const match=links.find(link=>link.getAttribute('href')===location.hash);
+    return match?.dataset.page||links[0].dataset.page;
+  };
+  const activate=page=>{
+    document.body.classList.add('page-navigation');
+    views.forEach(view=>view.classList.toggle('page-view-active',view.dataset.pageView===page));
+    links.forEach(link=>{
+      if(link.dataset.page===page)link.setAttribute('aria-current','page');
+      else link.removeAttribute('aria-current');
+    });
+  };
+  links.forEach(link=>link.addEventListener('click',event=>{
+    event.preventDefault();
+    const href=link.getAttribute('href');
+    if(location.hash!==href)history.pushState(null,'',href);
+    activate(link.dataset.page);
+    window.scrollTo(0,0);
+  }));
+  window.addEventListener('popstate',()=>activate(pageFromHash()));
+  window.addEventListener('hashchange',()=>activate(pageFromHash()));
+  activate(pageFromHash());
+}
 function message(text,kind=''){els.msg.className=kind;els.msg.textContent=text||''}
 function gib(bytes){return bytes?Number((bytes/1073741824).toFixed(2)):0}
 function cpuCores(millis){return millis?Number((millis/1000).toFixed(2)):0}
@@ -707,5 +735,6 @@ async function createPool(){
   }catch(e){message(e.message,'error')}
 }
 
+initPageNav();
 refresh();
 setInterval(refresh,10000);
