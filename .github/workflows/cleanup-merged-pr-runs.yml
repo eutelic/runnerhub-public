@@ -1,0 +1,90 @@
+name: cleanup-merged-pr-runs
+
+on:
+  pull_request:
+    types: [closed]
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  cancel-obsolete:
+    if: github.event.pull_request.merged == true
+    # This control-plane cleanup intentionally uses a GitHub-hosted runner so it
+    # can free saturated RunnerHub capacity instead of waiting behind the work
+    # it is trying to cancel.
+    runs-on: ubuntu-latest
+    steps:
+      - name: Cancel obsolete merged-PR validation runs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+
+          api="https://api.github.com/repos/${REPOSITORY}"
+          page=1
+          while :; do
+            response="$(
+              curl --fail --silent --show-error \
+                -H "Authorization: Bearer ${GH_TOKEN}" \
+                -H "Accept: application/vnd.github+json" \
+                -H "X-GitHub-Api-Version: 2022-11-28" \
+                "${api}/actions/runs?event=pull_request&head_sha=${HEAD_SHA}&per_page=100&page=${page}"
+            )"
+
+            count="$(jq '.workflow_runs | length' <<<"$response")"
+            while IFS=$'\t' read -r run_id workflow_name run_status; do
+              [ -n "$run_id" ] || continue
+              case "$workflow_name" in
+                ci|deployment-ci|dind-runtime-ci|secret-init-ci|truenas-deploy-tools-ci|truenas-compose-prep-ci|hardening-validation)
+                  ;;
+                *)
+                  echo "skip run $run_id ($workflow_name): not an ordinary CI workflow"
+                  continue
+                  ;;
+              esac
+
+              case "$run_status" in
+                queued|pending|in_progress)
+                  ;;
+                *)
+                  continue
+                  ;;
+              esac
+
+              code="$(
+                curl --silent --show-error \
+                  --output /tmp/runnerhub-cancel-response \
+                  --write-out '%{http_code}' \
+                  --request POST \
+                  -H "Authorization: Bearer ${GH_TOKEN}" \
+                  -H "Accept: application/vnd.github+json" \
+                  -H "X-GitHub-Api-Version: 2022-11-28" \
+                  "${api}/actions/runs/${run_id}/cancel"
+              )"
+              case "$code" in
+                202)
+                  echo "canceled obsolete $workflow_name run $run_id ($run_status)"
+                  ;;
+                409)
+                  echo "run $run_id became non-cancelable before cleanup; continuing"
+                  ;;
+                *)
+                  echo "failed to cancel run $run_id: HTTP $code" >&2
+                  cat /tmp/runnerhub-cancel-response >&2 || true
+                  exit 1
+                  ;;
+              esac
+            done < <(
+              jq -r '.workflow_runs[]
+                | select(.status == "queued" or .status == "pending" or .status == "in_progress")
+                | [.id, .name, .status]
+                | @tsv' <<<"$response"
+            )
+
+            [ "$count" -eq 100 ] || break
+            page=$((page + 1))
+          done
