@@ -155,6 +155,104 @@ func (c *TrueNASClient) RedeployAndWait(ctx context.Context, app string) error {
 	}
 }
 
+type trueNASAppInfo struct {
+	Name      string `json:"name"`
+	ID        string `json:"id"`
+	State     string `json:"state"`
+	CustomApp bool   `json:"custom_app"`
+}
+
+func (c *TrueNASClient) EnsureCustomApp(ctx context.Context, app, compose string) error {
+	app = strings.TrimSpace(app)
+	compose = strings.TrimSpace(compose)
+	if app == "" || compose == "" {
+		return errors.New("TrueNAS custom app name and Compose configuration are required")
+	}
+
+	conn, _, err := c.dialer.DialContext(ctx, c.endpoint, nil)
+	if err != nil {
+		return fmt.Errorf("connect to TrueNAS: %w", err)
+	}
+	defer conn.Close()
+
+	var auth struct {
+		ResponseType string `json:"response_type"`
+	}
+	if err := c.call(ctx, conn, "auth.login_ex", []any{
+		map[string]any{
+			"mechanism": "API_KEY_PLAIN",
+			"username":  c.username,
+			"api_key":   c.apiKey,
+			"login_options": map[string]any{
+				"user_info": false,
+			},
+		},
+	}, &auth); err != nil {
+		return fmt.Errorf("authenticate to TrueNAS: %w", err)
+	}
+	if auth.ResponseType != "SUCCESS" {
+		return fmt.Errorf("authenticate to TrueNAS: response_type=%s", auth.ResponseType)
+	}
+
+	var apps []trueNASAppInfo
+	if err := c.call(ctx, conn, "app.query", []any{[]any{}, map[string]any{}}, &apps); err != nil {
+		return fmt.Errorf("query TrueNAS apps: %w", err)
+	}
+	exists := false
+	for _, candidate := range apps {
+		if candidate.Name != app && candidate.ID != app {
+			continue
+		}
+		if !candidate.CustomApp {
+			return fmt.Errorf("TrueNAS app %q already exists but is not a custom app", app)
+		}
+		exists = true
+		break
+	}
+
+	if exists {
+		if err := c.call(ctx, conn, "app.update", []any{
+			app,
+			map[string]any{"custom_compose_config_string": compose},
+		}, nil); err != nil {
+			return fmt.Errorf("update TrueNAS custom app %q: %w", app, err)
+		}
+	} else {
+		if err := c.call(ctx, conn, "app.create", []any{
+			map[string]any{
+				"app_name":                     app,
+				"custom_app":                   true,
+				"custom_compose_config_string": compose,
+			},
+		}, nil); err != nil {
+			return fmt.Errorf("create TrueNAS custom app %q: %w", app, err)
+		}
+	}
+
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+	for {
+		var state struct {
+			State string `json:"state"`
+		}
+		if err := c.call(ctx, conn, "app.get_instance", []any{app, map[string]any{}}, &state); err != nil {
+			return fmt.Errorf("inspect TrueNAS app %q: %w", app, err)
+		}
+		switch state.State {
+		case "RUNNING":
+			return nil
+		case "CRASHED", "STOPPED":
+			return fmt.Errorf("TrueNAS app %q entered state %s", app, state.State)
+		}
+
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+		}
+	}
+}
+
 func (c *TrueNASClient) call(ctx context.Context, conn *websocket.Conn, method string, params any, out any) error {
 	id := c.nextID.Add(1)
 	request := map[string]any{
