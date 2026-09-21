@@ -4,7 +4,8 @@ on:
     branches: [main]
     paths:
       - '.dockerignore'
-      - '.github/workflows/ci.yml'
+      - '.github/workflows/**'
+      - '.github/dependabot.yml'
       - 'cmd/**'
       - 'internal/**'
       - 'scaleset/**'
@@ -19,7 +20,8 @@ on:
   pull_request:
     paths:
       - '.dockerignore'
-      - '.github/workflows/ci.yml'
+      - '.github/workflows/**'
+      - '.github/dependabot.yml'
       - 'cmd/**'
       - 'internal/**'
       - 'scaleset/**'
