@@ -43,4 +43,19 @@ done
 # in-progress publish instead of interrupting it halfway through.
 require_fixed "$workflow_dir/publish-images.yml" "cancel-in-progress: false"
 
+# Merged PRs use a different concurrency group from their resulting main push.
+# The cleanup workflow must cancel only ordinary PR validation and must never
+# cancel the stateful publish-images workflow.
+cleanup="$workflow_dir/cleanup-merged-pr-runs.yml"
+require_fixed "$cleanup" "pull_request:"
+require_fixed "$cleanup" "types: [closed]"
+require_fixed "$cleanup" "github.event.pull_request.merged == true"
+require_fixed "$cleanup" "actions: write"
+require_fixed "$cleanup" "event=pull_request&head_sha="
+require_fixed "$cleanup" "/cancel"
+if grep -Fq -- "publish-images)" "$cleanup"; then
+  echo "cleanup workflow must not cancel publish-images" >&2
+  exit 1
+fi
+
 echo "GitHub Actions concurrency policy is valid."
