@@ -145,8 +145,6 @@ jobs:
           images: ghcr.io/eutelic/${{ matrix.image }}
           tags: |
             type=raw,value=sha-${{ github.sha }}
-            type=sha,format=short,prefix=sha-
-            type=ref,event=tag
 
       - name: Build and publish ${{ matrix.target }}
         uses: docker/build-push-action@v6
@@ -165,14 +163,13 @@ jobs:
           provenance: true
           sbom: true
 
-  promote-latest:
-    name: Promote coherent latest set
+  publish-tags:
+    name: Publish image tags with crane
     needs: publish
-    # Promotion is registry-only and does not need Docker-in-Docker. Keep it on
-    # the standard RunnerHub pool so release publication is independent of
-    # GitHub-hosted Actions minutes.
-    if: github.ref == 'refs/heads/main'
-    runs-on: runnerhub
+    # Registry-only publication does not need Docker. Run it on the explicitly
+    # fast compute lane; the build matrix can move here too once runnerhub-fast
+    # is configured as a Docker-capable custom profile.
+    runs-on: runnerhub-fast
     steps:
       - uses: actions/setup-go@v7
         with:
@@ -182,24 +179,35 @@ jobs:
       - name: Install crane
         run: go install github.com/google/go-containerregistry/cmd/crane@v0.22.1
 
-      - name: Promote and verify coherent latest set
+      - name: Publish and verify image tags
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SOURCE_TAG: sha-${{ github.sha }}
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
         run: |
           set -euo pipefail
           crane="$(go env GOPATH)/bin/crane"
           "$crane" auth login ghcr.io -u "$GITHUB_ACTOR" -p "$GITHUB_TOKEN"
+          short_tag="sha-${GITHUB_SHA:0:7}"
 
           for image in runnerhub-control runnerhub-agent runnerhub-bootstrap runnerhub-scaleset; do
             ref="ghcr.io/eutelic/${image}"
-            "$crane" tag "${ref}:${SOURCE_TAG}" latest
+            source="${ref}:${SOURCE_TAG}"
+            source_digest="$("$crane" digest "$source")"
 
-            source_digest="$("$crane" digest "${ref}:${SOURCE_TAG}")"
-            latest_digest="$("$crane" digest "${ref}:latest")"
-            if [ "$source_digest" != "$latest_digest" ]; then
-              echo "digest mismatch for ${ref}: source=${source_digest} latest=${latest_digest}" >&2
-              exit 1
+            "$crane" tag "$source" "$short_tag"
+            test "$("$crane" digest "${ref}:${short_tag}")" = "$source_digest"
+
+            if [ "$REF_TYPE" = "tag" ]; then
+              "$crane" tag "$source" "$REF_NAME"
+              test "$("$crane" digest "${ref}:${REF_NAME}")" = "$source_digest"
             fi
-            echo "[ ok ] ${ref}:latest -> ${source_digest}"
+
+            if [ "$GITHUB_REF" = "refs/heads/main" ]; then
+              "$crane" tag "$source" latest
+              test "$("$crane" digest "${ref}:latest")" = "$source_digest"
+            fi
+
+            echo "[ ok ] published aliases for ${ref} -> ${source_digest}"
           done
