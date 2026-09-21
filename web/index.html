@@ -108,11 +108,11 @@
             <label>TrueNAS service user<input id="deployer-username" autocomplete="username" value="runnerhub_deployer"></label>
             <label>TrueNAS API key<input id="deployer-api-key" type="password" autocomplete="new-password"></label>
             <label>RunnerHub TrueNAS app<input id="deployer-runnerhub-app" value="runnerhub"></label>
-            <label>RunnerHub data path on TrueNAS<input id="deployer-host-data-path" autocomplete="off" placeholder="/mnt/tank/runnerhub/data"></label>
+            <label>RunnerHub data path override (optional)<input id="deployer-host-data-path" autocomplete="off" placeholder="Auto-detected from the runnerhub app"></label>
             <label>RunnerHub health URL<input id="deployer-health-url" autocomplete="off" placeholder="http://truenas.example:8788/healthz"></label>
           </div>
           <label class="check-row"><input id="deployer-insecure-tls" type="checkbox"> Allow a self-signed/private TrueNAS certificate without CA verification</label>
-          <div class="resource-note muted">The TrueNAS account needs <code>APPS_READ</code> and <code>APPS_WRITE</code>. The API key is written only to RunnerHub's persistent bootstrap directory and mounted into the standalone deployer as a file-backed secret. The deployer remains a separate TrueNAS app so it survives RunnerHub restarting itself.</div>
+          <div class="resource-note muted">The TrueNAS account needs <code>APPS_READ</code> and <code>APPS_WRITE</code>. RunnerHub auto-detects the host path backing its <code>/data</code> mount. The API key is written only to RunnerHub's persistent bootstrap directory and mounted into the standalone deployer as a file-backed secret. The deployer remains a separate TrueNAS app so it survives RunnerHub restarting itself.</div>
           <button id="install-deployer">Install / update redeployer</button>
           <div id="deployer-token-result" class="hidden">
             <div class="resource-note"><strong>GitHub Actions secret:</strong> save this one-time token as <code>RUNNERHUB_DEPLOY_TOKEN</code> in <code>eutelic/runnerhub</code>.</div>
