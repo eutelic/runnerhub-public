@@ -49,7 +49,7 @@ RUNNERHUB_ALLOW_PRIVILEGED_WORKERS=false
 
 # Refresh the official ephemeral runner image before each worker starts.
 RUNNERHUB_DOCKER_PULL_POLICY=always
-RUNNERHUB_DIND_IMAGE=docker:dind
+RUNNERHUB_DIND_IMAGE=docker:29.1.3-dind@sha256:173f284a4299164772a90f52b373e73e087583c0963f1334c9995f190ef6f3f5
 
 # container-dind supports Docker container actions/service containers but uses
 # a privileged per-worker Docker daemon. To opt in, set BOTH:
