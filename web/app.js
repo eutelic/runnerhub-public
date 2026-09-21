@@ -325,7 +325,8 @@ async function refresh(){
     }));
     const recommendationByPool=new Map(recommendationPairs);
 
-    renderDeployerStatus(deployer);\n    renderHosts(h);
+    renderDeployerStatus(deployer);
+    renderHosts(h);
     els.pools.innerHTML=tab(p,[
       ['Repository',x=>repoName(x)],
       ['Class',x=>runnerClass(x)],
