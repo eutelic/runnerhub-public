@@ -208,6 +208,26 @@ func TestTrustedDockerTmpfsDoesNotConsumeHostDiskCapacity(t *testing.T) {
 	}
 }
 
+func TestDinDReservesRunnerAndSidecarCPUAndMemory(t *testing.T) {
+	resources := core.Resources{CPUMillis: 2500, MemoryBytes: 8 << 30, DiskBytes: 40 << 30}
+	worker := core.Worker{
+		ProviderID: "docker",
+		Isolation: core.IsolationContainerDinD,
+		Resources: resources,
+	}
+	used := EffectiveWorkerResources(worker)
+	if used.CPUMillis != 5000 || used.MemoryBytes != 16<<30 || used.DiskBytes != 40<<30 {
+		t.Fatalf("DinD worker reservation=%+v", used)
+	}
+
+	host := core.Host{Provider: "docker"}
+	pool := core.RunnerPool{Isolation: core.IsolationContainerDinD, Resources: resources}
+	req := EffectivePoolResources(host, pool)
+	if req.CPUMillis != 5000 || req.MemoryBytes != 16<<30 || req.DiskBytes != 40<<30 {
+		t.Fatalf("DinD pool reservation=%+v", req)
+	}
+}
+
 func TestDinDStillConsumesHostDiskCapacity(t *testing.T) {
 	w := core.Worker{
 		ProviderID: "docker",
