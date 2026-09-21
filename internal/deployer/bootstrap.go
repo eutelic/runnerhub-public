@@ -77,6 +77,55 @@ type bootstrapState struct {
 	ConfiguredAt time.Time `json:"configuredAt"`
 }
 
+type bootstrapFileSnapshot struct {
+	path   string
+	data   []byte
+	mode   os.FileMode
+	exists bool
+}
+
+func snapshotBootstrapFile(path string) (bootstrapFileSnapshot, error) {
+	snapshot := bootstrapFileSnapshot{path: path}
+	info, err := os.Stat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return snapshot, nil
+	}
+	if err != nil {
+		return snapshot, fmt.Errorf("inspect existing deployer bootstrap file: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		return snapshot, fmt.Errorf("existing deployer bootstrap path is not a regular file: %s", path)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return snapshot, fmt.Errorf("read existing deployer bootstrap file: %w", err)
+	}
+	snapshot.data = data
+	snapshot.mode = info.Mode().Perm()
+	snapshot.exists = true
+	return snapshot, nil
+}
+
+func restoreBootstrapFiles(snapshots []bootstrapFileSnapshot) error {
+	var restoreErr error
+	for _, snapshot := range snapshots {
+		if snapshot.exists {
+			if err := writePrivateFile(snapshot.path, snapshot.data); err != nil {
+				restoreErr = errors.Join(restoreErr, err)
+				continue
+			}
+			if err := os.Chmod(snapshot.path, snapshot.mode); err != nil {
+				restoreErr = errors.Join(restoreErr, err)
+			}
+			continue
+		}
+		if err := os.Remove(snapshot.path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			restoreErr = errors.Join(restoreErr, err)
+		}
+	}
+	return restoreErr
+}
+
 func (m *BootstrapManager) Install(ctx context.Context, req BootstrapRequest) (BootstrapResult, error) {
 	req.Endpoint = strings.TrimSpace(req.Endpoint)
 	req.Username = strings.TrimSpace(req.Username)
@@ -143,14 +192,47 @@ func (m *BootstrapManager) Install(ctx context.Context, req BootstrapRequest) (B
 	}
 	policyBytes = append(policyBytes, '\n')
 
-	if err := writePrivateFile(filepath.Join(secretsDir, "truenas-api-key"), []byte(req.APIKey+"\n")); err != nil {
-		return BootstrapResult{}, err
+	deployerURL := deployerHTTPURL(endpoint)
+	state := bootstrapState{
+		DeployerApp:  defaultDeployerApp,
+		DeployerURL:  deployerURL,
+		TargetID:     defaultTargetID,
+		ConfiguredAt: time.Now().UTC(),
 	}
-	if err := writePrivateFile(filepath.Join(configDir, "deployments.json"), policyBytes); err != nil {
-		return BootstrapResult{}, err
+	stateBytes, err := json.MarshalIndent(state, "", "  ")
+	if err != nil {
+		return BootstrapResult{}, fmt.Errorf("encode deployment bootstrap state: %w", err)
+	}
+	stateBytes = append(stateBytes, '\n')
+
+	keyPath := filepath.Join(secretsDir, "truenas-api-key")
+	policyPath := filepath.Join(configDir, "deployments.json")
+	statePath := filepath.Join(root, "state.json")
+	paths := []string{keyPath, policyPath, statePath}
+	snapshots := make([]bootstrapFileSnapshot, 0, len(paths))
+	for _, path := range paths {
+		snapshot, err := snapshotBootstrapFile(path)
+		if err != nil {
+			return BootstrapResult{}, err
+		}
+		snapshots = append(snapshots, snapshot)
+	}
+	rollback := func(cause error) (BootstrapResult, error) {
+		if restoreErr := restoreBootstrapFiles(snapshots); restoreErr != nil {
+			return BootstrapResult{}, fmt.Errorf("%w; restore previous deployer bootstrap files: %v", cause, restoreErr)
+		}
+		return BootstrapResult{}, cause
+	}
+	if err := writePrivateFile(keyPath, []byte(req.APIKey+"\n")); err != nil {
+		return rollback(err)
+	}
+	if err := writePrivateFile(policyPath, policyBytes); err != nil {
+		return rollback(err)
+	}
+	if err := writePrivateFile(statePath, stateBytes); err != nil {
+		return rollback(err)
 	}
 
-	deployerURL := deployerHTTPURL(endpoint)
 	compose := bootstrapCompose(hostRoot, req.Endpoint, req.Username, req.InsecureSkipVerify)
 	factory := m.NewClient
 	if factory == nil {
@@ -168,19 +250,7 @@ func (m *BootstrapManager) Install(ctx context.Context, req BootstrapRequest) (B
 		return BootstrapResult{}, err
 	}
 	if err := client.EnsureCustomApp(ctx, defaultDeployerApp, compose); err != nil {
-		return BootstrapResult{}, fmt.Errorf("install standalone deployer: %w", err)
-	}
-
-	state := bootstrapState{
-		DeployerApp:  defaultDeployerApp,
-		DeployerURL:  deployerURL,
-		TargetID:     defaultTargetID,
-		ConfiguredAt: time.Now().UTC(),
-	}
-	stateBytes, _ := json.MarshalIndent(state, "", "  ")
-	stateBytes = append(stateBytes, '\n')
-	if err := writePrivateFile(filepath.Join(root, "state.json"), stateBytes); err != nil {
-		return BootstrapResult{}, err
+		return rollback(fmt.Errorf("install standalone deployer: %w", err))
 	}
 
 	return BootstrapResult{
@@ -264,11 +334,7 @@ func validateHostDataPath(path string) error {
 }
 
 func deployerHTTPURL(endpoint *url.URL) string {
-	host := endpoint.Hostname()
-	if strings.Contains(host, ":") {
-		host = "[" + host + "]"
-	}
-	return "http://" + net.JoinHostPort(strings.Trim(host, "[]"), strconv.Itoa(defaultDeployPort))
+	return "http://" + net.JoinHostPort(endpoint.Hostname(), strconv.Itoa(defaultDeployPort))
 }
 
 func bootstrapCompose(hostRoot, endpoint, username string, insecure bool) string {
