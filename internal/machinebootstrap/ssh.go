@@ -333,7 +333,12 @@ docker_cmd logs --tail 40 runnerhub-agent 2>&1 || true
 }
 
 func registryHost(image string) string {
-	first := strings.SplitN(strings.TrimSpace(image), "/", 2)[0]
+	image = strings.TrimSpace(image)
+	parts := strings.SplitN(image, "/", 2)
+	if len(parts) == 1 {
+		return "docker.io"
+	}
+	first := parts[0]
 	if strings.Contains(first, ".") || strings.Contains(first, ":") || strings.EqualFold(first, "localhost") {
 		return first
 	}
