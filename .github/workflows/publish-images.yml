@@ -189,7 +189,7 @@ jobs:
         run: |
           set -euo pipefail
           crane="$(go env GOPATH)/bin/crane"
-          "$crane" auth login ghcr.io -u "$GITHUB_ACTOR" -p "$GITHUB_TOKEN"
+          printf '%s' "$GITHUB_TOKEN" | "$crane" auth login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
           short_tag="sha-${GITHUB_SHA:0:7}"
 
           for image in runnerhub-control runnerhub-agent runnerhub-bootstrap runnerhub-scaleset; do
