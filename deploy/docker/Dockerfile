@@ -7,7 +7,8 @@ COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
 RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" -o /out/runnerhubd ./cmd/runnerhubd && \
-    CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" -o /out/runnerhub-agent ./cmd/runnerhub-agent
+    CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" -o /out/runnerhub-agent ./cmd/runnerhub-agent && \
+    CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" -o /out/runnerhub-deployer ./cmd/runnerhub-deployer
 
 FROM golang:1.26.6-bookworm AS scaleset-build
 WORKDIR /src
@@ -29,6 +30,17 @@ COPY deploy/docker/control-entrypoint.sh /usr/local/bin/runnerhub-control-entryp
 RUN chmod 0755 /usr/local/bin/runnerhub-control-entrypoint
 VOLUME ["/data"]
 ENTRYPOINT ["/usr/local/bin/runnerhub-control-entrypoint"]
+
+# Keep the deployment authority outside the main RunnerHub app so RunnerHub can
+# safely redeploy itself without terminating the coordinator performing the update.
+FROM debian:bookworm-slim AS deployer
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl && rm -rf /var/lib/apt/lists/* && \
+    groupadd --gid 10001 runnerhub && useradd --uid 10001 --gid runnerhub --home-dir /nonexistent --shell /usr/sbin/nologin --no-create-home runnerhub && \
+    mkdir -p /data && chown runnerhub:runnerhub /data
+COPY --from=build /out/runnerhub-deployer /usr/local/bin/runnerhub-deployer
+USER runnerhub
+VOLUME ["/data"]
+ENTRYPOINT ["/usr/local/bin/runnerhub-deployer"]
 
 # The agent talks to the host Docker daemon through /var/run/docker.sock.
 # Use Docker's maintained CLI image so the client API keeps pace with current

@@ -148,6 +148,7 @@ ghcr.io/eutelic/runnerhub-control
 ghcr.io/eutelic/runnerhub-agent
 ghcr.io/eutelic/runnerhub-bootstrap
 ghcr.io/eutelic/runnerhub-scaleset
+ghcr.io/eutelic/runnerhub-deployer
 ```
 
 Verify the release:
@@ -410,6 +411,120 @@ bash deploy/truenas/check-images.sh --tag sha-FULL_COMMIT_SHA
 ```
 
 All RunnerHub services should always move together to the same release SHA.
+
+## Optional automatic Custom App redeployments
+
+RunnerHub can run a small deployment coordinator as a **separate TrueNAS Custom App**. Keep it separate from the main `runnerhub` app: this allows the deployer to update RunnerHub itself without being terminated by the redeploy it is coordinating.
+
+The deployer never gives a workflow the TrueNAS API key or the host Docker socket. A workflow receives only a target-specific RunnerHub deployment token. The server-side policy maps that target to one fixed TrueNAS app and optional health URL.
+
+### TrueNAS prerequisite: TLS
+
+TrueNAS 25.04 revokes a user-linked API key if it is submitted over insecure HTTP/WebSocket transport. Configure HTTPS for the TrueNAS management/API endpoint before enabling the deployer. The deployer intentionally accepts only a `wss://` TrueNAS URL.
+
+Create a dedicated local service user for the deployer and grant only the application roles it needs:
+
+```text
+APPS_READ
+APPS_WRITE
+```
+
+Create a user-linked API key for that service user and save it to:
+
+```text
+/mnt/POOL/runnerhub-deployer/secrets/truenas-api-key
+```
+
+### Create the deployment policy
+
+Generate a random workflow token and store only its SHA-256 digest in the deployer policy:
+
+```bash
+token="$(openssl rand -hex 32)"
+printf '%s\n' "$token"
+printf '%s' "$token" | sha256sum
+```
+
+Keep the plaintext token in the repository's GitHub Actions secret (for example `RUNNERHUB_DEPLOY_TOKEN`). Put the digest in a policy copied from `deployments.example.json`:
+
+```json
+{
+  "targets": [
+    {
+      "id": "sample-app",
+      "repository": "example-org/sample-app",
+      "app": "sample-app",
+      "image": "ghcr.io/example-org/sample-app:latest",
+      "token_sha256": "REPLACE_WITH_64_HEX_SHA256",
+      "health_url": "http://TRUENAS_HOST:3001/health",
+      "timeout_seconds": 120
+    }
+  ]
+}
+```
+
+The workflow cannot override `repository`, `app`, `image`, or `health_url`; those values are trusted server-side configuration. The repository and image fields are also written to the deployment audit from policy rather than accepted from workflow input.
+
+Store the policy at:
+
+```text
+/mnt/POOL/runnerhub-deployer/config/deployments.json
+```
+
+Create a persistent audit directory:
+
+```text
+/mnt/POOL/runnerhub-deployer/data
+```
+
+### Install the standalone deployer
+
+Copy `deploy/truenas/deployer.compose.yaml`, replace:
+
+```text
+/mnt/POOL/runnerhub-deployer
+TRUENAS_HOST
+runnerhub_deployer
+```
+
+and install it as a second TrueNAS Custom App, for example named `runnerhub-deployer`.
+
+The default published port is `8789`. Keep this endpoint on LAN/Tailscale/private infrastructure rather than exposing it directly to the public Internet.
+
+For a TrueNAS certificate signed by a private CA, mount the CA certificate and set `RUNNERHUB_TRUENAS_CA_FILE`. `RUNNERHUB_TRUENAS_TLS_INSECURE_SKIP_VERIFY=true` is available only as an explicit private-network/testing escape hatch; encrypted transport is still required.
+
+### Trigger from GitHub Actions
+
+A self-hosted RunnerHub job that can reach the deployer can request only its preconfigured target:
+
+```yaml
+deploy:
+  needs: publish
+  runs-on: runnerhub
+  steps:
+    - name: Redeploy TrueNAS app
+      env:
+        DEPLOY_TOKEN: ${{ secrets.RUNNERHUB_DEPLOY_TOKEN }}
+        DEPLOY_URL: http://TRUENAS_HOST:8789
+      run: |
+        curl --fail-with-body \
+          -X POST \
+          -H "Authorization: Bearer $DEPLOY_TOKEN" \
+          -H "Content-Type: application/json" \
+          "$DEPLOY_URL/api/v1/deployments/sample-app" \
+          -d "{"repository":"$GITHUB_REPOSITORY","sha":"$GITHUB_SHA","run_id":"$GITHUB_RUN_ID"}"
+```
+
+For each deployment the coordinator:
+
+1. authenticates the target-specific token;
+2. acquires a per-app deployment lock;
+3. calls TrueNAS `app.pull_images(app, {"redeploy": true})` and waits for the job result;
+4. waits for the app state to become `RUNNING`;
+5. runs the configured HTTP health check, when present;
+6. appends a sanitized record to `/data/deployments.jsonl`.
+
+This first implementation is intended for the current `:latest` workflow. Immutable SHA image selection, GitHub OIDC authorization, rollback, and dashboard deployment history remain follow-up hardening.
 
 ## Troubleshooting
 

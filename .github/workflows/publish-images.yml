@@ -125,6 +125,8 @@ jobs:
             image: runnerhub-bootstrap
           - target: scaleset
             image: runnerhub-scaleset
+          - target: deployer
+            image: runnerhub-deployer
     steps:
       - uses: actions/checkout@v6
 
@@ -192,7 +194,7 @@ jobs:
           printf '%s' "$GITHUB_TOKEN" | "$crane" auth login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
           short_tag="sha-${GITHUB_SHA:0:7}"
 
-          for image in runnerhub-control runnerhub-agent runnerhub-bootstrap runnerhub-scaleset; do
+          for image in runnerhub-control runnerhub-agent runnerhub-bootstrap runnerhub-scaleset runnerhub-deployer; do
             ref="ghcr.io/eutelic/${image}"
             source="${ref}:${SOURCE_TAG}"
             source_digest="$("$crane" digest "$source")"

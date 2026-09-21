@@ -1,0 +1,13 @@
+{
+  "targets": [
+    {
+      "id": "example-app",
+      "repository": "example-org/example-app",
+      "app": "example-app",
+      "image": "ghcr.io/example-org/example-app:1.0.0",
+      "token_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "health_url": "http://TRUENAS_HOST:3001/health",
+      "timeout_seconds": 120
+    }
+  ]
+}

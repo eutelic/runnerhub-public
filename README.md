@@ -26,7 +26,7 @@ See [ROADMAP](ROADMAP.md), [security model](docs/SECURITY.md), [release guide](d
 - signed atomic update staging, image/version inventory, local CAS cache and cost/capacity telemetry
 - 100-job simulated lifecycle soak exercising scheduler/store/agent/reconciler with zero simulated stale registrations
 - CI with tests, race detection, vet, `govulncheck`, macOS/Windows agent cross-builds and Docker/TrueNAS-shaped runtime smokes
-- source-free release Compose packaging plus multi-architecture GHCR images for control, agent, bootstrap and scale-set services
+- source-free release Compose packaging plus multi-architecture GHCR images for control, agent, bootstrap, scale-set and standalone TrueNAS deployer services
 - TrueNAS SCALE 24.10+ Custom App deployment with host/image preflights, deterministic YAML generation, persistent state, automatic internal-secret generation, deploy-before-repository onboarding, dynamic scale-set readiness health and post-install verification
 
 ## Scheduling and runner profiles
@@ -56,7 +56,7 @@ No inbound GitHub webhook or public RunnerHub listener is required for this defa
 
 ## Image-based Docker / TrueNAS install
 
-RunnerHub publishes four runtime images to GHCR: `runnerhub-control`, `runnerhub-agent`, `runnerhub-bootstrap`, and `runnerhub-scaleset`. Immutable same-commit tags are published first; `latest` advances only after the coherent image set is validated.
+RunnerHub publishes five runtime images to GHCR: `runnerhub-control`, `runnerhub-agent`, `runnerhub-bootstrap`, `runnerhub-scaleset`, and `runnerhub-deployer`. Immutable same-commit tags are published first; `latest` advances only after the coherent image set is validated.
 
 The normal image-based deployment is repository-independent. Configure the GitHub App client ID, client secret, App slug, private key and RunnerHub public URL, then start the stack. Open the dashboard, sign in with GitHub, install/manage the App, select repositories, and click **Connect**. The dynamic scale-set manager starts or stops repository listeners as connected pools change; no Compose edit or restart is needed.
 

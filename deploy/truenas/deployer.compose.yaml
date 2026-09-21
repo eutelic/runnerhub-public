@@ -1,0 +1,64 @@
+# Standalone RunnerHub TrueNAS deployer Custom App.
+# Install this as a separate TrueNAS Custom App from RunnerHub itself so a
+# RunnerHub redeploy cannot stop the process coordinating that redeploy.
+
+x-runnerhub-deployer:
+  image: &deployer-image ghcr.io/eutelic/runnerhub-deployer:latest
+  data-path: &data-path /mnt/POOL/runnerhub-deployer/data
+  policy-path: &policy-path /mnt/POOL/runnerhub-deployer/config/deployments.json
+  api-key-path: &api-key-path /mnt/POOL/runnerhub-deployer/secrets/truenas-api-key
+  truenas-url: &truenas-url wss://TRUENAS_HOST/api/current
+  truenas-username: &truenas-username runnerhub_deployer
+
+secrets:
+  truenas-api-key:
+    file: *api-key-path
+
+services:
+  init-data:
+    image: *deployer-image
+    pull_policy: always
+    user: "0:0"
+    entrypoint: ["/bin/sh", "-ec"]
+    command: ["mkdir -p /data && chown 10001:10001 /data"]
+    restart: "no"
+    volumes:
+      - type: bind
+        source: *data-path
+        target: /data
+
+  deployer:
+    image: *deployer-image
+    pull_policy: always
+    restart: unless-stopped
+    depends_on:
+      init-data:
+        condition: service_completed_successfully
+    ports:
+      - target: 8080
+        published: "8789"
+        protocol: tcp
+    environment:
+      RUNNERHUB_DEPLOY_HTTP_ADDR: 0.0.0.0:8080
+      RUNNERHUB_DEPLOY_POLICY_FILE: /config/deployments.json
+      RUNNERHUB_DEPLOY_AUDIT_FILE: /data/deployments.jsonl
+      RUNNERHUB_TRUENAS_URL: *truenas-url
+      RUNNERHUB_TRUENAS_USERNAME: *truenas-username
+      RUNNERHUB_TRUENAS_API_KEY_FILE: /run/secrets/truenas-api-key
+      RUNNERHUB_TRUENAS_TLS_INSECURE_SKIP_VERIFY: "false"
+    secrets:
+      - truenas-api-key
+    volumes:
+      - type: bind
+        source: *data-path
+        target: /data
+      - type: bind
+        source: *policy-path
+        target: /config/deployments.json
+        read_only: true
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:8080/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 5s

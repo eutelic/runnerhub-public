@@ -18,14 +18,14 @@ Default validation:
   - deployment shell syntax
   - TrueNAS generator/preflight/verifier/image-tool mock suites
   - development, release, and TrueNAS Compose parsing
-  - native builds of control, agent, bootstrap, and scale-set runtime images
+  - native builds of control, agent, bootstrap, scale-set, and deployer runtime images
   - persisted control DB ownership/symlink migration smoke
 
 --full additionally runs the core/scaleset Go test, race, soak, vet,
 govulncheck, and agent cross-build checks inside the same Go 1.26.6 container
 image used by production builds.
 
---registry-tag TAG additionally verifies that all four GHCR images for TAG are
+--registry-tag TAG additionally verifies that all five GHCR images for TAG are
 readable and publish linux/amd64 + linux/arm64. Docker must already be logged in
 when the packages are private.
 EOF
@@ -83,6 +83,7 @@ images=(
   "$image_prefix-agent"
   "$image_prefix-bootstrap"
   "$image_prefix-scaleset"
+  "$image_prefix-deployer"
 )
 
 tmp="$(mktemp -d "${RUNNER_TEMP:-/tmp}/runnerhub-release.XXXXXX")"
@@ -144,6 +145,7 @@ chmod 0600 "$envfile"
 docker compose --env-file "$envfile" -f deploy/docker/compose.yaml --profile autoscale config >/dev/null
 docker compose --env-file "$envfile" -f deploy/docker/compose.release.yaml config >/dev/null
 docker compose -f deploy/truenas/compose.yaml config >/dev/null
+docker compose -f deploy/truenas/deployer.compose.yaml config >/dev/null
 
 step 'Build all published runtime image targets'
 version="local-validation"
@@ -155,6 +157,7 @@ docker build --build-arg "VERSION=$version" --target control -f deploy/docker/Do
 docker build --build-arg "VERSION=$version" --target agent -f deploy/docker/Dockerfile -t "${images[1]}" .
 docker build --build-arg "VERSION=$version" --target bootstrap -f deploy/docker/Dockerfile -t "${images[2]}" .
 docker build --build-arg "VERSION=$version" --target scaleset -f deploy/docker/Dockerfile -t "${images[3]}" .
+docker build --build-arg "VERSION=$version" --target deployer -f deploy/docker/Dockerfile -t "${images[4]}" .
 
 step 'Exercise persisted control-data ownership migration'
 bash deploy/docker/test-control-data-ownership.sh "${images[0]}"

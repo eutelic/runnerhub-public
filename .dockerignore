@@ -26,6 +26,7 @@ runnerhub.db-wal
 # Local build outputs
 /runnerhubd
 /runnerhub-agent
+/runnerhub-deployer
 /scaleset/runnerhub-scaleset
 *.out
 coverage*
