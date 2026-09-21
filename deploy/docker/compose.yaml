@@ -42,7 +42,7 @@ services:
       RUNNERHUB_HOST_NAME: ${RUNNERHUB_HOST_NAME:-docker-host}
       RUNNERHUB_RUNNER_IMAGE: ${RUNNERHUB_RUNNER_IMAGE:-ghcr.io/actions/actions-runner:2.337.0@sha256:e5496277be5d09bc968b3d64911b74e219ac4a3f2edce956a3ecf9271bea1ef4}
       RUNNERHUB_DOCKER_PULL_POLICY: ${RUNNERHUB_DOCKER_PULL_POLICY:-always}
-      RUNNERHUB_DIND_IMAGE: ${RUNNERHUB_DIND_IMAGE:-docker:dind}
+      RUNNERHUB_DIND_IMAGE: ${RUNNERHUB_DIND_IMAGE:-docker:29.8.1-dind@sha256:3f3c01aaaebf7cce837356b688b7c059a4749f10bd7660dec7c58fc454a283f0}
       RUNNERHUB_ALLOW_PRIVILEGED_WORKERS: ${RUNNERHUB_ALLOW_PRIVILEGED_WORKERS:-false}
     volumes:
       # The agent is trusted infrastructure and needs the host Docker API to

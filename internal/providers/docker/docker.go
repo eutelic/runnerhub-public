@@ -92,12 +92,17 @@ func newWithRunner(cfg Config, r CommandRunner) (*Provider, error) {
 		cfg.PullPolicy = "always"
 	}
 	if cfg.DinDImage == "" {
-		cfg.DinDImage = "docker:dind"
+		cfg.DinDImage = images.DefaultDinDImage
 	}
 	switch cfg.PullPolicy {
 	case "always", "missing", "never":
 	default:
 		return nil, fmt.Errorf("unsupported Docker pull policy %q; expected always, missing, or never", cfg.PullPolicy)
+	}
+	if cfg.AllowPrivilegedWorkers {
+		if err := images.ValidatePinned(cfg.DinDImage); err != nil {
+			return nil, fmt.Errorf("Docker-in-Docker image must be digest-pinned when privileged workers are enabled: %w", err)
+		}
 	}
 	a := map[string]struct{}{}
 	for _, i := range cfg.AllowedImages {
@@ -430,9 +435,23 @@ exit 1`
 		"--mount", "type=bind,src=" + workDir + ",dst=/home/runner/_work",
 		"--mount", "type=bind,src=" + runDir + ",dst=" + dindSocketDir,
 		"--mount", "type=bind,src=" + externalsDir + ",dst=/home/runner/externals,readonly",
-		p.cfg.DinDImage,
-		"dockerd", "--host=unix://" + dindSocketPath, "--group=" + runnerDockerGroup,
 	}
+	// The scheduler reserves one resource envelope for the runner and one for
+	// the privileged DinD sidecar. Apply the same per-container ceiling here so
+	// neither outer container can exceed the resources RunnerHub accounted for.
+	if s.Resources.CPUMillis > 0 {
+		dindArgs = append(dindArgs, "--cpus", strconv.FormatFloat(float64(s.Resources.CPUMillis)/1000, 'f', 3, 64))
+	}
+	if s.Resources.MemoryBytes > 0 {
+		dindArgs = append(dindArgs, "--memory", strconv.FormatInt(s.Resources.MemoryBytes, 10))
+	}
+	dindArgs = append(dindArgs,
+		p.cfg.DinDImage,
+		"dockerd",
+		"--host=unix://"+dindSocketPath,
+		"--group="+runnerDockerGroup,
+		"--registry-mirror=https://mirror.gcr.io",
+	)
 	if _, err := p.run.Run(ctx, p.cfg.DockerBinary, dindArgs...); err != nil {
 		if existing, findErr := p.findExact(ctx, dindName); findErr != nil || existing == "" {
 			_, _ = p.run.Run(ctx, p.cfg.DockerBinary, "rm", "-f", runnerID)

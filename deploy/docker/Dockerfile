@@ -45,7 +45,7 @@ ENTRYPOINT ["/usr/local/bin/runnerhub-deployer"]
 # The agent talks to the host Docker daemon through /var/run/docker.sock.
 # Use Docker's maintained CLI image so the client API keeps pace with current
 # Docker Engine releases instead of Debian Bookworm's older docker.io client.
-FROM docker:29-cli AS agent
+FROM docker:29.8.1-cli@sha256:018edbc908e08fcc9dbf029c812c34251e9b4719e6f71ca0e5eae2a987d014ca AS agent
 RUN apk add --no-cache ca-certificates
 COPY --from=build /out/runnerhub-agent /usr/local/bin/runnerhub-agent
 COPY deploy/docker/secret-file.sh /usr/local/lib/runnerhub/secret-file.sh

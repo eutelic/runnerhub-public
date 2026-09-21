@@ -25,10 +25,12 @@ RUNNERHUB_ALLOW_PRIVILEGED_WORKERS=true
 
 Both settings are required. The control plane rejects a DinD pool when privileged workers are disabled, and the Docker agent independently refuses and does not advertise `container-dind` unless the same privileged-worker flag is enabled on that host. This keeps a misconfigured control plane from silently turning a default Docker host into a privileged execution host.
 
+The private DinD daemon is started with Google's documented `mirror.gcr.io` Docker Hub cache as a registry mirror. Cached public Docker Hub pulls avoid Docker Hub pull-rate quota, while uncached images can fall back to Docker Hub.
+
 For every DinD worker, RunnerHub creates:
 
 - the normal ephemeral Actions runner container;
-- a separate `docker:dind` sidecar dedicated to that worker;
+- a separate `docker:29.8.1-dind@sha256:3f3c01aaaebf7cce837356b688b7c059a4749f10bd7660dec7c58fc454a283f0` sidecar dedicated to that worker;
 - a private shared Unix-socket directory exposed to the runner as `DOCKER_HOST=unix:///var/run/docker.sock`;
 - shared work and runner-externals paths so the inner Docker daemon can launch GitHub container actions correctly;
 - a shared **runner network namespace** (`--network container:<runner-id>`) so service-container ports published by the inner Docker daemon are reachable from normal runner steps at the expected host-style addresses.
@@ -42,7 +44,7 @@ The DinD sidecar itself uses Docker `--privileged`. Docker treats privileged con
 The infrastructure image is configurable:
 
 ```dotenv
-RUNNERHUB_DIND_IMAGE=docker:dind
+RUNNERHUB_DIND_IMAGE=docker:29.8.1-dind@sha256:3f3c01aaaebf7cce837356b688b7c059a4749f10bd7660dec7c58fc454a283f0
 ```
 
 For reproducible installations, pin this to a tested Docker DinD version/digest rather than relying indefinitely on the moving tag.

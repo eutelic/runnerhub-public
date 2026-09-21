@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/eutelic/runnerhub/internal/core"
+	"github.com/eutelic/runnerhub/internal/images"
 	"github.com/eutelic/runnerhub/internal/provider"
 )
 
@@ -128,11 +129,11 @@ func TestCreateDinDUsesPrivateSidecarSocketNotHostSocket(t *testing.T) {
 		}
 		return "", nil
 	}}
-	p, err := newWithRunner(Config{StateDir: t.TempDir(), AllowedImages: []string{"img"}, DinDImage: "docker:dind", AllowPrivilegedWorkers: true}, f)
+	p, err := newWithRunner(Config{StateDir: t.TempDir(), AllowedImages: []string{"img"}, DinDImage: images.DefaultDinDImage, AllowPrivilegedWorkers: true}, f)
 	if err != nil {
 		t.Fatal(err)
 	}
-	h, err := p.Create(context.Background(), provider.WorkerSpec{WorkerID: "w1", PoolID: "p1", RunnerName: "r1", JITConfig: "jit", Image: "img", Isolation: core.IsolationContainerDinD})
+	h, err := p.Create(context.Background(), provider.WorkerSpec{WorkerID: "w1", PoolID: "p1", RunnerName: "r1", JITConfig: "jit", Image: "img", Isolation: core.IsolationContainerDinD, Resources: core.Resources{CPUMillis: 2500, MemoryBytes: 8 << 30}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -174,12 +175,15 @@ func TestCreateDinDUsesPrivateSidecarSocketNotHostSocket(t *testing.T) {
 	if !strings.Contains(joined, "--name runnerhub-w1-dind") ||
 		!strings.Contains(joined, "--privileged") ||
 		!strings.Contains(joined, "--network container:runner123") ||
-		!strings.Contains(joined, "docker:dind dockerd --host=unix:///run/runnerhub-docker/docker.sock") ||
+		!strings.Contains(joined, images.DefaultDinDImage+" dockerd --host=unix:///run/runnerhub-docker/docker.sock") ||
 		!strings.Contains(joined, "--group=123") {
 		t.Fatalf("Docker-in-Docker sidecar missing required configuration: %s", joined)
 	}
 	if !strings.Contains(joined, "--group-add 123") {
 		t.Fatalf("runner did not receive Docker socket supplementary gid: %s", joined)
+	}
+	if strings.Count(joined, "--cpus 2.500") < 2 || strings.Count(joined, "--memory 8589934592") < 2 {
+		t.Fatalf("runner and DinD sidecar did not both receive accounted CPU/RAM ceilings: %s", joined)
 	}
 	if strings.Contains(joined, "--group-add 1001") || strings.Contains(joined, "--group=1001") {
 		t.Fatalf("runner primary gid was incorrectly used as Docker socket group: %s", joined)
@@ -218,7 +222,7 @@ func TestCreateDinDFailsFastWhenRunnerCannotReadJITMount(t *testing.T) {
 		}
 		return "", nil
 	}}
-	p, err := newWithRunner(Config{StateDir: stateDir, AllowedImages: []string{"img"}, DinDImage: "docker:dind", AllowPrivilegedWorkers: true}, f)
+	p, err := newWithRunner(Config{StateDir: stateDir, AllowedImages: []string{"img"}, DinDImage: images.DefaultDinDImage, AllowPrivilegedWorkers: true}, f)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -253,7 +257,7 @@ func TestCreateDinDUsesRunnerProcessForSocketReadiness(t *testing.T) {
 		}
 	}}
 	p, err := newWithRunner(Config{
-		StateDir: stateDir, AllowedImages: []string{"img"}, DinDImage: "docker:dind", AllowPrivilegedWorkers: true,
+		StateDir: stateDir, AllowedImages: []string{"img"}, DinDImage: images.DefaultDinDImage, AllowPrivilegedWorkers: true,
 	}, f)
 	if err != nil {
 		t.Fatal(err)
@@ -318,6 +322,16 @@ func TestDinDRequiresHostPrivilegedGate(t *testing.T) {
 	err = p.Validate(context.Background(), provider.WorkerSpec{WorkerID: "w1", PoolID: "p1", RunnerName: "r1", JITConfig: "jit", Image: "img", Isolation: core.IsolationContainerDinD})
 	if err == nil || !strings.Contains(err.Error(), "RUNNERHUB_ALLOW_PRIVILEGED_WORKERS=true") {
 		t.Fatalf("container-dind host gate err=%v", err)
+	}
+}
+
+func TestPrivilegedDinDRejectsMovingImageTag(t *testing.T) {
+	_, err := newWithRunner(Config{
+		StateDir: t.TempDir(), AllowedImages: []string{"img"},
+		DinDImage: "docker:dind", AllowPrivilegedWorkers: true,
+	}, &fakeRunner{})
+	if err == nil || !strings.Contains(err.Error(), "digest-pinned") {
+		t.Fatalf("moving privileged DinD image tag accepted: %v", err)
 	}
 }
 

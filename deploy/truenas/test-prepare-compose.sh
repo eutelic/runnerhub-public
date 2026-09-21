@@ -67,14 +67,14 @@ bash "$prepare" \
   --isolation container-dind \
   --runnerhub-tag sha-deadbeef \
   --runner-image ghcr.io/actions/actions-runner:2.328.0 \
-  --dind-image docker:28-dind \
+  --dind-image docker:28-dind@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
   --output "$dind"
 
 grep -Fq 'published: "9876"' "$dind"
 grep -Fq 'pool-isolation: &pool-isolation container-dind' "$dind"
 grep -Fq 'allow-privileged-workers: &allow-privileged-workers "true"' "$dind"
 grep -Fq 'runner-image: &runner-image ghcr.io/actions/actions-runner:2.328.0' "$dind"
-grep -Fq 'dind-image: &dind-image docker:28-dind' "$dind"
+grep -Fq 'dind-image: &dind-image docker:28-dind@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' "$dind"
 grep -Fq 'public-url: &public-url https://runnerhub.example.com' "$dind"
 for image in control agent bootstrap scaleset; do
   grep -Fq "ghcr.io/eutelic/runnerhub-${image}:sha-deadbeef" "$dind"
@@ -169,6 +169,20 @@ if bash "$prepare" \
   --public-url http://localhost:8787 \
   --port 70000 >/dev/null 2>&1; then
   echo 'invalid dashboard port unexpectedly succeeded' >&2
+  exit 1
+fi
+
+
+
+if bash "$prepare" \
+  --root /mnt/tank/runnerhub \
+  --github-app-id 42424242 \
+  --github-client-id Iv1.test \
+  --github-app-slug runnerhub-test \
+  --public-url http://localhost:8787 \
+  --allow-privileged-workers true \
+  --dind-image docker:dind >/dev/null 2>&1; then
+  echo 'moving DinD image tag unexpectedly succeeded with privileged workers' >&2
   exit 1
 fi
 

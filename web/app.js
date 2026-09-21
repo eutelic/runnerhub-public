@@ -22,6 +22,7 @@ let auth={enabled:false,authenticated:false};
 els.token.value=sessionStorage.getItem('runnerhub-token')||'';
 els.token.addEventListener('input',()=>{sessionStorage.setItem('runnerhub-token',els.token.value);refresh()});
 document.getElementById('create').addEventListener('click',createPool);
+document.getElementById('machine-scan-fingerprint').addEventListener('click',scanMachineHostKey);
 document.getElementById('add-machine').addEventListener('click',addMachine);
 els.logout.addEventListener('click',logout);
 els.hosts.addEventListener('click',e=>{const button=e.target.closest('button[data-host-tags]');if(button)saveHostTags(button)});
@@ -355,7 +356,7 @@ function runnerProfileEditor(repo,profiles,standardConnected){
   const disabled=standardConnected?'':' disabled';
   return '<details class="repo-config profile-config">'+
     '<summary>Custom runner profiles'+(active.length?' ('+active.length+')':'')+'</summary>'+
-    '<div class="resource-note muted">Tags are hard placement constraints. Use host priority for normal scheduling preference; use a custom profile when a workflow must explicitly target a machine class such as <code>runnerhub-fast</code>.</div>'+
+    '<div class="resource-note muted">Tags are hard placement constraints. Use host priority for normal scheduling preference; use a custom profile when a workflow must explicitly target a machine class such as <code>runnerhub-fast</code>. Docker-capable profiles reserve two host CPU/RAM envelopes per runner (runner + private DinD sidecar).</div>'+
     (existing?'<div class="profile-list">'+existing+'</div>':'')+
     '<div class="resource-grid">'+
       '<label>Profile name<input data-profile-field="name" placeholder="fast"'+disabled+'></label>'+
@@ -439,6 +440,21 @@ function renderRepos(repos,pools,statuses,runtimeHealth,hosts){
   }).join('');
 }
 
+async function scanMachineHostKey(){
+  const button=document.getElementById('machine-scan-fingerprint');
+  const address=document.getElementById('machine-address').value.trim();
+  if(!address)return message('Enter the machine IP / hostname before scanning its SSH host key.','error');
+  button.disabled=true;
+  try{
+    message('Scanning SSH host keys for '+address+'…');
+    const result=await j('/api/v1/hosts/ssh-fingerprints',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({address})});
+    const fingerprints=Array.isArray(result?.fingerprints)?result.fingerprints:[];
+    if(!fingerprints.length)throw new Error('No SSH host-key fingerprints were returned.');
+    if(fingerprints.length===1)document.getElementById('machine-host-fingerprint').value=fingerprints[0];
+    message('Observed SSH fingerprint'+(fingerprints.length===1?'':'s')+': '+fingerprints.join(', ')+'. Compare with a trusted console, then paste the matching SHA256 fingerprint before adding the machine.','success');
+  }catch(e){message(e.message,'error')}finally{button.disabled=false}
+}
+
 async function addMachine(){
   const button=document.getElementById('add-machine');
   const body={
@@ -447,6 +463,7 @@ async function addMachine(){
     name:document.getElementById('machine-name').value.trim(),
     tags:document.getElementById('machine-tags').value.split(',').map(x=>x.trim()).filter(Boolean),
     priority:Number(document.getElementById('machine-priority').value||0),
+    hostKeyFingerprint:document.getElementById('machine-host-fingerprint').value.trim(),
     password:document.getElementById('machine-password').value,
     sudoPassword:document.getElementById('machine-sudo-password').value,
     privateKey:document.getElementById('machine-private-key').value,
@@ -456,10 +473,12 @@ async function addMachine(){
     allowPrivilegedWorkers:document.getElementById('machine-allow-privileged').checked
   };
   if(!body.address||!body.user||!body.name)return message('Machine address, SSH user, and RunnerHub name are required.','error');
+  if(!body.hostKeyFingerprint)return message('Verify and enter the SSH host key fingerprint before adding the machine.','error');
   button.disabled=true;
   try{
     message('Connecting to '+body.address+' and enrolling '+body.name+'…');
     const host=await j('/api/v1/hosts/bootstrap',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});
+    document.getElementById('machine-host-fingerprint').value='';
     document.getElementById('machine-password').value='';
     document.getElementById('machine-sudo-password').value='';
     document.getElementById('machine-private-key').value='';

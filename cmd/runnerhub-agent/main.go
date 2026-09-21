@@ -38,7 +38,7 @@ func main() {
 			StateDir:               stateDir,
 			AllowedImages:          []string{env("RUNNERHUB_RUNNER_IMAGE", images.DefaultRunnerImage)},
 			PullPolicy:             env("RUNNERHUB_DOCKER_PULL_POLICY", "always"),
-			DinDImage:              env("RUNNERHUB_DIND_IMAGE", "docker:dind"),
+			DinDImage:              env("RUNNERHUB_DIND_IMAGE", images.DefaultDinDImage),
 			AllowPrivilegedWorkers: boolEnv("RUNNERHUB_ALLOW_PRIVILEGED_WORKERS", false),
 		})
 		must(err)

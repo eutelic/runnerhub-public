@@ -124,3 +124,34 @@ func TestRegistryHost(t *testing.T) {
 		}
 	}
 }
+
+
+func TestSSHCommandUsesStrictHostKeyCheckingWhenFingerprintPinned(t *testing.T) {
+	req := Request{
+		Address:            "compute.example:2222",
+		User:               "compute",
+		HostKeyFingerprint: "SHA256:abc123",
+	}
+	args, _, err := sshCommand(req, "ssh", "sshpass", "/tmp/known_hosts", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(args, " ")
+	if !strings.Contains(joined, "StrictHostKeyChecking=yes") {
+		t.Fatalf("pinned fingerprint did not force strict host-key checking: %s", joined)
+	}
+	if !strings.Contains(joined, "UserKnownHostsFile=/tmp/known_hosts") {
+		t.Fatalf("pinned host-key file missing: %s", joined)
+	}
+}
+
+func TestSSHCommandUsesTOFUOnlyWithoutFingerprint(t *testing.T) {
+	req := Request{Address: "compute.example", User: "compute"}
+	args, _, err := sshCommand(req, "ssh", "sshpass", "/tmp/known_hosts", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if joined := strings.Join(args, " "); !strings.Contains(joined, "StrictHostKeyChecking=accept-new") {
+		t.Fatalf("unpinned bootstrap did not use accept-new fallback: %s", joined)
+	}
+}

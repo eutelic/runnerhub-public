@@ -22,7 +22,7 @@ x-runnerhub-config:
   pool-isolation: &pool-isolation container-trusted
   allow-privileged-workers: &allow-privileged-workers "false"
   diagnostics-enabled: &diagnostics-enabled "false"
-  dind-image: &dind-image docker:dind
+  dind-image: &dind-image docker:29.8.1-dind@sha256:3f3c01aaaebf7cce837356b688b7c059a4749f10bd7660dec7c58fc454a283f0
 
 secrets:
   runnerhub-github-app:

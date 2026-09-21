@@ -48,7 +48,7 @@ port="8787"
 isolation="container-trusted"
 runnerhub_tag="latest"
 runner_image="ghcr.io/actions/actions-runner:2.337.0@sha256:e5496277be5d09bc968b3d64911b74e219ac4a3f2edce956a3ecf9271bea1ef4"
-dind_image="docker:dind"
+dind_image="docker:29.1.3-dind@sha256:173f284a4299164772a90f52b373e73e087583c0963f1334c9995f190ef6f3f5"
 allow_privileged_override=""
 output=""
 
@@ -121,6 +121,9 @@ fi
 if [[ "$isolation" == "container-dind" && "$allow_privileged" != "true" ]]; then
   fail '--isolation container-dind requires --allow-privileged-workers true'
 fi
+if [[ "$allow_privileged" == "true" && ! "$dind_image" =~ @sha256:[0-9a-f]{64}$ ]]; then
+  fail '--dind-image must be pinned by lowercase sha256 digest when privileged workers are enabled'
+fi
 
 for marker in \
   '/mnt/POOL/runnerhub' \
@@ -163,8 +166,8 @@ sed \
   -e "s|published: \"8787\"|published: \"$port_esc\"|" \
   -e "s|pool-isolation: &pool-isolation container-trusted|pool-isolation: \&pool-isolation $isolation_esc|" \
   -e "s|allow-privileged-workers: &allow-privileged-workers \"false\"|allow-privileged-workers: \&allow-privileged-workers \"$allow_privileged_esc\"|" \
-  -e "s|runner-image: &runner-image ghcr.io/actions/actions-runner:2.337.0@sha256:e5496277be5d09bc968b3d64911b74e219ac4a3f2edce956a3ecf9271bea1ef4|runner-image: \&runner-image $runner_image_esc|" \
-  -e "s|dind-image: &dind-image docker:dind|dind-image: \&dind-image $dind_image_esc|" \
+  -e "s|^  runner-image: &runner-image .*|  runner-image: \&runner-image $runner_image_esc|" \
+  -e "s|^  dind-image: &dind-image .*|  dind-image: \&dind-image $dind_image_esc|" \
   -e "s|ghcr.io/eutelic/runnerhub-control:latest|ghcr.io/eutelic/runnerhub-control:$tag_esc|" \
   -e "s|ghcr.io/eutelic/runnerhub-agent:latest|ghcr.io/eutelic/runnerhub-agent:$tag_esc|" \
   -e "s|ghcr.io/eutelic/runnerhub-bootstrap:latest|ghcr.io/eutelic/runnerhub-bootstrap:$tag_esc|" \
