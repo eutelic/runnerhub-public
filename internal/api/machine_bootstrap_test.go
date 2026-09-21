@@ -50,6 +50,7 @@ func TestBootstrapHostPassesEphemeralCredentialsAndPublisherCapability(t *testin
 		"address":"TRUENAS_HOST",
 		"user":"compute",
 		"password":"ssh-and-sudo-password",
+		"hostKeyFingerprint":"SHA256:trusted-host-key",
 		"name":"compute",
 		"tags":["fast"],
 		"priority":100,
@@ -69,6 +70,9 @@ func TestBootstrapHostPassesEphemeralCredentialsAndPublisherCapability(t *testin
 	}
 	if capture.req.SudoPassword != "ssh-and-sudo-password" {
 		t.Fatalf("sudo password fallback=%q", capture.req.SudoPassword)
+	}
+	if capture.req.HostKeyFingerprint != "SHA256:trusted-host-key" {
+		t.Fatalf("host fingerprint=%q", capture.req.HostKeyFingerprint)
 	}
 	if capture.req.RegistryUsername != "example-user" || capture.req.RegistryPassword != "registry-token" {
 		t.Fatalf("registry credentials not forwarded: user=%q password=%q", capture.req.RegistryUsername, capture.req.RegistryPassword)
