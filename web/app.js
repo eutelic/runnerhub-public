@@ -231,8 +231,8 @@ async function installDeployer(){
     healthUrl:document.getElementById('deployer-health-url').value.trim(),
     insecureSkipVerify:document.getElementById('deployer-insecure-tls').checked
   };
-  if(!body.endpoint||!body.username||!body.apiKey||!body.hostDataPath||!body.healthUrl){
-    return message('TrueNAS URL, service user, API key, RunnerHub data path, and health URL are required.','error');
+  if(!body.endpoint||!body.username||!body.apiKey||!body.healthUrl){
+    return message('TrueNAS URL, service user, API key, and health URL are required.','error');
   }
   button.disabled=true;
   show(els.deployerTokenResult,false);
