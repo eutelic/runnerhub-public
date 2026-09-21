@@ -70,8 +70,9 @@ func (s Scheduler) SelectHost(ctx context.Context, pool core.RunnerPool) (Decisi
 			continue
 		}
 		u := used[h.ID]
-		score := (h.Capacity.CPUMillis - u.CPUMillis - pool.Resources.CPUMillis) +
-			(h.Capacity.MemoryBytes-u.MemoryBytes-pool.Resources.MemoryBytes)/(1024*1024)
+		req := EffectivePoolResources(h, pool)
+		score := (h.Capacity.CPUMillis - u.CPUMillis - req.CPUMillis) +
+			(h.Capacity.MemoryBytes-u.MemoryBytes-req.MemoryBytes)/(1024*1024)
 		candidates = append(candidates, candidate{h: h, used: u, priority: h.Priority, score: score})
 	}
 	if len(candidates) == 0 {
@@ -206,6 +207,9 @@ func EffectiveWorkerResources(w core.Worker) core.Resources {
 	if tmpfsWorkdir(w.ProviderID, w.Isolation) {
 		r.DiskBytes = 0
 	}
+	if dockerDinD(w.ProviderID, w.Isolation) {
+		r = conservativeDinDReservation(r)
+	}
 	return r
 }
 
@@ -214,7 +218,32 @@ func EffectivePoolResources(h core.Host, pool core.RunnerPool) core.Resources {
 	if tmpfsWorkdir(h.Provider, pool.Isolation) {
 		r.DiskBytes = 0
 	}
+	if dockerDinD(h.Provider, pool.Isolation) {
+		r = conservativeDinDReservation(r)
+	}
 	return r
+}
+
+func dockerDinD(provider string, isolation core.IsolationMode) bool {
+	return provider == "docker" && isolation == core.IsolationContainerDinD
+}
+
+func conservativeDinDReservation(r core.Resources) core.Resources {
+	// A DinD worker is two outer containers: the Actions runner and a privileged
+	// Docker daemon. Both receive the requested per-container CPU/RAM ceiling,
+	// so reserve two envelopes at the host scheduler. Disk is already backed by
+	// the host and is reserved once; GPU assignment also remains singular.
+	r.CPUMillis = saturatingDouble(r.CPUMillis)
+	r.MemoryBytes = saturatingDouble(r.MemoryBytes)
+	return r
+}
+
+func saturatingDouble(v int64) int64 {
+	const maxInt64 = int64(9223372036854775807)
+	if v > maxInt64/2 {
+		return maxInt64
+	}
+	return v * 2
 }
 
 func tmpfsWorkdir(provider string, isolation core.IsolationMode) bool {
