@@ -66,7 +66,7 @@ func NewTrueNASClient(cfg TrueNASConfig) (*TrueNASClient, error) {
 
 	tlsConfig := &tls.Config{
 		MinVersion:         tls.VersionTLS12,
-		InsecureSkipVerify: cfg.InsecureSkipVerify, // explicitly opt-in for private/self-signed deployments
+		InsecureSkipVerify: cfg.InsecureSkipVerify, // #nosec G402 -- explicit operator opt-in for private/self-signed TrueNAS endpoints; CA pinning remains supported
 	}
 	if strings.TrimSpace(cfg.CAFile) != "" {
 		pem, err := os.ReadFile(cfg.CAFile)
