@@ -368,9 +368,12 @@ async function refresh(){
       j('/api/v1/runtime-health'),
       j('/api/v1/deployer/status').catch(e=>({available:false,configured:false,detail:e.message}))
     ];
-    if(auth.authenticated)requests.push(j('/api/v1/github/connected-repositories'));
+    if(auth.authenticated){
+      requests.push(j('/api/v1/github/connected-repositories'));
+      requests.push(j('/api/v1/github/installations'));
+    }
     const results=await Promise.all(requests);
-    const [h,p,w,progress,a,statuses,runtimeHealth,deployer,repos]=results;
+    const [h,p,w,progress,a,statuses,runtimeHealth,deployer,repos,installations]=results;
     const listenerByPool=new Map((statuses||[]).map(x=>[x.poolId,x]));
     const runtimeByPool=new Map((runtimeHealth||[]).map(x=>[x.poolId,x]));
     const poolByID=new Map((p||[]).map(x=>[x.id,x]));
@@ -416,7 +419,7 @@ async function refresh(){
       ['Result',x=>x.result],
       ['Detail',x=>x.safeDetail||'']
     ]);
-    if(auth.authenticated&&!els.repos.querySelector('.repo-config[open]'))renderRepos(repos||[],p||[],statuses||[],runtimeHealth||[],h||[]);
+    if(auth.authenticated&&!els.repos.querySelector('.repo-config[open]'))renderRepos(repos||[],p||[],statuses||[],runtimeHealth||[],h||[],installations||[]);
   }catch(e){message(e.message,'error')}
 }
 
@@ -510,7 +513,7 @@ function runnerProfileEditor(repo,profiles,standardConnected){
   '</details>';
 }
 
-function renderRepos(repos,pools,statuses,runtimeHealth,hosts){
+function renderRepos(repos,pools,statuses,runtimeHealth,hosts,installations){
   const poolsByRepo=new Map();
   (pools||[]).filter(p=>p.scope?.kind==='repository').forEach(p=>{
     const key=(p.scope.owner+'/'+p.scope.repository).toLowerCase();
@@ -523,19 +526,31 @@ function renderRepos(repos,pools,statuses,runtimeHealth,hosts){
   const statusByPool=new Map((statuses||[]).map(s=>[s.poolId,s]));
   const runtimeByPool=new Map((runtimeHealth||[]).map(s=>[s.poolId,s]));
   const publisherHostAvailable=(hosts||[]).some(h=>h.state==='online'&&h.tags?.['isolation.container-dind']==='true');
+  const installationByAccount=new Map((installations||[]).map(x=>[String(x.account||'').toLowerCase(),x]));
+  const hasPersonalInstallation=(installations||[]).some(x=>String(x.accountType||'').toLowerCase()==='user');
+  const installedAccountText=(installations||[]).length
+    ? (installations||[]).map(x=>'@'+String(x.account||'')+' · '+(String(x.accountType||'').toLowerCase()==='user'?'personal':'organization')).join(' · ')
+    : 'No GitHub App installations detected.';
+  const accountHint='<div class="repo-account-summary"><div><strong>GitHub App accounts</strong><div class="muted small">'+esc(installedAccountText)+'</div></div>'+
+    (!hasPersonalInstallation?'<a class="button secondary compact" href="/auth/github/install">Add personal account</a>':'')+
+    '</div>';
+
   if(!repos.length){
-    els.repos.innerHTML='<div class="empty">No repositories are available through the GitHub App installation. Use <strong>Manage repositories</strong> to grant access.</div>';
+    els.repos.innerHTML=accountHint+'<div class="empty">No repositories are available through the installed GitHub App accounts. Use <strong>Add / manage accounts</strong> to install RunnerHub on your personal account or grant repository access.</div>';
     return;
   }
 
   const sorted=[...repos].sort((a,b)=>{
+    const aa=String(a.account||a.fullName?.split('/')[0]||'').toLowerCase();
+    const ba=String(b.account||b.fullName?.split('/')[0]||'').toLowerCase();
+    if(aa!==ba)return aa.localeCompare(ba);
     const ac=poolsByRepo.get(a.fullName.toLowerCase())?.standard?1:0;
     const bc=poolsByRepo.get(b.fullName.toLowerCase())?.standard?1:0;
     if(ac!==bc)return bc-ac;
     return a.fullName.localeCompare(b.fullName);
   });
 
-  els.repos.innerHTML=sorted.map(repo=>{
+  function renderRepoCard(repo){
     const entry=poolsByRepo.get(repo.fullName.toLowerCase())||{standard:null,publisher:null,profiles:[]};
     const pool=entry.standard;
     const publisher=entry.publisher;
@@ -578,9 +593,29 @@ function renderRepos(repos,pools,statuses,runtimeHealth,hosts){
       (repo.private?runnerProfileEditor(repo,entry.profiles,Boolean(pool)):'')+
       (repo.private?publisherEditor(repo,publisher,publisherStatus,publisherRuntime,publisherHostAvailable,Boolean(pool)):'')+
       '</article>';
-  }).join('');
-}
+  }
 
+  const grouped=new Map();
+  for(const repo of sorted){
+    const account=String(repo.account||repo.fullName?.split('/')[0]||'unknown');
+    const key=account.toLowerCase();
+    const group=grouped.get(key)||{account,repos:[]};
+    group.repos.push(repo);
+    grouped.set(key,group);
+  }
+
+  const groups=[...grouped.values()].map(group=>{
+    const installation=installationByAccount.get(group.account.toLowerCase());
+    const accountType=String(installation?.accountType||group.repos[0]?.accountType||'').toLowerCase();
+    const label=accountType==='user'?'Personal account':accountType==='organization'?'Organization':'GitHub account';
+    return '<section class="repo-account-group">'+
+      '<div class="repo-account-head"><div><h3>@'+esc(group.account)+'</h3><div class="muted small">'+esc(label)+' · '+group.repos.length+' repositor'+(group.repos.length===1?'y':'ies')+'</div></div></div>'+
+      '<div class="repo-account-grid">'+group.repos.map(renderRepoCard).join('')+'</div>'+
+      '</section>';
+  }).join('');
+
+  els.repos.innerHTML=accountHint+groups;
+}
 async function scanMachineHostKey(){
   const button=document.getElementById('machine-scan-fingerprint');
   const address=document.getElementById('machine-address').value.trim();

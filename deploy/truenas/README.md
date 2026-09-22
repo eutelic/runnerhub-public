@@ -280,7 +280,21 @@ Install / manage repositories
 
 GitHub then lets you install the RunnerHub App on your user/org and choose **All repositories** or **Only select repositories**.
 
-After GitHub redirects back to RunnerHub, the dashboard lists repositories available through that App installation.
+After GitHub redirects back to RunnerHub, the dashboard lists repositories available through every installation of that App that the signed-in RunnerHub owner can access. Repositories are grouped by GitHub account, so a personal installation and one or more organization installations can be used by the same RunnerHub deployment.
+
+### Personal repositories and multiple accounts
+
+To use both organization repositories and personal repositories with one RunnerHub deployment, configure the GitHub App as **Any account** rather than **Only on this account**. GitHub only allows a private/owner-only App to be installed on the account that owns it.
+
+Then use **Add / manage accounts** in RunnerHub and install the same GitHub App on each desired account:
+
+1. install it on the organization, such as `eutelic`;
+2. install it on the personal account, such as `example-user`;
+3. choose **All repositories** or the specific repositories RunnerHub should access on each account.
+
+RunnerHub discovers all accessible installations through the signed-in user's GitHub App user token and shows each account separately. No second RunnerHub deployment, PAT, or second GitHub App is required.
+
+RunnerHub continues to reject public repositories by default. This is intentional because self-hosted runners attached to public repositories require a stronger untrusted-contribution threat model. Private personal repositories can be connected normally.
 
 
 ### Enable a publisher runner for a repository

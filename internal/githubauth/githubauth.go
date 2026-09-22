@@ -84,8 +84,9 @@ type oauthTokenResponse struct {
 }
 
 type Installation struct {
-	ID      int64  `json:"id"`
-	Account string `json:"account"`
+	ID          int64  `json:"id"`
+	Account     string `json:"account"`
+	AccountType string `json:"accountType,omitempty"`
 }
 
 type ConnectedRepository struct {
@@ -95,6 +96,7 @@ type ConnectedRepository struct {
 	DefaultBranch  string `json:"defaultBranch"`
 	InstallationID int64  `json:"installationId"`
 	Account        string `json:"account"`
+	AccountType    string `json:"accountType,omitempty"`
 }
 
 type Status struct {
@@ -324,6 +326,14 @@ func (m *Manager) Status(r *http.Request) Status {
 	return out
 }
 
+func (m *Manager) AccessibleInstallations(r *http.Request) ([]Installation, error) {
+	s, ok := m.sessionFor(r, false)
+	if !ok {
+		return nil, errors.New("github login required")
+	}
+	return m.installations(r, s.Token)
+}
+
 func (m *Manager) ConnectedRepositories(r *http.Request) ([]ConnectedRepository, error) {
 	s, ok := m.sessionFor(r, false)
 	if !ok {
@@ -502,6 +512,7 @@ func (m *Manager) installations(r *http.Request, token string) ([]Installation, 
 			ID      int64 `json:"id"`
 			Account struct {
 				Login string `json:"login"`
+				Type  string `json:"type"`
 			} `json:"account"`
 		} `json:"installations"`
 	}
@@ -511,7 +522,7 @@ func (m *Manager) installations(r *http.Request, token string) ([]Installation, 
 	installations := make([]Installation, 0, len(out.Installations))
 	for _, item := range out.Installations {
 		if item.ID > 0 {
-			installations = append(installations, Installation{ID: item.ID, Account: item.Account.Login})
+			installations = append(installations, Installation{ID: item.ID, Account: item.Account.Login, AccountType: item.Account.Type})
 		}
 	}
 	return installations, nil
@@ -540,6 +551,7 @@ func (m *Manager) repositoriesForInstallation(r *http.Request, token string, ins
 				DefaultBranch:  repo.DefaultBranch,
 				InstallationID: installation.ID,
 				Account:        installation.Account,
+				AccountType:    installation.AccountType,
 			})
 		}
 		if len(out.Repositories) < 100 {
