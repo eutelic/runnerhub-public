@@ -21,8 +21,11 @@ import (
 )
 
 const (
-	sessionCookieName = "runnerhub_session"
-	apiVersion        = "2026-03-10"
+	sessionCookieName          = "runnerhub_session"
+	sessionsFileName           = "github-sessions.json"
+	apiVersion                 = "2026-03-10"
+	persistentSessionLifetime  = 90 * 24 * time.Hour
+	tokenRefreshSkew           = 5 * time.Minute
 )
 
 type Config struct {
@@ -50,10 +53,34 @@ type Manager struct {
 }
 
 type session struct {
-	Login     string
-	Token     string
-	CSRF      string
-	ExpiresAt time.Time
+	Login            string    `json:"login"`
+	Token            string    `json:"token"`
+	RefreshToken     string    `json:"refreshToken,omitempty"`
+	CSRF             string    `json:"csrf"`
+	ExpiresAt        time.Time `json:"expiresAt"`
+	TokenExpiresAt   time.Time `json:"tokenExpiresAt,omitempty"`
+	RefreshExpiresAt time.Time `json:"refreshExpiresAt,omitempty"`
+}
+
+type persistedSessions struct {
+	Version  int                `json:"version"`
+	Sessions map[string]session `json:"sessions"`
+}
+
+type oauthTokens struct {
+	AccessToken      string
+	RefreshToken     string
+	AccessExpiresAt  time.Time
+	RefreshExpiresAt time.Time
+}
+
+type oauthTokenResponse struct {
+	AccessToken           string `json:"access_token"`
+	ExpiresIn             int64  `json:"expires_in"`
+	RefreshToken          string `json:"refresh_token"`
+	RefreshTokenExpiresIn int64  `json:"refresh_token_expires_in"`
+	Error                 string `json:"error"`
+	Description           string `json:"error_description"`
 }
 
 type Installation struct {
@@ -108,7 +135,7 @@ func New(c Config) (*Manager, error) {
 	if client == nil {
 		client = &http.Client{Timeout: 30 * time.Second}
 	}
-	return &Manager{
+	m := &Manager{
 		clientID:     strings.TrimSpace(c.ClientID),
 		clientSecret: strings.TrimSpace(c.ClientSecret),
 		appSlug:      strings.TrimSpace(c.AppSlug),
@@ -118,7 +145,11 @@ func New(c Config) (*Manager, error) {
 		http:         client,
 		states:       map[string]time.Time{},
 		sessions:     map[string]session{},
-	}, nil
+	}
+	if err := m.loadSessions(); err != nil {
+		return nil, err
+	}
+	return m, nil
 }
 
 func (m *Manager) BeginLogin(w http.ResponseWriter, r *http.Request) {
@@ -146,12 +177,12 @@ func (m *Manager) Callback(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid or expired github login state", http.StatusBadRequest)
 		return
 	}
-	token, expiresAt, err := m.exchangeCode(r, code)
+	tokens, err := m.exchangeCode(r, code)
 	if err != nil {
 		http.Error(w, "github login failed", http.StatusBadGateway)
 		return
 	}
-	login, err := m.githubLogin(r, token)
+	login, err := m.githubLogin(r, tokens.AccessToken)
 	if err != nil {
 		http.Error(w, "github identity lookup failed", http.StatusBadGateway)
 		return
@@ -170,9 +201,27 @@ func (m *Manager) Callback(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "could not create session", http.StatusInternalServerError)
 		return
 	}
+	expiresAt := time.Now().Add(persistentSessionLifetime)
+	if !tokens.RefreshExpiresAt.IsZero() && tokens.RefreshExpiresAt.Before(expiresAt) {
+		expiresAt = tokens.RefreshExpiresAt
+	} else if tokens.RefreshToken == "" && !tokens.AccessExpiresAt.IsZero() && tokens.AccessExpiresAt.Before(expiresAt) {
+		expiresAt = tokens.AccessExpiresAt
+	}
+	s := session{
+		Login: login, Token: tokens.AccessToken, RefreshToken: tokens.RefreshToken, CSRF: csrf,
+		ExpiresAt: expiresAt, TokenExpiresAt: tokens.AccessExpiresAt, RefreshExpiresAt: tokens.RefreshExpiresAt,
+	}
 	m.mu.Lock()
-	m.sessions[sid] = session{Login: login, Token: token, CSRF: csrf, ExpiresAt: expiresAt}
+	m.sessions[sid] = s
+	persistErr := m.persistSessionsLocked()
+	if persistErr != nil {
+		delete(m.sessions, sid)
+	}
 	m.mu.Unlock()
+	if persistErr != nil {
+		http.Error(w, "could not persist github session", http.StatusInternalServerError)
+		return
+	}
 
 	http.SetCookie(w, &http.Cookie{
 		Name:     sessionCookieName,
@@ -234,9 +283,11 @@ func (m *Manager) Logout(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = s
 	cookie, _ := r.Cookie(sessionCookieName)
+	var persistErr error
 	if cookie != nil {
 		m.mu.Lock()
 		delete(m.sessions, cookie.Value)
+		persistErr = m.persistSessionsLocked()
 		m.mu.Unlock()
 	}
 	http.SetCookie(w, &http.Cookie{
@@ -248,6 +299,10 @@ func (m *Manager) Logout(w http.ResponseWriter, r *http.Request) {
 		SameSite: http.SameSiteLaxMode,
 		MaxAge:   -1,
 	})
+	if persistErr != nil {
+		http.Error(w, "could not persist github logout", http.StatusInternalServerError)
+		return
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -315,11 +370,38 @@ func (m *Manager) sessionFor(r *http.Request, requireCSRF bool) (session, bool) 
 	if err != nil || strings.TrimSpace(cookie.Value) == "" {
 		return session{}, false
 	}
+	now := time.Now()
 	m.mu.Lock()
 	s, ok := m.sessions[cookie.Value]
-	if ok && time.Now().After(s.ExpiresAt) {
+	if ok && now.After(s.ExpiresAt) {
 		delete(m.sessions, cookie.Value)
+		_ = m.persistSessionsLocked()
 		ok = false
+	}
+	if ok && !s.TokenExpiresAt.IsZero() && now.Add(tokenRefreshSkew).After(s.TokenExpiresAt) {
+		canRefresh := s.RefreshToken != "" && (s.RefreshExpiresAt.IsZero() || now.Before(s.RefreshExpiresAt))
+		if canRefresh {
+			if tokens, refreshErr := m.refreshAccessToken(r, s.RefreshToken); refreshErr == nil {
+			s.Token = tokens.AccessToken
+			if tokens.RefreshToken != "" {
+				s.RefreshToken = tokens.RefreshToken
+			}
+			s.TokenExpiresAt = tokens.AccessExpiresAt
+			if !tokens.RefreshExpiresAt.IsZero() {
+				s.RefreshExpiresAt = tokens.RefreshExpiresAt
+			}
+			m.sessions[cookie.Value] = s
+			_ = m.persistSessionsLocked()
+			} else if now.After(s.TokenExpiresAt) {
+				delete(m.sessions, cookie.Value)
+				_ = m.persistSessionsLocked()
+				ok = false
+			}
+		} else if now.After(s.TokenExpiresAt) {
+			delete(m.sessions, cookie.Value)
+			_ = m.persistSessionsLocked()
+			ok = false
+		}
 	}
 	m.mu.Unlock()
 	if !ok {
@@ -339,7 +421,7 @@ func (m *Manager) consumeState(state string) bool {
 	return ok && time.Now().Before(expiresAt)
 }
 
-func (m *Manager) exchangeCode(r *http.Request, code string) (string, time.Time, error) {
+func (m *Manager) exchangeCode(r *http.Request, code string) (oauthTokens, error) {
 	body, _ := json.Marshal(map[string]string{
 		"client_id":     m.clientID,
 		"client_secret": m.clientSecret,
@@ -348,38 +430,57 @@ func (m *Manager) exchangeCode(r *http.Request, code string) (string, time.Time,
 	})
 	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, "https://github.com/login/oauth/access_token", bytes.NewReader(body))
 	if err != nil {
-		return "", time.Time{}, err
+		return oauthTokens{}, err
 	}
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Content-Type", "application/json")
+	return m.doOAuthTokenRequest(req, "exchange")
+}
+
+func (m *Manager) refreshAccessToken(r *http.Request, refreshToken string) (oauthTokens, error) {
+	form := url.Values{}
+	form.Set("client_id", m.clientID)
+	form.Set("client_secret", m.clientSecret)
+	form.Set("grant_type", "refresh_token")
+	form.Set("refresh_token", refreshToken)
+	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, "https://github.com/login/oauth/access_token", strings.NewReader(form.Encode()))
+	if err != nil {
+		return oauthTokens{}, err
+	}
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	return m.doOAuthTokenRequest(req, "refresh")
+}
+
+func (m *Manager) doOAuthTokenRequest(req *http.Request, operation string) (oauthTokens, error) {
 	resp, err := m.http.Do(req)
 	if err != nil {
-		return "", time.Time{}, err
+		return oauthTokens{}, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return "", time.Time{}, fmt.Errorf("github oauth exchange returned %d: %s", resp.StatusCode, strings.TrimSpace(string(msg)))
+		return oauthTokens{}, fmt.Errorf("github oauth %s returned %d: %s", operation, resp.StatusCode, strings.TrimSpace(string(msg)))
 	}
-	var out struct {
-		AccessToken string `json:"access_token"`
-		ExpiresIn   int64  `json:"expires_in"`
-		Error       string `json:"error"`
-		Description string `json:"error_description"`
-	}
+	var out oauthTokenResponse
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return "", time.Time{}, err
+		return oauthTokens{}, err
 	}
 	if out.Error != "" {
-		return "", time.Time{}, fmt.Errorf("github oauth: %s: %s", out.Error, out.Description)
+		return oauthTokens{}, fmt.Errorf("github oauth: %s: %s", out.Error, out.Description)
 	}
-	if out.AccessToken == "" {
-		return "", time.Time{}, errors.New("github oauth returned an empty access token")
+	if strings.TrimSpace(out.AccessToken) == "" {
+		return oauthTokens{}, errors.New("github oauth returned an empty access token")
 	}
-	if out.ExpiresIn <= 0 {
-		out.ExpiresIn = int64((8 * time.Hour).Seconds())
+	now := time.Now()
+	tokens := oauthTokens{AccessToken: strings.TrimSpace(out.AccessToken), RefreshToken: strings.TrimSpace(out.RefreshToken)}
+	if out.ExpiresIn > 0 {
+		tokens.AccessExpiresAt = now.Add(time.Duration(out.ExpiresIn) * time.Second)
 	}
-	return out.AccessToken, time.Now().Add(time.Duration(out.ExpiresIn) * time.Second), nil
+	if out.RefreshTokenExpiresIn > 0 {
+		tokens.RefreshExpiresAt = now.Add(time.Duration(out.RefreshTokenExpiresIn) * time.Second)
+	}
+	return tokens, nil
 }
 
 func (m *Manager) githubLogin(r *http.Request, token string) (string, error) {
@@ -471,6 +572,68 @@ func (m *Manager) apiGET(r *http.Request, token, path string, out any) error {
 		return fmt.Errorf("github api returned %d: %s", resp.StatusCode, strings.TrimSpace(string(msg)))
 	}
 	return json.NewDecoder(resp.Body).Decode(out)
+}
+
+func (m *Manager) loadSessions() error {
+	path := filepath.Join(m.stateDir, sessionsFileName)
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("read github sessions: %w", err)
+	}
+	var persisted persistedSessions
+	if err := json.Unmarshal(data, &persisted); err != nil {
+		return fmt.Errorf("decode github sessions: %w", err)
+	}
+	now := time.Now()
+	for sid, s := range persisted.Sessions {
+		if strings.TrimSpace(sid) == "" || strings.TrimSpace(s.Login) == "" || strings.TrimSpace(s.Token) == "" || strings.TrimSpace(s.CSRF) == "" || !now.Before(s.ExpiresAt) {
+			continue
+		}
+		m.sessions[sid] = s
+	}
+	return nil
+}
+
+func (m *Manager) persistSessionsLocked() error {
+	if err := os.MkdirAll(m.stateDir, 0o700); err != nil {
+		return fmt.Errorf("prepare github auth state: %w", err)
+	}
+	payload, err := json.Marshal(persistedSessions{Version: 1, Sessions: m.sessions})
+	if err != nil {
+		return fmt.Errorf("encode github sessions: %w", err)
+	}
+	tmp, err := os.CreateTemp(m.stateDir, ".github-sessions-*")
+	if err != nil {
+		return fmt.Errorf("create github sessions temp file: %w", err)
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName)
+	if err := tmp.Chmod(0o600); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("secure github sessions temp file: %w", err)
+	}
+	if _, err := tmp.Write(payload); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("write github sessions: %w", err)
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("sync github sessions: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("close github sessions: %w", err)
+	}
+	path := filepath.Join(m.stateDir, sessionsFileName)
+	if err := os.Rename(tmpName, path); err != nil {
+		return fmt.Errorf("replace github sessions: %w", err)
+	}
+	if err := os.Chmod(path, 0o600); err != nil {
+		return fmt.Errorf("secure github sessions file: %w", err)
+	}
+	return nil
 }
 
 func (m *Manager) claimOwner(login string) error {
