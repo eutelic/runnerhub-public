@@ -38,6 +38,10 @@ if(!deployerHealth.value)deployerHealth.value=location.origin.replace(/\/$/,'')+
 els.logout.addEventListener('click',logout);
 els.hosts.addEventListener('click',e=>{const button=e.target.closest('button[data-host-tags]');if(button)saveHostTags(button)});
 els.repos.addEventListener('click',e=>{
+  const learning=e.target.closest('button[data-learning-reset]');
+  if(learning){resetPoolLearning(learning);return}
+  const repoLearning=e.target.closest('button[data-repo-learning-reset]');
+  if(repoLearning){resetRepositoryLearning(repoLearning);return}
   const profile=e.target.closest('button[data-profile-action]');
   if(profile){saveRunnerProfile(profile);return}
   const publisher=e.target.closest('button[data-publisher-action]');
@@ -82,7 +86,16 @@ function cpuCores(millis){return millis?Number((millis/1000).toFixed(2)):0}
 function usageCPU(millis){return Number.isFinite(Number(millis))&&Number(millis)>=0?cpuCores(Number(millis))+' cores':'—'}
 function usageRAM(bytes){return Number.isFinite(Number(bytes))&&Number(bytes)>=0?gib(Number(bytes))+' GiB':'—'}
 function sizingText(rec){const s=rec?.resourceSizing;if(!s?.ready)return s?.jobs?('learning ('+s.jobs+' jobs)'):'learning';return cpuCores(s.recommended?.cpuMillis)+' cores / '+gib(s.recommended?.memoryBytes)+' GiB'}
-function observedText(rec){const s=rec?.resourceSizing;if(!s?.ready)return s?.jobs?('learning ('+s.jobs+' jobs)'):'—';return cpuCores(s.cpuPeakP95Millis)+' cores / '+gib(s.memoryPeakP95Bytes)+' GiB'}
+function observedText(rec){const s=rec?.resourceSizing;if(!s?.ready)return s?.jobs?('learning ('+s.jobs+' jobs)'):'—';return cpuCores(s.cpuPeakP95Millis)+' cores / '+gib(s.memoryPeakMaxBytes||s.memoryPeakP95Bytes)+' GiB'}
+function learningText(rec){
+  const s=rec?.resourceSizing;
+  if(!s)return '—';
+  let text=(s.jobs||0)+' valid job'+((s.jobs||0)===1?'':'s')+' · '+(s.confidence||'collecting');
+  if(s.wellSampledJobs)text+=' · '+s.wellSampledJobs+' well-sampled';
+  if(s.rejectedJobs)text+=' · '+s.rejectedJobs+' ignored';
+  if(s.resetAt)text+=' · reset '+fmtTime(s.resetAt);
+  return text;
+}
 function fmtDuration(value){return value&&value!=='0s'?value:'—'}
 function bottleneckLabel(value){return ({pool_concurrency:'pool limit',host_resources:'host resources',no_compatible_host:'no compatible host'})[value]||value||'—'}
 function reservedCPU(capacity){const used=cpuCores(capacity?.reserved?.cpuMillis);const total=cpuCores(capacity?.capacity?.cpuMillis);return total?used+' / '+total+' cores':'—'}
@@ -91,6 +104,22 @@ function repoName(pool){return pool?.scope?.repository?pool.scope.owner+'/'+pool
 function isPublisherPool(pool){return Boolean(pool)&&(String(pool.scaleSetName||'').toLowerCase()==='runnerhub-publisher'||(pool.labels||[]).some(x=>String(x).toLowerCase()==='runnerhub-publisher'))}
 function isStandardPool(pool){const name=String(pool?.scaleSetName||'').toLowerCase();return Boolean(pool)&&(name===''||name==='runnerhub')}
 function runnerClass(pool){if(!pool)return 'standard';if(isPublisherPool(pool))return 'publisher';if(isStandardPool(pool))return 'standard';return pool.scaleSetName||'custom'}
+function resourceEnvelopeFactor(pool,worker){
+  const isolation=String(worker?.isolation||pool?.isolation||'').toLowerCase();
+  return isolation==='container-dind'?2:1;
+}
+function allocatedCPUText(worker,pool){
+  const per=Number(worker?.resources?.cpuMillis||0);
+  if(!per)return '—';
+  const factor=resourceEnvelopeFactor(pool,worker);
+  return factor===2?cpuCores(per)+' each · '+cpuCores(per*2)+' reserved':cpuCores(per)+' cores';
+}
+function allocatedRAMText(worker,pool){
+  const per=Number(worker?.resources?.memoryBytes||0);
+  if(!per)return '—';
+  const factor=resourceEnvelopeFactor(pool,worker);
+  return factor===2?gib(per)+' GiB each · '+gib(per*2)+' GiB reserved':gib(per)+' GiB';
+}
 function isPublisherEnabled(pool){return Boolean(pool)&&Number(pool.githubInstallationId)>0}
 function isZeroTime(value){return !value||String(value).startsWith('0001-01-01')}
 function fmtTime(value){
@@ -166,9 +195,9 @@ function renderActiveRunners(workers,poolByID,hostByID,progressByWorker){
     if(ar!==br)return ar-br;
     return new Date(a.createdAt||0)-new Date(b.createdAt||0);
   });
-  const cpu=active.reduce((sum,w)=>sum+Number(w.resources?.cpuMillis||0),0);
-  const memory=active.reduce((sum,w)=>sum+Number(w.resources?.memoryBytes||0),0);
-  els.activeRunnerSummary.textContent=active.length+' active · '+cpuCores(cpu)+' cores · '+gib(memory)+' GiB allocated';
+  const cpu=active.reduce((sum,w)=>{const pool=poolByID?.get(w.poolId);return sum+Number(w.resources?.cpuMillis||0)*resourceEnvelopeFactor(pool,w)},0);
+  const memory=active.reduce((sum,w)=>{const pool=poolByID?.get(w.poolId);return sum+Number(w.resources?.memoryBytes||0)*resourceEnvelopeFactor(pool,w)},0);
+  els.activeRunnerSummary.textContent=active.length+' active · '+cpuCores(cpu)+' cores · '+gib(memory)+' GiB host-reserved';
   if(!active.length){
     els.activeRunners.innerHTML='<div class="empty">No active runners.</div>';
     return;
@@ -182,8 +211,8 @@ function renderActiveRunners(workers,poolByID,hostByID,progressByWorker){
     ['Step progress',x=>{const p=progressByWorker?.get(x.id);return p?.available&&p.totalSteps>0?p.completedSteps+' / '+p.totalSteps+' · '+p.percent+'%':'—'}],
     ['Current step',x=>progressByWorker?.get(x.id)?.currentStep||'—'],
     ['Host',x=>hostByID?.get(x.hostId)?.name||x.hostId||'pending'],
-    ['CPU',x=>x.resources?.cpuMillis?cpuCores(x.resources.cpuMillis)+' cores':'—'],
-    ['RAM',x=>x.resources?.memoryBytes?gib(x.resources.memoryBytes)+' GiB':'—'],
+    ['CPU allocation',x=>allocatedCPUText(x,poolByID?.get(x.poolId))],
+    ['RAM allocation',x=>allocatedRAMText(x,poolByID?.get(x.poolId))],
     ['Disk',x=>x.resources?.diskBytes?gib(x.resources.diskBytes)+' GiB':'—'],
     ['Runner started',x=>fmtTime(x.createdAt)],
     ['Job started',x=>fmtTime(x.startedAt)],
@@ -220,11 +249,11 @@ function renderWorkers(workers,poolByID){
     ['Class',x=>runnerClass(poolByID?.get(x.poolId))],
     ['Job',x=>x.jobName||'startup'],
     ['Result',x=>workerDisplayState(x)],
-    ['CPU now',x=>!terminal.has(String(x.state||'').toLowerCase())&&x.usage?.updatedAt?usageCPU(x.usage.currentCpuMillis):'—'],
-    ['CPU peak',x=>x.usage?.samples?usageCPU(x.usage.peakCpuMillis):'—'],
-    ['RAM now',x=>!terminal.has(String(x.state||'').toLowerCase())&&x.usage?.updatedAt?usageRAM(x.usage.currentMemoryBytes):'—'],
-    ['RAM peak',x=>x.usage?.samples?usageRAM(x.usage.peakMemoryBytes):'—'],
-    ['Allocated',x=>(x.resources?.cpuMillis?cpuCores(x.resources.cpuMillis)+' CPU':'—')+' / '+(x.resources?.memoryBytes?gib(x.resources.memoryBytes)+' GiB':'—')],
+    ['CPU now total',x=>!terminal.has(String(x.state||'').toLowerCase())&&x.usage?.updatedAt?usageCPU(x.usage.currentCpuMillis):'—'],
+    ['CPU peak total',x=>x.usage?.samples?usageCPU(x.usage.peakCpuMillis):'—'],
+    ['RAM now total',x=>!terminal.has(String(x.state||'').toLowerCase())&&x.usage?.updatedAt?usageRAM(x.usage.currentMemoryBytes):'—'],
+    ['RAM peak total',x=>x.usage?.samples?usageRAM(x.usage.peakMemoryBytes):'—'],
+    ['Allocated',x=>allocatedCPUText(x,poolByID?.get(x.poolId))+' / '+allocatedRAMText(x,poolByID?.get(x.poolId))],
     ['Updated',x=>fmtTime(workerTimestamp(x))],
     ['Failure',x=>x.failureReason||'']
   ])+'<div class="muted small workers-note">Historical and deleted worker records are hidden here. Diagnostics retains the full history.</div>';
@@ -368,8 +397,9 @@ async function refresh(){
       ['Cleanup',x=>fmtDuration(recommendationByPool.get(x.id)?.latencies?.cleanup)],
       ['CPU reserved',x=>reservedCPU(recommendationByPool.get(x.id)?.capacity)],
       ['RAM reserved',x=>reservedRAM(recommendationByPool.get(x.id)?.capacity)],
-      ['Observed p95',x=>observedText(recommendationByPool.get(x.id))],
+      ['Sizing CPU p95 / RAM max',x=>observedText(recommendationByPool.get(x.id))],
       ['Suggested size',x=>sizingText(recommendationByPool.get(x.id))],
+      ['Learning',x=>learningText(recommendationByPool.get(x.id))],
       ['Auto-size',x=>x.autoTuneResources?'on':'off'],
       ['Can fit',x=>{const n=recommendationByPool.get(x.id)?.capacity?.additionalWorkers;return Number.isFinite(n)?'+'+n:'—'}],
       ['Bottleneck',x=>bottleneckLabel(recommendationByPool.get(x.id)?.capacity?.bottleneck)],
@@ -405,8 +435,10 @@ function resourceEditor(repo,pool){
       '<label>Max concurrent<input data-field="concurrency" type="number" min="1" step="1" value="'+esc(max)+'"></label>'+
     '</div>'+
     '<label class="check-row"><input data-field="autotune" type="checkbox"'+(pool?.autoTuneResources?' checked':'')+'> Auto-size CPU/RAM from observed job usage</label>'+
-    '<div class="resource-note muted">Auto-size waits for at least 5 completed jobs, then uses p95 peak usage + 25% headroom. Limits apply to newly created runners.</div>'+
-    '<button data-resource-action="'+(connected?'update':'connect')+'" data-repo="'+esc(repo.fullName)+'" data-installation="'+esc(repo.installationId)+'"'+poolAttr+'>'+esc(action)+'</button>'+
+    '<div class="resource-note muted">Auto-size waits for at least 5 valid completed jobs, uses CPU p95 / RAM max per-container peaks + 25% headroom, and ignores impossible telemetry. Manual CPU/RAM changes start a fresh learning window. Limits apply to newly created runners.</div>'+
+    '<div class="publisher-actions"><button data-resource-action="'+(connected?'update':'connect')+'" data-repo="'+esc(repo.fullName)+'" data-installation="'+esc(repo.installationId)+'"'+poolAttr+'>'+esc(action)+'</button>'+
+      (connected?'<button class="secondary" data-learning-reset data-pool-id="'+esc(pool.id)+'" data-learning-label="standard runner">Reset learning</button>':'')+
+    '</div>'+
   '</details>';
 }
 
@@ -435,10 +467,10 @@ function publisherEditor(repo,pool,status,runtime,hostAvailable,standardConnecte
       '<label>Max publishers<input data-publisher-field="concurrency" type="number" min="1" step="1" value="'+esc(max)+'"></label>'+
     '</div>'+
     '<label class="check-row"><input data-publisher-field="autotune" type="checkbox"'+(pool?.autoTuneResources?' checked':'')+'> Auto-size publisher CPU/RAM from observed jobs</label>'+
-    '<div class="resource-note muted">Max publishers is an upper bound. Auto-size waits for at least 5 completed publisher jobs and keeps host compatibility checks.</div>';
+    '<div class="resource-note muted">Max publishers is an upper bound. Auto-size waits for at least 5 valid jobs and sizes from the busiest outer container (runner or private DinD sidecar), not their summed CPU/RAM. Legacy aggregate-only samples are ignored.</div>';
   let buttons='';
   if(enabled){
-    buttons='<div class="publisher-actions"><button data-publisher-action="update" data-repo="'+esc(repo.fullName)+'" data-installation="'+esc(repo.installationId)+'">Save publisher settings</button><button class="secondary" data-publisher-action="disable" data-repo="'+esc(repo.fullName)+'" data-installation="'+esc(repo.installationId)+'">Disable publisher</button></div>';
+    buttons='<div class="publisher-actions"><button data-publisher-action="update" data-repo="'+esc(repo.fullName)+'" data-installation="'+esc(repo.installationId)+'">Save publisher settings</button><button class="secondary" data-learning-reset data-pool-id="'+esc(pool.id)+'" data-learning-label="publisher runner">Reset learning</button><button class="secondary" data-publisher-action="disable" data-repo="'+esc(repo.fullName)+'" data-installation="'+esc(repo.installationId)+'">Disable publisher</button></div>';
   }else{
     buttons='<button data-publisher-action="enable" data-repo="'+esc(repo.fullName)+'" data-installation="'+esc(repo.installationId)+'"'+(controls?'':' disabled')+'>Enable publisher runner</button>';
   }
@@ -457,13 +489,13 @@ function runnerProfileEditor(repo,profiles,standardConnected){
     const enabled=Number(p.githubInstallationId)>0;
     const mode=p.isolation==='container-dind'?'Docker-capable':'standard';
     return '<div class="profile-row"><div><code>runs-on: '+esc(p.scaleSetName)+'</code><div class="muted small">machines: '+esc(tags)+' · '+esc(mode)+' · '+esc(cpuCores(p.resources?.cpuMillis))+' CPU · '+esc(gib(p.resources?.memoryBytes))+' GiB</div></div>'+
-      (enabled?'<button class="secondary compact" data-profile-action="disable" data-profile-name="'+esc(p.scaleSetName)+'" data-repo="'+esc(repo.fullName)+'" data-installation="'+esc(repo.installationId)+'">Disable</button>':'<span class="badge neutral">disabled</span>')+
+      (enabled?'<div class="publisher-actions"><button class="secondary compact" data-learning-reset data-pool-id="'+esc(p.id)+'" data-learning-label="'+esc(p.scaleSetName)+'">Reset learning</button><button class="secondary compact" data-profile-action="disable" data-profile-name="'+esc(p.scaleSetName)+'" data-repo="'+esc(repo.fullName)+'" data-installation="'+esc(repo.installationId)+'">Disable</button></div>':'<span class="badge neutral">disabled</span>')+
     '</div>';
   }).join('');
   const disabled=standardConnected?'':' disabled';
   return '<details class="repo-config profile-config">'+
     '<summary>Custom runner profiles'+(active.length?' ('+active.length+')':'')+'</summary>'+
-    '<div class="resource-note muted">Tags are hard placement constraints. Use host priority for normal scheduling preference; use a custom profile when a workflow must explicitly target a machine class such as <code>runnerhub-fast</code>. Docker-capable profiles reserve two host CPU/RAM envelopes per runner (runner + private DinD sidecar).</div>'+
+    '<div class="resource-note muted">Tags are hard placement constraints. Use host priority for normal scheduling preference; use a custom profile when a workflow must explicitly target a machine class such as <code>runnerhub-fast</code>. Docker-capable profiles reserve two host CPU/RAM envelopes per runner (runner + private DinD sidecar). Resource learning uses the busiest individual container, not the summed DinD pair.</div>'+
     (existing?'<div class="profile-list">'+existing+'</div>':'')+
     '<div class="resource-grid">'+
       '<label>Profile name<input data-profile-field="name" placeholder="fast"'+disabled+'></label>'+
@@ -512,6 +544,7 @@ function renderRepos(repos,pools,statuses,runtimeHealth,hosts){
     const publisherStatus=publisher?statusByPool.get(publisher.id):null;
     const publisherRuntime=publisher?runtimeByPool.get(publisher.id):null;
     const privacy=repo.private?'Private':'Public';
+    const learningPoolIds=[pool,publisher,...entry.profiles].filter(Boolean).map(p=>p.id);
     let statusHtml='';
     let detail='';
 
@@ -539,6 +572,7 @@ function renderRepos(repos,pools,statuses,runtimeHealth,hosts){
       '<div class="repo-row">'+
         '<div class="repo-title"><div><div class="repo-name">'+esc(repo.fullName)+'</div><div class="repo-meta muted">'+esc(privacy)+' · '+esc(repo.defaultBranch||'')+'</div></div></div>'+
         statusHtml+detail+
+        (learningPoolIds.length?'<button class="secondary compact" data-repo-learning-reset="'+esc(learningPoolIds.join(','))+'" data-repo-name="'+esc(repo.fullName)+'">Reset all learning</button>':'')+
       '</div>'+
       (repo.private?resourceEditor(repo,pool):'')+
       (repo.private?runnerProfileEditor(repo,entry.profiles,Boolean(pool)):'')+
@@ -607,6 +641,30 @@ async function saveHostTags(button){
   try{
     await j('/api/v1/hosts/'+encodeURIComponent(id),{method:'PATCH',headers:{'content-type':'application/json'},body:JSON.stringify({tags,priority})});
     message('Machine scheduling settings updated.','success');
+    await refresh();
+  }catch(e){message(e.message,'error')}finally{button.disabled=false}
+}
+
+async function resetPoolLearning(button){
+  const poolId=button.dataset.poolId;
+  if(!poolId)return;
+  const label=button.dataset.learningLabel||'runner';
+  button.disabled=true;
+  try{
+    await j('/api/v1/pools/'+encodeURIComponent(poolId)+'/learning/reset',{method:'POST'});
+    message('Reset learning for '+label+'. Historical job records were kept; sizing will wait for new valid samples.','success');
+    await refresh();
+  }catch(e){message(e.message,'error')}finally{button.disabled=false}
+}
+
+async function resetRepositoryLearning(button){
+  const ids=String(button.dataset.repoLearningReset||'').split(',').map(x=>x.trim()).filter(Boolean);
+  if(!ids.length)return;
+  const repo=button.dataset.repoName||'repository';
+  button.disabled=true;
+  try{
+    await Promise.all(ids.map(id=>j('/api/v1/pools/'+encodeURIComponent(id)+'/learning/reset',{method:'POST'})));
+    message('Reset resource learning for all '+ids.length+' runner class'+(ids.length===1?'':'es')+' in '+repo+'. Historical jobs were kept.','success');
     await refresh();
   }catch(e){message(e.message,'error')}finally{button.disabled=false}
 }

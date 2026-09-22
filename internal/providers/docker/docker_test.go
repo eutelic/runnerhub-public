@@ -672,3 +672,27 @@ func TestParseDockerBytes(t *testing.T) {
 		}
 	}
 }
+
+
+func TestContainerUsageReportsAggregateAndPerContainerEnvelope(t *testing.T) {
+	f := &fakeRunner{fn: func(_ string, a ...string) (string, error) {
+		if len(a) > 0 && a[0] == "stats" {
+			return "250.00%|1GiB / 8GiB\n180.00%|3GiB / 8GiB\n", nil
+		}
+		return "", nil
+	}}
+	p, err := newWithRunner(Config{StateDir: t.TempDir(), AllowedImages: []string{"img"}}, f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	usage, err := p.containerUsage(context.Background(), "runner123", "dind123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if usage.CPUMillis != 4300 || usage.MemoryBytes != 4<<30 {
+		t.Fatalf("aggregate usage=%+v", usage)
+	}
+	if usage.EnvelopeCPUMillis != 2500 || usage.EnvelopeMemoryBytes != 3<<30 {
+		t.Fatalf("per-container envelope=%+v", usage)
+	}
+}

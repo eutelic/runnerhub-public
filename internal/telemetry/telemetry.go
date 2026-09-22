@@ -1,6 +1,7 @@
 package telemetry
 
 import (
+	"fmt"
 	"sort"
 	"strings"
 	"sync"
@@ -141,12 +142,17 @@ const (
 
 type ResourceRecommendation struct {
 	Jobs int `json:"jobs"`
+	WellSampledJobs int `json:"wellSampledJobs,omitempty"`
+	RejectedJobs int `json:"rejectedJobs,omitempty"`
 	Ready bool `json:"ready"`
 	Confidence string `json:"confidence"`
 	Current core.Resources `json:"current"`
 	Recommended core.Resources `json:"recommended"`
 	CPUPeakP95Millis int64 `json:"cpuPeakP95Millis,omitempty"`
 	MemoryPeakP95Bytes int64 `json:"memoryPeakP95Bytes,omitempty"`
+	MemoryPeakMaxBytes int64 `json:"memoryPeakMaxBytes,omitempty"`
+	ResetAt *time.Time `json:"resetAt,omitempty"`
+	UsageBasis string `json:"usageBasis"`
 	Reason string `json:"reason"`
 }
 
@@ -154,13 +160,86 @@ type usagePoint struct {
 	at time.Time
 	cpu int64
 	memory int64
+	samples uint64
+	oom bool
+}
+
+func workerTerminalAt(worker core.Worker) time.Time {
+	at := worker.CompletedAt
+	if at.IsZero() {
+		at = worker.FailedAt
+	}
+	if at.IsZero() {
+		at = worker.UpdatedAt
+	}
+	return at
+}
+
+func workerUsageForSizing(pool core.RunnerPool, worker core.Worker) (int64, int64, bool) {
+	cpu := worker.Usage.PeakCPUMillis
+	memory := worker.Usage.PeakMemoryBytes
+	isolation := worker.Isolation
+	if isolation == "" {
+		isolation = pool.Isolation
+	}
+	if isolation == core.IsolationContainerDinD {
+		// Pool CPU/RAM is a per-container ceiling, while ordinary Docker
+		// telemetry is the sum of the runner and DinD sidecar. Sizing from that
+		// aggregate would double-count publisher demand and can create a
+		// positive feedback loop. New agents report the maximum single-container
+		// envelope explicitly. Legacy DinD samples are intentionally ignored.
+		if worker.Usage.PeakEnvelopeCPUMillis <= 0 || worker.Usage.PeakEnvelopeMemoryBytes <= 0 {
+			return 0, 0, false
+		}
+		cpu = worker.Usage.PeakEnvelopeCPUMillis
+		memory = worker.Usage.PeakEnvelopeMemoryBytes
+	} else {
+		// For single-container workers the envelope is equivalent to aggregate
+		// usage. Prefer it when available, while retaining compatibility with
+		// historical trusted-runner samples.
+		if worker.Usage.PeakEnvelopeCPUMillis > 0 {
+			cpu = worker.Usage.PeakEnvelopeCPUMillis
+		}
+		if worker.Usage.PeakEnvelopeMemoryBytes > 0 {
+			memory = worker.Usage.PeakEnvelopeMemoryBytes
+		}
+	}
+	if worker.ProviderOOMKilled && worker.Resources.MemoryBytes > 0 && memory < worker.Resources.MemoryBytes {
+		// An OOM kill is direct evidence that the configured memory ceiling was
+		// insufficient even when the 15s sampling cadence missed the final spike.
+		memory = worker.Resources.MemoryBytes
+	}
+	if cpu <= 0 || memory <= 0 {
+		return 0, 0, false
+	}
+
+	// Reject impossible/corrupt samples instead of allowing one historical
+	// telemetry bug to permanently inflate a repository's learned size.
+	if worker.Resources.CPUMillis > 0 {
+		tolerance := max64(cpuStepMillis, worker.Resources.CPUMillis/20)
+		if cpu > worker.Resources.CPUMillis+tolerance {
+			return 0, 0, false
+		}
+	}
+	if worker.Resources.MemoryBytes > 0 {
+		tolerance := max64(memoryStepBytes, worker.Resources.MemoryBytes/20)
+		if memory > worker.Resources.MemoryBytes+tolerance {
+			return 0, 0, false
+		}
+	}
+	return cpu, memory, true
 }
 
 func RecommendResources(pool core.RunnerPool, workers []core.Worker) ResourceRecommendation {
 	out := ResourceRecommendation{
 		Current: pool.Resources,
 		Recommended: pool.Resources,
+		UsageBasis: "per-container-envelope",
 		Reason: "collecting completed-job usage samples",
+	}
+	if !pool.LearningResetAt.IsZero() {
+		reset := pool.LearningResetAt
+		out.ResetAt = &reset
 	}
 	points := make([]usagePoint, 0, len(workers))
 	for _, worker := range workers {
@@ -181,20 +260,36 @@ func RecommendResources(pool core.RunnerPool, workers []core.Worker) ResourceRec
 		if !successful && !worker.ProviderOOMKilled {
 			continue
 		}
-		at := worker.CompletedAt
-		if at.IsZero() {
-			at = worker.FailedAt
+		at := workerTerminalAt(worker)
+		if !pool.LearningResetAt.IsZero() {
+			// A reset begins a new cohort of workers, not merely a new completion
+			// window. A runner created under the old limits may finish after the
+			// reset and must not contaminate learning for the new configuration.
+			cohortAt := worker.CreatedAt
+			if cohortAt.IsZero() {
+				cohortAt = worker.StartedAt
+			}
+			if cohortAt.IsZero() || !cohortAt.After(pool.LearningResetAt) {
+				continue
+			}
 		}
-		if at.IsZero() {
-			at = worker.UpdatedAt
+		cpu, memory, valid := workerUsageForSizing(pool, worker)
+		if !valid {
+			out.RejectedJobs++
+			continue
 		}
-		points = append(points, usagePoint{at: at, cpu: worker.Usage.PeakCPUMillis, memory: worker.Usage.PeakMemoryBytes})
+		points = append(points, usagePoint{at: at, cpu: cpu, memory: memory, samples: worker.Usage.Samples, oom: worker.ProviderOOMKilled})
 	}
 	sort.Slice(points, func(i, j int) bool { return points[i].at.After(points[j].at) })
 	if len(points) > resourceHistoryJobs {
 		points = points[:resourceHistoryJobs]
 	}
 	out.Jobs = len(points)
+	for _, point := range points {
+		if point.samples >= 2 {
+			out.WellSampledJobs++
+		}
+	}
 	switch {
 	case out.Jobs >= 25:
 		out.Confidence = "high"
@@ -204,44 +299,64 @@ func RecommendResources(pool core.RunnerPool, workers []core.Worker) ResourceRec
 		out.Confidence = "low"
 	default:
 		out.Confidence = "collecting"
+		if out.RejectedJobs > 0 {
+			out.Reason = fmt.Sprintf("collecting valid completed-job usage samples; %d incompatible or legacy samples ignored", out.RejectedJobs)
+		}
 		return out
 	}
 	cpus := make([]int64, 0, len(points))
 	memories := make([]int64, 0, len(points))
+	oomMemoryFloor := int64(0)
 	for _, point := range points {
-		if point.cpu > 0 {
-			cpus = append(cpus, point.cpu)
+		cpus = append(cpus, point.cpu)
+		memories = append(memories, point.memory)
+		if point.oom && point.memory > oomMemoryFloor {
+			oomMemoryFloor = point.memory
 		}
-		if point.memory > 0 {
-			memories = append(memories, point.memory)
-		}
-	}
-	if len(cpus) < resourceMinimumJobs || len(memories) < resourceMinimumJobs {
-		out.Reason = "not enough complete CPU/RAM samples yet"
-		return out
 	}
 	out.CPUPeakP95Millis = percentile95(cpus)
 	out.MemoryPeakP95Bytes = percentile95(memories)
+	for _, memory := range memories {
+		if memory > out.MemoryPeakMaxBytes {
+			out.MemoryPeakMaxBytes = memory
+		}
+	}
 	cpuTarget := roundUp(max64(minimumCPUMillis, addHeadroom(out.CPUPeakP95Millis)), cpuStepMillis)
-	memoryTarget := roundUp(max64(minimumMemoryBytes, addHeadroom(out.MemoryPeakP95Bytes)), memoryStepBytes)
+	// Memory is a hard failure boundary, unlike CPU quota. A rare legitimate
+	// memory-heavy job must not be discarded by p95 and then OOM after a
+	// downsize, so memory sizing uses the maximum recent valid peak.
+	memoryBasis := max64(out.MemoryPeakMaxBytes, oomMemoryFloor)
+	memoryTarget := roundUp(max64(minimumMemoryBytes, addHeadroom(memoryBasis)), memoryStepBytes)
 	if closeEnough(cpuTarget, pool.Resources.CPUMillis, cpuStepMillis) {
 		cpuTarget = pool.Resources.CPUMillis
 	}
 	if closeEnough(memoryTarget, pool.Resources.MemoryBytes, memoryStepBytes) {
 		memoryTarget = pool.Resources.MemoryBytes
 	}
-	// Upsizing should react quickly to sustained pressure, but downsizing needs
-	// a larger history because interval sampling can miss short CPU/RAM bursts.
-	if out.Jobs < 25 && cpuTarget < pool.Resources.CPUMillis {
+	// Upsizing can act on sparse samples because it only adds capacity.
+	// Downsizing is riskier: require 25 jobs with at least two runtime samples
+	// each so a collection of very short/sparsely observed jobs cannot shrink a
+	// pool based on systematically missed bursts.
+	canDownsize := out.Jobs >= 25 && out.WellSampledJobs >= 25
+	if !canDownsize && cpuTarget < pool.Resources.CPUMillis {
 		cpuTarget = pool.Resources.CPUMillis
 	}
-	if out.Jobs < 25 && memoryTarget < pool.Resources.MemoryBytes {
+	if !canDownsize && memoryTarget < pool.Resources.MemoryBytes {
 		memoryTarget = pool.Resources.MemoryBytes
 	}
 	out.Recommended.CPUMillis = cpuTarget
 	out.Recommended.MemoryBytes = memoryTarget
 	out.Ready = true
-	out.Reason = "p95 observed peak plus 25% headroom; downsizing requires 25 jobs"
+	out.Reason = "CPU p95 and RAM max per-container peaks plus 25% headroom; downsizing requires 25 jobs with at least 2 samples each"
+	if oomMemoryFloor > out.MemoryPeakMaxBytes {
+		out.Reason += "; recent OOM pressure raises the memory floor"
+	}
+	if out.Jobs >= 25 && out.WellSampledJobs < 25 {
+		out.Reason += fmt.Sprintf("; downsize held because only %d jobs are well-sampled", out.WellSampledJobs)
+	}
+	if out.RejectedJobs > 0 {
+		out.Reason += fmt.Sprintf("; %d incompatible or legacy samples ignored", out.RejectedJobs)
+	}
 	return out
 }
 
@@ -287,7 +402,7 @@ func closeEnough(target, current, step int64) bool {
 	if threshold < step {
 		threshold = step
 	}
-	return diff <= threshold
+	return diff < threshold
 }
 
 func max64(a, b int64) int64 {

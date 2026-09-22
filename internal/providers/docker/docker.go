@@ -630,8 +630,15 @@ func (p *Provider) containerUsage(ctx context.Context, runnerID, sidecarID strin
 		if err != nil {
 			continue
 		}
-		usage.CPUMillis += int64(cpu*10 + 0.5)
+		cpuMillis := int64(cpu*10 + 0.5)
+		usage.CPUMillis += cpuMillis
 		usage.MemoryBytes += mem
+		if cpuMillis > usage.EnvelopeCPUMillis {
+			usage.EnvelopeCPUMillis = cpuMillis
+		}
+		if mem > usage.EnvelopeMemoryBytes {
+			usage.EnvelopeMemoryBytes = mem
+		}
 		seen++
 	}
 	if seen == 0 {

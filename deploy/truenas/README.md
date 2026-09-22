@@ -303,6 +303,26 @@ This does **not** make normal `runnerhub` jobs privileged. It only lets the host
 
 Publisher pools are repository-scoped and can be disabled independently. They use a private Docker-in-Docker daemon rather than exposing the TrueNAS host Docker socket to workflow jobs.
 
+### Automatic CPU/RAM sizing
+
+Each standard, publisher, or custom runner pool can opt into **Auto-size CPU/RAM from observed job usage**. Resource learning is pool-specific, so a repository's standard runner, publisher runner, and custom profiles learn independently.
+
+The sizing policy is intentionally conservative:
+
+- the most recent 50 valid completed jobs are considered;
+- at least 5 valid jobs are required before an automatic upsize;
+- CPU targets use the observed p95 per-container peak plus 25% headroom; RAM targets use the maximum recent valid per-container peak plus 25% headroom because memory is a hard failure boundary; targets are rounded to 0.25 CPU and 0.5 GiB RAM steps;
+- automatic downsizing requires at least 25 valid jobs with at least two runtime samples each;
+- ordinary failed jobs are excluded, while any recent OOM-killed job raises the memory floor even when it falls outside the p95 tail;
+- impossible or incompatible telemetry is ignored rather than allowed to inflate the learned size;
+- a recommendation is applied only when it still passes RunnerHub policy and can fit at least one compatible host.
+
+For `container-dind` publisher/Docker-capable runners, the configured CPU and RAM values are **per outer container**. RunnerHub reserves one envelope for the Actions runner and one for its private DinD sidecar. Learning therefore sizes from the busiest individual outer container, not the sum of runner + sidecar usage. Aggregate usage is retained for diagnostics and display only.
+
+Changing a pool's CPU, RAM, GPU request, isolation mode, runner image, or machine selector manually starts a new learning window. Turning auto-size on for an existing pool also starts fresh rather than immediately acting on usage collected while automation was disabled. The dashboard also provides **Reset learning** for one runner class and **Reset all learning** for every runner class in a repository. Resetting is non-destructive: historical worker/audit records remain available, but only runners created after the reset join the new learning cohort; an older runner that finishes after the reset is still excluded. Reset does not itself change the currently configured CPU/RAM.
+
+Because runtime usage is sampled periodically, very short bursts can be missed. RunnerHub refuses to auto-downsize until at least 25 jobs have two or more runtime samples, and OOM kills are treated as memory-limit pressure. Users with unusually bursty workloads should still review the displayed CPU p95, RAM maximum, and learning coverage.
+
 For each private repository you want RunnerHub to serve, click:
 
 ```text

@@ -35,6 +35,8 @@ type WorkerHandle struct {
 type WorkerUsage struct {
 	CPUMillis int64 `json:"cpuMillis,omitempty"`
 	MemoryBytes int64 `json:"memoryBytes,omitempty"`
+	EnvelopeCPUMillis int64 `json:"envelopeCpuMillis,omitempty"`
+	EnvelopeMemoryBytes int64 `json:"envelopeMemoryBytes,omitempty"`
 }
 
 type WorkerState struct {

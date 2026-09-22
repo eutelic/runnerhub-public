@@ -168,3 +168,251 @@ func TestRecommendResourcesDownsizesOnlyWithHighConfidenceHistory(t *testing.T) 
 		t.Fatalf("mature recommendation=%+v, want 1250m / 2.5GiB", mature)
 	}
 }
+
+
+func TestRecommendResourcesUsesDinDPerContainerEnvelope(t *testing.T) {
+	pool := core.RunnerPool{
+		ID: "publisher",
+		Isolation: core.IsolationContainerDinD,
+		Resources: core.Resources{CPUMillis: 2500, MemoryBytes: 8 << 30},
+	}
+	base := time.Date(2026, 9, 21, 1, 0, 0, 0, time.UTC)
+	var workers []core.Worker
+	for i := 0; i < 5; i++ {
+		workers = append(workers, core.Worker{
+			ID: fmt.Sprintf("dind-%d", i), PoolID: pool.ID, Isolation: core.IsolationContainerDinD,
+			State: core.WorkerDeleted, StartedAt: base.Add(time.Duration(i) * time.Minute),
+			CompletedAt: base.Add(time.Duration(i)*time.Minute + 30*time.Second),
+			JobResult: "succeeded", Resources: pool.Resources,
+			Usage: core.ResourceUsageSummary{
+				PeakCPUMillis: 4800, PeakMemoryBytes: 12 << 30,
+				PeakEnvelopeCPUMillis: 2400, PeakEnvelopeMemoryBytes: 7 << 30, Samples: 3,
+			},
+		})
+	}
+	got := RecommendResources(pool, workers)
+	if !got.Ready || got.Jobs != 5 {
+		t.Fatalf("recommendation=%+v", got)
+	}
+	if got.CPUPeakP95Millis != 2400 || got.MemoryPeakP95Bytes != 7<<30 {
+		t.Fatalf("DinD sizing used aggregate instead of envelope: %+v", got)
+	}
+	if got.Recommended.CPUMillis != 3000 || got.Recommended.MemoryBytes != 9<<30 {
+		t.Fatalf("DinD recommendation=%+v, want 3000m / 9GiB", got.Recommended)
+	}
+}
+
+func TestRecommendResourcesRejectsLegacyDinDAggregateSamples(t *testing.T) {
+	pool := core.RunnerPool{
+		ID: "publisher",
+		Isolation: core.IsolationContainerDinD,
+		Resources: core.Resources{CPUMillis: 2500, MemoryBytes: 8 << 30},
+	}
+	base := time.Date(2026, 9, 21, 2, 0, 0, 0, time.UTC)
+	var workers []core.Worker
+	for i := 0; i < 5; i++ {
+		workers = append(workers, core.Worker{
+			ID: fmt.Sprintf("legacy-%d", i), PoolID: pool.ID, Isolation: core.IsolationContainerDinD,
+			State: core.WorkerDeleted, StartedAt: base.Add(time.Duration(i) * time.Minute),
+			CompletedAt: base.Add(time.Duration(i)*time.Minute + 30*time.Second),
+			JobResult: "succeeded", Resources: pool.Resources,
+			Usage: core.ResourceUsageSummary{PeakCPUMillis: 12070, PeakMemoryBytes: 2 << 30, Samples: 2},
+		})
+	}
+	got := RecommendResources(pool, workers)
+	if got.Ready || got.Jobs != 0 || got.RejectedJobs != 5 {
+		t.Fatalf("legacy DinD aggregate samples were trusted: %+v", got)
+	}
+}
+
+func TestRecommendResourcesRejectsImpossibleTrustedSample(t *testing.T) {
+	pool := core.RunnerPool{
+		ID: "standard",
+		Isolation: core.IsolationContainerTrusted,
+		Resources: core.Resources{CPUMillis: 2500, MemoryBytes: 4 << 30},
+	}
+	base := time.Date(2026, 9, 21, 3, 0, 0, 0, time.UTC)
+	var workers []core.Worker
+	for i := 0; i < 5; i++ {
+		cpu := int64(1500)
+		if i == 4 {
+			cpu = 12070
+		}
+		workers = append(workers, core.Worker{
+			ID: fmt.Sprintf("trusted-%d", i), PoolID: pool.ID, Isolation: core.IsolationContainerTrusted,
+			State: core.WorkerDeleted, StartedAt: base.Add(time.Duration(i) * time.Minute),
+			CompletedAt: base.Add(time.Duration(i)*time.Minute + 30*time.Second),
+			JobResult: "succeeded", Resources: pool.Resources,
+			Usage: core.ResourceUsageSummary{
+				PeakCPUMillis: cpu, PeakMemoryBytes: 2 << 30,
+				PeakEnvelopeCPUMillis: cpu, PeakEnvelopeMemoryBytes: 2 << 30, Samples: 2,
+			},
+		})
+	}
+	got := RecommendResources(pool, workers)
+	if got.Ready || got.Jobs != 4 || got.RejectedJobs != 1 {
+		t.Fatalf("impossible sample was not rejected: %+v", got)
+	}
+}
+
+func TestRecommendResourcesHonorsLearningReset(t *testing.T) {
+	resetAt := time.Date(2026, 9, 21, 4, 30, 0, 0, time.UTC)
+	pool := core.RunnerPool{
+		ID: "reset", Isolation: core.IsolationContainerTrusted,
+		Resources: core.Resources{CPUMillis: 2500, MemoryBytes: 4 << 30},
+		LearningResetAt: resetAt,
+	}
+	var workers []core.Worker
+	for i := 0; i < 10; i++ {
+		completed := resetAt.Add(time.Duration(i-5) * time.Minute)
+		workers = append(workers, core.Worker{
+			ID: fmt.Sprintf("reset-%d", i), PoolID: pool.ID, Isolation: core.IsolationContainerTrusted,
+			State: core.WorkerDeleted, StartedAt: completed.Add(-30 * time.Second), CompletedAt: completed,
+			JobResult: "succeeded", Resources: pool.Resources,
+			Usage: core.ResourceUsageSummary{
+				PeakCPUMillis: 1000, PeakMemoryBytes: 2 << 30,
+				PeakEnvelopeCPUMillis: 1000, PeakEnvelopeMemoryBytes: 2 << 30, Samples: 2,
+			},
+		})
+	}
+	workers = append(workers, core.Worker{
+		ID: "inflight-before-reset", PoolID: pool.ID, Isolation: core.IsolationContainerTrusted,
+		State: core.WorkerDeleted, CreatedAt: resetAt.Add(-10 * time.Minute), StartedAt: resetAt.Add(-5 * time.Minute),
+		CompletedAt: resetAt.Add(5 * time.Minute), JobResult: "succeeded", Resources: pool.Resources,
+		Usage: core.ResourceUsageSummary{
+			PeakCPUMillis: 2400, PeakMemoryBytes: 3 << 30,
+			PeakEnvelopeCPUMillis: 2400, PeakEnvelopeMemoryBytes: 3 << 30, Samples: 2,
+		},
+	})
+	got := RecommendResources(pool, workers)
+	// Completion exactly at reset time and a worker already in flight at reset
+	// are excluded, leaving four workers that actually started after reset.
+	if got.Jobs != 4 || got.Ready {
+		t.Fatalf("reset cutoff not honored: %+v", got)
+	}
+	if got.ResetAt == nil || !got.ResetAt.Equal(resetAt) {
+		t.Fatalf("resetAt=%v, want %v", got.ResetAt, resetAt)
+	}
+}
+
+
+func TestRecommendResourcesTreatsOOMAsMemoryLimitPressure(t *testing.T) {
+	pool := core.RunnerPool{
+		ID: "oom-pressure", Isolation: core.IsolationContainerTrusted,
+		Resources: core.Resources{CPUMillis: 2500, MemoryBytes: 4 << 30},
+	}
+	base := time.Date(2026, 9, 21, 5, 0, 0, 0, time.UTC)
+	var workers []core.Worker
+	for i := 0; i < 5; i++ {
+		workers = append(workers, core.Worker{
+			ID: fmt.Sprintf("oom-pressure-%d", i), PoolID: pool.ID, Isolation: core.IsolationContainerTrusted,
+			State: core.WorkerDeleted, StartedAt: base.Add(time.Duration(i) * time.Minute),
+			FailedAt: base.Add(time.Duration(i)*time.Minute + 30*time.Second),
+			JobResult: "failed", ProviderOOMKilled: true, Resources: pool.Resources,
+			Usage: core.ResourceUsageSummary{
+				PeakCPUMillis: 1000, PeakMemoryBytes: 2 << 30,
+				PeakEnvelopeCPUMillis: 1000, PeakEnvelopeMemoryBytes: 2 << 30, Samples: 2,
+			},
+		})
+	}
+	got := RecommendResources(pool, workers)
+	if !got.Ready || got.MemoryPeakP95Bytes != 4<<30 {
+		t.Fatalf("OOM did not promote memory pressure to configured limit: %+v", got)
+	}
+	if got.Recommended.MemoryBytes != 5<<30 {
+		t.Fatalf("OOM recommendation memory=%d, want %d", got.Recommended.MemoryBytes, int64(5<<30))
+	}
+}
+
+
+func TestRecommendResourcesDoesNotDownsizeSparseHistory(t *testing.T) {
+	pool := core.RunnerPool{ID: "sparse", Resources: core.Resources{CPUMillis: 2500, MemoryBytes: 8 << 30}}
+	base := time.Date(2026, 9, 21, 6, 0, 0, 0, time.UTC)
+	var workers []core.Worker
+	for i := 0; i < 30; i++ {
+		workers = append(workers, core.Worker{
+			ID: fmt.Sprintf("sparse-%d", i), PoolID: pool.ID, State: core.WorkerDeleted,
+			StartedAt: base.Add(time.Duration(i) * time.Minute),
+			CompletedAt: base.Add(time.Duration(i)*time.Minute + 10*time.Second),
+			JobResult: "succeeded", Resources: pool.Resources,
+			Usage: core.ResourceUsageSummary{PeakCPUMillis: 500, PeakMemoryBytes: 1 << 30, Samples: 1},
+		})
+	}
+	got := RecommendResources(pool, workers)
+	if !got.Ready || got.Jobs != 30 || got.WellSampledJobs != 0 {
+		t.Fatalf("sparse recommendation metadata=%+v", got)
+	}
+	if got.Recommended.CPUMillis != pool.Resources.CPUMillis || got.Recommended.MemoryBytes != pool.Resources.MemoryBytes {
+		t.Fatalf("sparse history downsized pool: %+v", got)
+	}
+}
+
+
+func TestRecommendResourcesRareOOMCannotBeHiddenByP95(t *testing.T) {
+	pool := core.RunnerPool{
+		ID: "rare-oom", Isolation: core.IsolationContainerTrusted,
+		Resources: core.Resources{CPUMillis: 2500, MemoryBytes: 4 << 30},
+	}
+	base := time.Date(2026, 9, 21, 7, 0, 0, 0, time.UTC)
+	var workers []core.Worker
+	for i := 0; i < 50; i++ {
+		oom := i == 49
+		wk := core.Worker{
+			ID: fmt.Sprintf("rare-oom-%d", i), PoolID: pool.ID, Isolation: core.IsolationContainerTrusted,
+			State: core.WorkerDeleted, StartedAt: base.Add(time.Duration(i) * time.Minute),
+			CompletedAt: base.Add(time.Duration(i)*time.Minute + 30*time.Second),
+			JobResult: "succeeded", Resources: pool.Resources,
+			Usage: core.ResourceUsageSummary{
+				PeakCPUMillis: 1000, PeakMemoryBytes: 1 << 30,
+				PeakEnvelopeCPUMillis: 1000, PeakEnvelopeMemoryBytes: 1 << 30, Samples: 2,
+			},
+		}
+		if oom {
+			wk.CompletedAt = time.Time{}
+			wk.FailedAt = base.Add(time.Duration(i)*time.Minute + 30*time.Second)
+			wk.JobResult = "failed"
+			wk.ProviderOOMKilled = true
+		}
+		workers = append(workers, wk)
+	}
+	got := RecommendResources(pool, workers)
+	if !got.Ready || got.MemoryPeakP95Bytes != 1<<30 {
+		t.Fatalf("unexpected p95 metadata: %+v", got)
+	}
+	if got.Recommended.MemoryBytes != 5<<30 {
+		t.Fatalf("rare OOM was hidden by p95: recommendation=%+v", got)
+	}
+}
+
+
+func TestRecommendResourcesRareMemoryHeavyJobCannotBeHiddenByP95(t *testing.T) {
+	pool := core.RunnerPool{
+		ID: "rare-memory", Isolation: core.IsolationContainerTrusted,
+		Resources: core.Resources{CPUMillis: 2500, MemoryBytes: 4 << 30},
+	}
+	base := time.Date(2026, 9, 21, 8, 0, 0, 0, time.UTC)
+	var workers []core.Worker
+	for i := 0; i < 50; i++ {
+		memory := int64(1 << 30)
+		if i == 49 {
+			memory = 7 << 29 // 3.5 GiB
+		}
+		workers = append(workers, core.Worker{
+			ID: fmt.Sprintf("rare-memory-%d", i), PoolID: pool.ID, Isolation: core.IsolationContainerTrusted,
+			State: core.WorkerDeleted, StartedAt: base.Add(time.Duration(i) * time.Minute),
+			CompletedAt: base.Add(time.Duration(i)*time.Minute + 30*time.Second),
+			JobResult: "succeeded", Resources: pool.Resources,
+			Usage: core.ResourceUsageSummary{
+				PeakCPUMillis: 1000, PeakMemoryBytes: memory,
+				PeakEnvelopeCPUMillis: 1000, PeakEnvelopeMemoryBytes: memory, Samples: 2,
+			},
+		})
+	}
+	got := RecommendResources(pool, workers)
+	if !got.Ready || got.MemoryPeakP95Bytes != 1<<30 || got.MemoryPeakMaxBytes != 7<<29 {
+		t.Fatalf("unexpected memory sizing metadata: %+v", got)
+	}
+	if got.Recommended.MemoryBytes != 9<<29 { // 4.5 GiB after 25% headroom and 0.5 GiB rounding
+		t.Fatalf("rare memory-heavy job was hidden by p95: recommendation=%+v", got)
+	}
+}

@@ -47,6 +47,7 @@ func TestUpdatePoolResources(t *testing.T){
 	got,err:=st.GetPool(ctx,"pool-resources")
 	if err!=nil{t.Fatal(err)}
 	if got.Resources.CPUMillis!=2500||got.Resources.MemoryBytes!=4<<30||got.Resources.DiskBytes!=20<<30||got.MaxConcurrency!=2{t.Fatalf("pool=%+v",got)}
+	if got.LearningResetAt.IsZero(){t.Fatalf("resource change did not reset learning: %+v",got)}
 }
 
 func TestRuntimeHealthEndpointSeparatesRuntimeEvidenceFromListenerState(t *testing.T){
@@ -198,11 +199,12 @@ func TestSummarizePoolLatenciesSeparatesLifecyclePhases(t *testing.T){
 func TestRecordWorkerUsageTracksCurrentPeakAndAverage(t *testing.T){
 	var wk core.Worker
 	now:=time.Date(2026,9,20,2,0,0,0,time.UTC)
-	recordWorkerUsage(&wk,&provider.WorkerUsage{CPUMillis:1000,MemoryBytes:2<<30},now,true)
-	recordWorkerUsage(&wk,&provider.WorkerUsage{CPUMillis:2000,MemoryBytes:4<<30},now.Add(time.Second),true)
+	recordWorkerUsage(&wk,&provider.WorkerUsage{CPUMillis:1000,MemoryBytes:2<<30,EnvelopeCPUMillis:900,EnvelopeMemoryBytes:1536<<20},now,true)
+	recordWorkerUsage(&wk,&provider.WorkerUsage{CPUMillis:2000,MemoryBytes:4<<30,EnvelopeCPUMillis:1800,EnvelopeMemoryBytes:3<<30},now.Add(time.Second),true)
 	if wk.Usage.Samples!=2{t.Fatalf("samples=%d",wk.Usage.Samples)}
 	if wk.Usage.CurrentCPUMillis!=2000||wk.Usage.PeakCPUMillis!=2000||wk.Usage.AverageCPUMillis!=1500{t.Fatalf("cpu usage=%+v",wk.Usage)}
 	if wk.Usage.CurrentMemoryBytes!=4<<30||wk.Usage.PeakMemoryBytes!=4<<30||wk.Usage.AverageMemoryBytes!=3<<30{t.Fatalf("memory usage=%+v",wk.Usage)}
+	if wk.Usage.PeakEnvelopeCPUMillis!=1800||wk.Usage.PeakEnvelopeMemoryBytes!=3<<30{t.Fatalf("envelope usage=%+v",wk.Usage)}
 }
 
 func TestAutoTunePoolUsesObservedCompletedJobs(t *testing.T){
@@ -240,4 +242,70 @@ func TestRunnerPoolNameFitsValidationLimit(t *testing.T){
 	got:=runnerPoolName("owner",strings.Repeat("repo_name_",20))
 	if len(got)==0||len(got)>63{t.Fatalf("runnerPoolName length=%d value=%q",len(got),got)}
 	if strings.HasPrefix(got,"-")||strings.HasSuffix(got,"-")||strings.Contains(got,"_"){t.Fatalf("invalid runner pool name %q",got)}
+}
+
+
+func TestResetPoolLearningPreservesWorkerHistory(t *testing.T){
+	ctx:=context.Background()
+	st,err:=store.OpenSQLite(":memory:");if err!=nil{t.Fatal(err)};defer st.Close()
+	pool:=core.RunnerPool{ID:"learn",Name:"learn",Isolation:core.IsolationContainerTrusted,Resources:core.Resources{CPUMillis:2500,MemoryBytes:4<<30},MaxConcurrency:1}
+	if err:=st.UpsertPool(ctx,pool);err!=nil{t.Fatal(err)}
+	worker:=core.Worker{ID:"history",PoolID:pool.ID,State:core.WorkerDeleted,StartedAt:time.Now().Add(-time.Minute),CompletedAt:time.Now().Add(-30*time.Second),Usage:core.ResourceUsageSummary{PeakCPUMillis:1000,PeakMemoryBytes:2<<30,Samples:2}}
+	if err:=st.UpsertWorker(ctx,worker);err!=nil{t.Fatal(err)}
+	svc:=&Service{Store:st}
+	req:=httptest.NewRequest(http.MethodPost,"/api/v1/pools/learn/learning/reset",nil)
+	rr:=httptest.NewRecorder()
+	svc.Handler().ServeHTTP(rr,req)
+	if rr.Code!=http.StatusOK{t.Fatalf("status=%d body=%s",rr.Code,rr.Body.String())}
+	got,err:=st.GetPool(ctx,pool.ID);if err!=nil{t.Fatal(err)}
+	if got.LearningResetAt.IsZero(){t.Fatal("learning reset timestamp was not persisted")}
+	workers,err:=st.ListWorkers(ctx);if err!=nil{t.Fatal(err)}
+	if len(workers)!=1||workers[0].ID!="history"{t.Fatalf("worker history changed: %+v",workers)}
+	rec:=telemetry.RecommendResources(got,workers)
+	if rec.Jobs!=0||rec.Ready{t.Fatalf("pre-reset sample still influenced learning: %+v",rec)}
+}
+
+func TestResourceLearningConfigChangeTracksExecutionEnvironment(t *testing.T){
+	base:=core.RunnerPool{Resources:core.Resources{CPUMillis:2500,MemoryBytes:4<<30,DiskBytes:20<<30},Isolation:core.IsolationContainerTrusted,MaxConcurrency:1,Image:"img-v1",HostSelector:map[string]string{"lane":"fast"}}
+	same:=base;same.MaxConcurrency=3;same.AutoTuneResources=true
+	if resourceLearningConfigChanged(base,same){t.Fatal("concurrency/autotune toggle should not invalidate CPU/RAM learning")}
+	changed:=base;changed.Resources.CPUMillis=3000
+	if !resourceLearningConfigChanged(base,changed){t.Fatal("CPU change should invalidate learning")}
+	changed=base;changed.Resources.MemoryBytes=8<<30
+	if !resourceLearningConfigChanged(base,changed){t.Fatal("RAM change should invalidate learning")}
+	changed=base;changed.Resources.GPUs=1
+	if !resourceLearningConfigChanged(base,changed){t.Fatal("GPU change should invalidate learning")}
+	changed=base;changed.Isolation=core.IsolationContainerDinD
+	if !resourceLearningConfigChanged(base,changed){t.Fatal("isolation change should invalidate learning")}
+	changed=base;changed.Image="img-v2"
+	if !resourceLearningConfigChanged(base,changed){t.Fatal("runner image change should invalidate learning")}
+	changed=base;changed.HostSelector=map[string]string{"lane":"gpu"}
+	if !resourceLearningConfigChanged(base,changed){t.Fatal("host selector change should invalidate learning")}
+}
+
+func TestAutoTunePublisherIgnoresLegacyAggregateSamples(t *testing.T){
+	ctx:=context.Background()
+	st,err:=store.OpenSQLite(":memory:");if err!=nil{t.Fatal(err)};defer st.Close()
+	pool:=core.RunnerPool{ID:"publisher-auto",Name:"publisher-auto",Isolation:core.IsolationContainerDinD,Resources:core.Resources{CPUMillis:2500,MemoryBytes:8<<30,DiskBytes:40<<30},MaxConcurrency:1,AutoTuneResources:true}
+	if err:=st.UpsertPool(ctx,pool);err!=nil{t.Fatal(err)}
+	host:=core.Host{ID:"host",Name:"host",Provider:"docker",State:core.HostOnline,Tags:map[string]string{"isolation.container-dind":"true"},Capacity:core.Resources{CPUMillis:32000,MemoryBytes:64<<30,DiskBytes:500<<30}}
+	if err:=st.UpsertHost(ctx,host);err!=nil{t.Fatal(err)}
+	base:=time.Date(2026,9,21,1,0,0,0,time.UTC)
+	for i:=0;i<5;i++{
+		wk:=core.Worker{ID:fmt.Sprintf("legacy-pub-%d",i),PoolID:pool.ID,HostID:host.ID,Isolation:core.IsolationContainerDinD,State:core.WorkerDeleted,StartedAt:base.Add(time.Duration(i)*time.Minute),CompletedAt:base.Add(time.Duration(i)*time.Minute+30*time.Second),JobResult:"succeeded",Resources:pool.Resources,Usage:core.ResourceUsageSummary{PeakCPUMillis:12070,PeakMemoryBytes:2<<30,Samples:2}}
+		if err:=st.UpsertWorker(ctx,wk);err!=nil{t.Fatal(err)}
+	}
+	svc:=&Service{Store:st,Policy:policy.Engine{}}
+	if err:=svc.maybeAutoTunePool(ctx,pool.ID);err!=nil{t.Fatal(err)}
+	got,err:=st.GetPool(ctx,pool.ID);if err!=nil{t.Fatal(err)}
+	if got.Resources.CPUMillis!=2500||got.Resources.MemoryBytes!=8<<30{t.Fatalf("legacy aggregate changed publisher sizing: %+v",got.Resources)}
+}
+
+
+func TestEnablingAutoTuneStartsFreshLearningWindow(t *testing.T){
+	before:=core.RunnerPool{Resources:core.Resources{CPUMillis:2500,MemoryBytes:4<<30},Isolation:core.IsolationContainerTrusted,AutoTuneResources:false}
+	after:=before
+	after.AutoTuneResources=true
+	resetLearningForConfigChange(&before,&after)
+	if after.LearningResetAt.IsZero(){t.Fatal("enabling auto-size should start a fresh learning window")}
 }
