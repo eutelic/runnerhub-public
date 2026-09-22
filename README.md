@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="web/runnerhub-logo-black.png" alt="RunnerHub logo" width="96">
+</p>
+
 # RunnerHub
 
 RunnerHub is a control plane for running GitHub Actions on compute you already own: Linux servers, NAS boxes, workstations, VMs and specialized hardware.
