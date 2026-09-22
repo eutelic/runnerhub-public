@@ -343,7 +343,7 @@ The dashboard shows **Pending/Starting/Ready/Error** per repository. Creating th
 
 No Compose edit or container restart is required.
 
-The first GitHub user to complete sign-in becomes the local RunnerHub owner. That owner identity is persisted in the RunnerHub data directory. Browser sessions themselves are intentionally in memory and require sign-in again after a control-plane restart.
+The first GitHub user to complete sign-in becomes the local RunnerHub owner. That owner identity is persisted in the RunnerHub data directory. Browser sessions are also persisted server-side in `data/github-sessions.json` with mode `0600`, so normal control-plane restarts and redeploys do not require another GitHub sign-in. Expiring GitHub App user access tokens are refreshed automatically while the 90-day browser session remains valid; signing out removes the persisted session.
 
 API-key administration remains available as a fallback.
 
@@ -412,7 +412,7 @@ agent/
 secrets/
 ```
 
-The `data/` directory now also contains the persisted GitHub owner claim. The GitHub App private key and client secret may be local under `secrets/` or externally managed.
+The `data/` directory contains the persisted GitHub owner claim and `github-sessions.json`. The session file contains GitHub OAuth access/refresh credentials and is written with mode `0600`, so protect `data/` backups as sensitive material. The GitHub App private key and client secret may be local under `secrets/` or externally managed.
 
 ## Updates and rollback
 
