@@ -11,10 +11,11 @@ permissions:
 jobs:
   cancel-obsolete:
     if: github.event.pull_request.merged == true
-    # This control-plane cleanup intentionally uses a GitHub-hosted runner so it
-    # can free saturated RunnerHub capacity instead of waiting behind the work
-    # it is trying to cancel.
-    runs-on: ubuntu-latest
+    # Keep cleanup off the constrained publisher lane so it can cancel obsolete
+    # publisher work even while that lane is saturated. The repository does not
+    # rely on GitHub-hosted runners, so use the normal RunnerHub lane.
+    runs-on: runnerhub
+    timeout-minutes: 5
     steps:
       - name: Cancel obsolete merged-PR validation runs
         env:

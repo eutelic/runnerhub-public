@@ -36,6 +36,10 @@ func(b *HTTPBackend)ListWorkflowJobs(ctx context.Context,scope core.GitHubScope,
 				Status string `json:"status"`
 				Conclusion string `json:"conclusion"`
 				RunnerName string `json:"runner_name"`
+				RunnerGroupName string `json:"runner_group_name"`
+				Labels []string `json:"labels"`
+				StartedAt time.Time `json:"started_at"`
+				CompletedAt time.Time `json:"completed_at"`
 				Steps []struct{
 					Name string `json:"name"`
 					Status string `json:"status"`
@@ -49,7 +53,7 @@ func(b *HTTPBackend)ListWorkflowJobs(ctx context.Context,scope core.GitHubScope,
 		for _,job:=range response.Jobs{
 			steps:=make([]JobStep,0,len(job.Steps))
 			for _,step:=range job.Steps{steps=append(steps,JobStep{Name:step.Name,Status:step.Status,Conclusion:step.Conclusion,Number:step.Number})}
-			out=append(out,WorkflowJob{ID:job.ID,Name:job.Name,Status:job.Status,Conclusion:job.Conclusion,RunnerName:job.RunnerName,Steps:steps})
+			out=append(out,WorkflowJob{ID:job.ID,Name:job.Name,Status:job.Status,Conclusion:job.Conclusion,RunnerName:job.RunnerName,RunnerGroupName:job.RunnerGroupName,Labels:append([]string(nil),job.Labels...),StartedAt:job.StartedAt,CompletedAt:job.CompletedAt,Steps:steps})
 		}
 		if len(response.Jobs)<100||len(out)>=response.TotalCount{break}
 	}

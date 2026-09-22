@@ -28,11 +28,12 @@ permissions:
   actions: read
   packages: write
 
-# Release/image publication must serialize per ref, but an in-progress publish must
-# finish rather than being canceled by a newer commit.
+# Serialize publication per ref. Branch snapshots are supersedable, so a newer
+# main commit cancels obsolete publication work. Immutable tag releases must
+# finish independently and are never canceled merely because main advanced.
 concurrency:
   group: publish-images-${{ github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: ${{ github.ref_type == 'branch' }}
 
 # Docker-capable build/validation work uses an isolated DinD lane. Registry tag
 # publication is a daemonless crane operation on runnerhub-fast.

@@ -39,9 +39,10 @@ for workflow in "${scoped_workflows[@]}"; do
   require_fixed "$workflow" '${{ github.event.pull_request.number || github.ref }}'
 done
 
-# Publishing is stateful: newer publishes for the same ref must queue behind an
-# in-progress publish instead of interrupting it halfway through.
-require_fixed "$workflow_dir/publish-images.yml" "cancel-in-progress: false"
+# Branch snapshot publication is supersedable, but immutable tag publication
+# must finish. Keep that distinction explicit in the workflow policy.
+require_fixed "$workflow_dir/publish-images.yml" "cancel-in-progress:"
+require_fixed "$workflow_dir/publish-images.yml" "github.ref_type == 'branch'"
 
 # Merged PRs use a different concurrency group from their resulting main push.
 # The cleanup workflow must cancel only ordinary PR validation and must never
@@ -51,6 +52,7 @@ require_fixed "$cleanup" "pull_request:"
 require_fixed "$cleanup" "types: [closed]"
 require_fixed "$cleanup" "github.event.pull_request.merged == true"
 require_fixed "$cleanup" "actions: write"
+require_fixed "$cleanup" "runs-on: runnerhub"
 require_fixed "$cleanup" "event=pull_request&head_sha="
 require_fixed "$cleanup" "/cancel"
 if grep -Fq -- "publish-images)" "$cleanup"; then

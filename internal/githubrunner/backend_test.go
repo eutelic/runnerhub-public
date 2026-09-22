@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/eutelic/runnerhub/internal/core"
 )
@@ -146,7 +147,7 @@ func TestHTTPBackendListWorkflowJobs(t *testing.T) {
 		if r.URL.Query().Get("filter") != "latest" || r.URL.Query().Get("per_page") != "100" {
 			t.Fatalf("unexpected query: %s", r.URL.RawQuery)
 		}
-		_, _ = w.Write([]byte(`{"total_count":1,"jobs":[{"id":1234,"name":"test","status":"in_progress","conclusion":null,"runner_name":"runnerhub-abc","steps":[{"name":"Set up job","status":"completed","conclusion":"success","number":1},{"name":"Run tests","status":"in_progress","conclusion":null,"number":2},{"name":"Complete job","status":"queued","conclusion":null,"number":3}]}]}`))
+		_, _ = w.Write([]byte(`{"total_count":1,"jobs":[{"id":1234,"name":"test","status":"in_progress","conclusion":null,"runner_name":"runnerhub-abc","runner_group_name":"Default","labels":["runnerhub","linux"],"started_at":"2026-09-22T16:00:00Z","completed_at":null,"steps":[{"name":"Set up job","status":"completed","conclusion":"success","number":1},{"name":"Run tests","status":"in_progress","conclusion":null,"number":2},{"name":"Complete job","status":"queued","conclusion":null,"number":3}]}]}`))
 	}))
 	defer server.Close()
 
@@ -159,8 +160,12 @@ func TestHTTPBackendListWorkflowJobs(t *testing.T) {
 		t.Fatalf("expected one job, got %d", len(jobs))
 	}
 	job := jobs[0]
-	if job.ID != 1234 || job.RunnerName != "runnerhub-abc" || len(job.Steps) != 3 {
+	if job.ID != 1234 || job.RunnerName != "runnerhub-abc" || job.RunnerGroupName != "Default" || len(job.Labels) != 2 || len(job.Steps) != 3 {
 		t.Fatalf("unexpected job: %+v", job)
+	}
+	wantStarted := time.Date(2026, 9, 22, 16, 0, 0, 0, time.UTC)
+	if !job.StartedAt.Equal(wantStarted) || !job.CompletedAt.IsZero() {
+		t.Fatalf("unexpected job timing: %+v", job)
 	}
 	if job.Steps[1].Name != "Run tests" || job.Steps[1].Status != "in_progress" {
 		t.Fatalf("unexpected steps: %+v", job.Steps)
