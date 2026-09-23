@@ -223,10 +223,23 @@ function tab(rows,cols){
     rows.map(r=>'<tr>'+cols.map(c=>'<td>'+esc(c[1](r))+'</td>').join('')+'</tr>').join('')+'</table></div>';
 }
 
+function renderPreservingTableScroll(container,html){
+  if(!container)return;
+  if(container.innerHTML===html)return;
+  const scroll=[...container.querySelectorAll('.table-wrap')].map(w=>({left:w.scrollLeft,top:w.scrollTop}));
+  container.innerHTML=html;
+  container.querySelectorAll('.table-wrap').forEach((w,i)=>{
+    const pos=scroll[i];
+    if(!pos)return;
+    w.scrollLeft=pos.left;
+    w.scrollTop=pos.top;
+  });
+}
+
 function hostTagText(host){return Object.keys(host?.userTags||{}).sort().join(', ')}
 function renderHosts(hosts){
   if(!Array.isArray(hosts)||!hosts.length){els.hosts.innerHTML='<span class="muted">None</span>';return}
-  els.hosts.innerHTML='<div class="table-wrap"><table><tr><th>Name</th><th>State</th><th>CPU</th><th>Memory</th><th>Priority</th><th>Tags</th><th></th></tr>'+
+  renderPreservingTableScroll(els.hosts,'<div class="table-wrap"><table><tr><th>Name</th><th>State</th><th>CPU</th><th>Memory</th><th>Priority</th><th>Tags</th><th></th></tr>'+
     hosts.map(h=>'<tr>'+
       '<td>'+esc(h.name)+'</td>'+
       '<td>'+esc(h.state)+'</td>'+
@@ -235,7 +248,7 @@ function renderHosts(hosts){
       '<td><input class="inline-tags" data-host-priority-input="'+esc(h.id)+'" type="number" min="-1000" max="1000" step="1" value="'+esc(Number(h.priority||0))+'"></td>'+
       '<td><input class="inline-tags" data-host-tag-input="'+esc(h.id)+'" value="'+esc(hostTagText(h))+'" placeholder="gpu, high-memory"></td>'+
       '<td><button class="secondary compact" data-host-tags="'+esc(h.id)+'">Save</button></td>'+
-    '</tr>').join('')+'</table></div>';
+    '</tr>').join('')+'</table></div>');
 }
 
 function renderActiveRunners(workers,poolByID,hostByID,progressByWorker){
@@ -256,7 +269,7 @@ function renderActiveRunners(workers,poolByID,hostByID,progressByWorker){
     return;
   }
 
-  els.activeRunners.innerHTML=tab(active,[
+  renderPreservingTableScroll(els.activeRunners,tab(active,[
     ['Repository',x=>x.repository||repoName(poolByID?.get(x.poolId))||'—'],
     ['Type',x=>runnerClass(poolByID?.get(x.poolId))],
     ['Job',x=>x.jobName||(String(x.state||'').toLowerCase()==='ready'?'idle / waiting':'startup')],
@@ -270,7 +283,7 @@ function renderActiveRunners(workers,poolByID,hostByID,progressByWorker){
     ['Runner started',x=>fmtTime(x.createdAt)],
     ['Job started',x=>fmtTime(x.startedAt)],
     ['Age',x=>fmtAge(x.createdAt)]
-  ]);
+  ]));
 }
 
 function renderWorkers(workers,poolByID){
@@ -297,7 +310,7 @@ function renderWorkers(workers,poolByID){
     return;
   }
 
-  els.workers.innerHTML=tab(visible,[
+  renderPreservingTableScroll(els.workers,tab(visible,[
     ['Repository',x=>x.repository||repoName(x)||'—'],
     ['Class',x=>runnerClass(poolByID?.get(x.poolId))],
     ['Job',x=>x.jobName||'startup'],
@@ -309,7 +322,7 @@ function renderWorkers(workers,poolByID){
     ['Allocated',x=>allocatedCPUText(x,poolByID?.get(x.poolId))+' / '+allocatedRAMText(x,poolByID?.get(x.poolId))],
     ['Updated',x=>fmtTime(workerTimestamp(x))],
     ['Failure',x=>x.failureReason||'']
-  ])+'<div class="muted small workers-note">Historical and deleted worker records are hidden here. Diagnostics retains the full history.</div>';
+  ])+'<div class="muted small workers-note">Historical and deleted worker records are hidden here. Diagnostics retains the full history.</div>');
 }
 
 function renderDeployerStatus(status){
@@ -440,7 +453,7 @@ async function refresh(){
 
     renderDeployerStatus(deployer);
     renderHosts(h);
-    els.pools.innerHTML=tab(p,[
+    renderPreservingTableScroll(els.pools,tab(p,[
       ['Repository',x=>repoName(x)],
       ['Class',x=>runnerClass(x)],
       ['Request',x=>cpuCores(x.resources?.cpuMillis)+' cores / '+gib(x.resources?.memoryBytes)+' GiB'],
@@ -463,15 +476,15 @@ async function refresh(){
       ['Recommend',x=>recommendationByPool.get(x.id)?.recommended??'—'],
       ['Listener',x=>listenerByPool.get(x.id)?.state||'pending'],
       ['Runtime',x=>runtimeByPool.get(x.id)?.state||'unknown']
-    ]);
+    ]));
     renderActiveRunners(w,poolByID,hostByID,progressByWorker);
     renderWorkers(w,poolByID);
-    els.audit.innerHTML=tab(a,[
+    renderPreservingTableScroll(els.audit,tab(a,[
       ['When',x=>fmtTime(x.createdAt)],
       ['Action',x=>x.action],
       ['Result',x=>x.result],
       ['Detail',x=>x.safeDetail||'']
-    ]);
+    ]));
     if(auth.authenticated&&!els.repos.querySelector('.repo-config[open]'))renderRepos(repos||[],p||[],statuses||[],runtimeHealth||[],h||[],installations||[]);
   }catch(e){message(e.message,'error')}
 }
