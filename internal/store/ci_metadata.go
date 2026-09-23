@@ -16,6 +16,7 @@ type CIWorkflowRun struct {
 	Conclusion         string    `json:"conclusion,omitempty"`
 	HeadBranch         string    `json:"headBranch,omitempty"`
 	HeadSHA            string    `json:"headSha,omitempty"`
+	HeadTreeSHA        string    `json:"headTreeSha,omitempty"`
 	CreatedAt          time.Time `json:"createdAt,omitempty"`
 	RunStartedAt       time.Time `json:"runStartedAt,omitempty"`
 	UpdatedAt          time.Time `json:"updatedAt,omitempty"`

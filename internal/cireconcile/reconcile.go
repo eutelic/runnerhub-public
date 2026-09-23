@@ -52,6 +52,7 @@ func (r *Reconciler) Once(ctx context.Context) error {
 	}
 	metadataStore, metadataOK := r.Store.(store.CIMetadataStore)
 	findingStore, findingsOK := r.Store.(store.CIFindingStore)
+	certificateStore, certificatesOK := r.Store.(store.CIValidationCertificateStore)
 	if !metadataOK || !findingsOK {
 		return errors.New("CI reconciliation requires metadata and finding persistence")
 	}
@@ -89,6 +90,7 @@ func (r *Reconciler) Once(ctx context.Context) error {
 		}
 		candidates = append(candidates, worker)
 	}
+	sortWorkersByCompletion(candidates)
 
 	persistedRuns := map[string]store.CIWorkflowRun{}
 	repositories := map[string]struct{}{}
@@ -135,7 +137,7 @@ func (r *Reconciler) Once(ctx context.Context) error {
 		}
 
 		var matchedJob *githubrunner.WorkflowJob
-		if storedRun.RunID == 0 {
+		if storedRun.RunID == 0 || strings.TrimSpace(storedRun.HeadTreeSHA) == "" {
 			key := runKey{repository: repository, runID: worker.WorkflowRunID}
 			latest, ok := latestRuns[key]
 			if !ok {
@@ -157,7 +159,7 @@ func (r *Reconciler) Once(ctx context.Context) error {
 				continue
 			}
 			attemptKey = runIdentityKey(repository, worker.WorkflowRunID, attempt)
-			if cached := persistedRuns[attemptKey]; cached.RunID != 0 {
+			if cached := persistedRuns[attemptKey]; cached.RunID != 0 && strings.TrimSpace(cached.HeadTreeSHA) != "" {
 				storedRun = cached
 			} else {
 				run := latest
@@ -171,7 +173,7 @@ func (r *Reconciler) Once(ctx context.Context) error {
 				storedRun = store.CIWorkflowRun{
 					Repository: repository, RunID: run.ID, Attempt: attempt, Name: run.Name, Path: run.Path,
 					Event: run.Event, Status: run.Status, Conclusion: run.Conclusion, HeadBranch: run.HeadBranch,
-					HeadSHA: run.HeadSHA, CreatedAt: run.CreatedAt, RunStartedAt: run.RunStartedAt,
+					HeadSHA: run.HeadSHA, HeadTreeSHA: run.HeadTreeSHA, CreatedAt: run.CreatedAt, RunStartedAt: run.RunStartedAt,
 					UpdatedAt: run.UpdatedAt, PullRequestNumbers: append([]int(nil), run.PullRequestNumbers...),
 				}
 				if storedRun.RunID == 0 {
@@ -202,6 +204,10 @@ func (r *Reconciler) Once(ctx context.Context) error {
 			}
 			if strings.TrimSpace(worker.JobName) == "" && strings.TrimSpace(matchedJob.Name) != "" {
 				worker.JobName = matchedJob.Name
+				changed = true
+			}
+			if strings.TrimSpace(worker.JobResult) == "" && strings.TrimSpace(matchedJob.Conclusion) != "" {
+				worker.JobResult = matchedJob.Conclusion
 				changed = true
 			}
 			if worker.StartedAt.IsZero() && !matchedJob.StartedAt.IsZero() {
@@ -268,6 +274,7 @@ func (r *Reconciler) Once(ctx context.Context) error {
 		uniqueRuns[key] = run
 	}
 
+	workflowFileCache := map[string]githubrunner.RepositoryFile{}
 	for _, worker := range candidates {
 		run, ok := runByWorker[worker.ID]
 		if !ok || !ciaudit.OrdinaryValidationWorkflow(run.Name) {
@@ -307,6 +314,12 @@ func (r *Reconciler) Once(ctx context.Context) error {
 				if err := findingStore.UpsertCIFinding(ctx, normalizeRepository(worker.Repository), finding); err != nil {
 					errs = append(errs, err)
 				}
+			}
+		}
+
+		if certificatesOK {
+			if err := r.reconcileValidationIdentity(ctx, worker, run, certificateStore, findingStore, workflowFileCache); err != nil {
+				errs = append(errs, fmt.Errorf("%s worker %s validation identity: %w", normalizeRepository(worker.Repository), worker.ID, err))
 			}
 		}
 	}

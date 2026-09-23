@@ -9,6 +9,7 @@ import (
 
 	"github.com/eutelic/runnerhub/internal/core"
 	"github.com/eutelic/runnerhub/internal/githubrunner"
+	"github.com/eutelic/runnerhub/internal/images"
 	"github.com/eutelic/runnerhub/internal/store"
 )
 
@@ -17,6 +18,7 @@ type fakeGitHub struct {
 	attempts map[string]githubrunner.WorkflowRunMetadata
 	jobs     map[string][]githubrunner.WorkflowJob
 	prs      map[int]githubrunner.PullRequestMetadata
+	files    map[string]githubrunner.RepositoryFile
 }
 
 func (f fakeGitHub) GetWorkflowRun(_ context.Context, _ core.GitHubScope, runID int64) (githubrunner.WorkflowRunMetadata, error) {
@@ -47,6 +49,14 @@ func (f fakeGitHub) GetPullRequest(_ context.Context, _ core.GitHubScope, number
 	return pr, nil
 }
 
+func (f fakeGitHub) GetRepositoryFile(_ context.Context, _ core.GitHubScope, path, ref string) (githubrunner.RepositoryFile, error) {
+	file, ok := f.files[ref+":"+path]
+	if !ok {
+		return githubrunner.RepositoryFile{}, fmt.Errorf("file %s at %s not found", path, ref)
+	}
+	return file, nil
+}
+
 type noCallGitHub struct{}
 
 func (noCallGitHub) GetWorkflowRun(context.Context, core.GitHubScope, int64) (githubrunner.WorkflowRunMetadata, error) {
@@ -60,6 +70,9 @@ func (noCallGitHub) ListWorkflowJobsAttempt(context.Context, core.GitHubScope, i
 }
 func (noCallGitHub) GetPullRequest(context.Context, core.GitHubScope, int) (githubrunner.PullRequestMetadata, error) {
 	return githubrunner.PullRequestMetadata{}, errors.New("unexpected GetPullRequest call")
+}
+func (noCallGitHub) GetRepositoryFile(context.Context, core.GitHubScope, string, string) (githubrunner.RepositoryFile, error) {
+	return githubrunner.RepositoryFile{}, errors.New("unexpected GetRepositoryFile call")
 }
 
 func TestReconcilePersistsAttemptsAndDeterministicFindings(t *testing.T) {
@@ -92,7 +105,7 @@ func TestReconcilePersistsAttemptsAndDeterministicFindings(t *testing.T) {
 		return githubrunner.WorkflowRunMetadata{
 			ID: id, Attempt: 1, Name: name, Path: ".github/workflows/" + name + ".yml",
 			Event: "pull_request", Status: "completed", Conclusion: "success",
-			HeadBranch: "feature", HeadSHA: sha, CreatedAt: created, PullRequestNumbers: []int{pr},
+			HeadBranch: "feature", HeadSHA: sha, HeadTreeSHA: "tree-" + sha, CreatedAt: created, PullRequestNumbers: []int{pr},
 		}
 	}
 	oldRun := run(100, "ci", "aaa", oldCreated, 5)
@@ -186,7 +199,7 @@ func TestReconcileFailedWorkerUsesGitHubCompletionTime(t *testing.T) {
 	run := githubrunner.WorkflowRunMetadata{
 		ID: 400, Attempt: 1, Name: "ci", Path: ".github/workflows/ci.yml",
 		Event: "pull_request", Status: "completed", Conclusion: "failure",
-		HeadBranch: "feature", HeadSHA: "ddd", CreatedAt: started.Add(-time.Minute),
+		HeadBranch: "feature", HeadSHA: "ddd", HeadTreeSHA: "tree-ddd", CreatedAt: started.Add(-time.Minute),
 		PullRequestNumbers: []int{9},
 	}
 	gh := fakeGitHub{
@@ -216,5 +229,199 @@ func TestReconcileFailedWorkerUsesGitHubCompletionTime(t *testing.T) {
 	}
 	if len(findings) != 1 || findings[0].DetectorID != "post-merge-validation" {
 		t.Fatalf("findings=%+v", findings)
+	}
+}
+
+
+func TestReconcileDetectsEquivalentValidationAcrossDifferentCommitSHAs(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.OpenSQLite(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	now := time.Date(2026, 9, 23, 13, 0, 0, 0, time.UTC)
+	if err := st.UpsertHost(ctx, core.Host{
+		ID: "host-1", Name: "host-1", State: core.HostOnline, Architecture: "amd64",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	firstStart := now.Add(-30 * time.Minute)
+	secondStart := now.Add(-10 * time.Minute)
+	workers := []core.Worker{
+		{
+			ID: "pr-job", HostID: "host-1", Repository: "eutelic/runnerhub",
+			WorkflowRunID: 501, WorkflowRunAttempt: 1, JobID: "5001", JobName: "test",
+			GitHubRunnerOS: "linux", Isolation: core.IsolationContainerTrusted, Image: images.DefaultRunnerImage,
+			StartedAt: firstStart, CompletedAt: firstStart.Add(2 * time.Minute), JobResult: "success",
+			Resources: core.Resources{CPUMillis: 1000, MemoryBytes: 1 << 30},
+		},
+		{
+			ID: "main-job", HostID: "host-1", Repository: "eutelic/runnerhub",
+			WorkflowRunID: 502, WorkflowRunAttempt: 1, JobID: "5002", JobName: "test",
+			GitHubRunnerOS: "linux", Isolation: core.IsolationContainerTrusted, Image: images.DefaultRunnerImage,
+			StartedAt: secondStart, CompletedAt: secondStart.Add(2 * time.Minute), JobResult: "success",
+			Resources: core.Resources{CPUMillis: 1000, MemoryBytes: 1 << 30},
+		},
+	}
+	for _, worker := range workers {
+		if err := st.UpsertWorker(ctx, worker); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	const workflow = `name: ci
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: runnerhub
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+      - run: go test ./...
+`
+	prRun := githubrunner.WorkflowRunMetadata{
+		ID: 501, Attempt: 1, Name: "ci", Path: ".github/workflows/ci.yml",
+		Event: "pull_request", Status: "completed", Conclusion: "success",
+		HeadBranch: "feature", HeadSHA: "commit-pr", HeadTreeSHA: "same-tree",
+		CreatedAt: firstStart.Add(-time.Minute), PullRequestNumbers: []int{21},
+	}
+	mainRun := githubrunner.WorkflowRunMetadata{
+		ID: 502, Attempt: 1, Name: "ci", Path: ".github/workflows/ci.yml",
+		Event: "push", Status: "completed", Conclusion: "success",
+		HeadBranch: "main", HeadSHA: "commit-main", HeadTreeSHA: "same-tree",
+		CreatedAt: secondStart.Add(-time.Minute),
+	}
+	gh := fakeGitHub{
+		runs: map[int64]githubrunner.WorkflowRunMetadata{501: prRun, 502: mainRun},
+		attempts: map[string]githubrunner.WorkflowRunMetadata{"501:1": prRun, "502:1": mainRun},
+		prs: map[int]githubrunner.PullRequestMetadata{
+			21: {Number: 21, State: "open", HeadRef: "feature", HeadSHA: "commit-pr", BaseRef: "main"},
+		},
+		files: map[string]githubrunner.RepositoryFile{
+			"commit-pr:.github/workflows/ci.yml":   {SHA: "workflow-blob", Content: []byte(workflow)},
+			"commit-main:.github/workflows/ci.yml": {SHA: "workflow-blob", Content: []byte(workflow)},
+		},
+	}
+
+	rec := &Reconciler{Store: st, GitHub: gh, Lookback: 24 * time.Hour, Now: func() time.Time { return now }}
+	if err := rec.Once(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	first, err := st.GetWorker(ctx, "pr-job")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := st.GetWorker(ctx, "main-job")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.ValidationKey == "" || first.ValidationKey != second.ValidationKey {
+		t.Fatalf("validation keys differ: pr=%q main=%q", first.ValidationKey, second.ValidationKey)
+	}
+	if first.ValidationInputHash == "" || first.ValidationInputHash != second.ValidationInputHash {
+		t.Fatalf("input hashes differ: pr=%q main=%q", first.ValidationInputHash, second.ValidationInputHash)
+	}
+
+	findings, err := st.ListCIFindings(ctx, "eutelic/runnerhub", now.Add(-24*time.Hour), now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundEquivalent := false
+	for _, finding := range findings {
+		if finding.JobID == "main-job" && finding.DetectorID == "equivalent-validation" {
+			foundEquivalent = true
+			if finding.Class != "input-equivalent" {
+				t.Fatalf("equivalent finding class=%q", finding.Class)
+			}
+		}
+	}
+	if !foundEquivalent {
+		t.Fatalf("expected equivalent validation finding, got %+v", findings)
+	}
+}
+
+func TestReconcileDoesNotReuseWhenWorkflowReadsGitHubSHA(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.OpenSQLite(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	now := time.Date(2026, 9, 23, 14, 0, 0, 0, time.UTC)
+	if err := st.UpsertHost(ctx, core.Host{
+		ID: "host-1", Name: "host-1", State: core.HostOnline, Architecture: "amd64",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, worker := range []core.Worker{
+		{
+			ID: "first", HostID: "host-1", Repository: "eutelic/runnerhub",
+			WorkflowRunID: 601, WorkflowRunAttempt: 1, JobID: "6001", JobName: "test",
+			GitHubRunnerOS: "linux", Isolation: core.IsolationContainerTrusted, Image: images.DefaultRunnerImage,
+			StartedAt: now.Add(-30 * time.Minute), CompletedAt: now.Add(-29 * time.Minute), JobResult: "success",
+		},
+		{
+			ID: "second", HostID: "host-1", Repository: "eutelic/runnerhub",
+			WorkflowRunID: 602, WorkflowRunAttempt: 1, JobID: "6002", JobName: "test",
+			GitHubRunnerOS: "linux", Isolation: core.IsolationContainerTrusted, Image: images.DefaultRunnerImage,
+			StartedAt: now.Add(-10 * time.Minute), CompletedAt: now.Add(-9 * time.Minute), JobResult: "success",
+		},
+	} {
+		if err := st.UpsertWorker(ctx, worker); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	const workflow = `name: ci
+on: [push]
+jobs:
+  test:
+    runs-on: runnerhub
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+      - run: echo "${{ github.sha }}" && go test ./...
+`
+	run := func(id int64, sha string, created time.Time) githubrunner.WorkflowRunMetadata {
+		return githubrunner.WorkflowRunMetadata{
+			ID: id, Attempt: 1, Name: "ci", Path: ".github/workflows/ci.yml",
+			Event: "push", Status: "completed", Conclusion: "success",
+			HeadBranch: "main", HeadSHA: sha, HeadTreeSHA: "same-tree", CreatedAt: created,
+		}
+	}
+	firstRun := run(601, "commit-one", now.Add(-31*time.Minute))
+	secondRun := run(602, "commit-two", now.Add(-11*time.Minute))
+	gh := fakeGitHub{
+		runs: map[int64]githubrunner.WorkflowRunMetadata{601: firstRun, 602: secondRun},
+		attempts: map[string]githubrunner.WorkflowRunMetadata{"601:1": firstRun, "602:1": secondRun},
+		files: map[string]githubrunner.RepositoryFile{
+			"commit-one:.github/workflows/ci.yml": {SHA: "workflow-blob", Content: []byte(workflow)},
+			"commit-two:.github/workflows/ci.yml": {SHA: "workflow-blob", Content: []byte(workflow)},
+		},
+	}
+	rec := &Reconciler{Store: st, GitHub: gh, Lookback: 24 * time.Hour, Now: func() time.Time { return now }}
+	if err := rec.Once(ctx); err != nil {
+		t.Fatal(err)
+	}
+	first, _ := st.GetWorker(ctx, "first")
+	second, _ := st.GetWorker(ctx, "second")
+	if first.ValidationKey == "" || second.ValidationKey == "" || first.ValidationKey == second.ValidationKey {
+		t.Fatalf("github.sha must separate identities: first=%q second=%q", first.ValidationKey, second.ValidationKey)
+	}
+	findings, err := st.ListCIFindings(ctx, "eutelic/runnerhub", now.Add(-24*time.Hour), now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, finding := range findings {
+		if finding.DetectorID == "equivalent-validation" {
+			t.Fatalf("unexpected equivalent finding: %+v", finding)
+		}
 	}
 }

@@ -56,6 +56,7 @@ ON CONFLICT(repository, validation_key) DO UPDATE SET
 	completed_at_ns=excluded.completed_at_ns,
 	data=excluded.data,
 	updated_at=excluded.updated_at
+WHERE excluded.completed_at_ns < ci_validation_certificates.completed_at_ns
 `,
 		repository,
 		certificate.Key,

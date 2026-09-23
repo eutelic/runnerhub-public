@@ -2,9 +2,13 @@ package githubrunner
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
+	"fmt"
 	"net/http"
+	"net/url"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/eutelic/runnerhub/internal/core"
@@ -20,10 +24,16 @@ type WorkflowRunMetadata struct {
 	Conclusion         string    `json:"conclusion,omitempty"`
 	HeadBranch         string    `json:"headBranch,omitempty"`
 	HeadSHA            string    `json:"headSha,omitempty"`
+	HeadTreeSHA        string    `json:"headTreeSha,omitempty"`
 	CreatedAt          time.Time `json:"createdAt,omitempty"`
 	RunStartedAt       time.Time `json:"runStartedAt,omitempty"`
 	UpdatedAt          time.Time `json:"updatedAt,omitempty"`
 	PullRequestNumbers []int     `json:"pullRequestNumbers,omitempty"`
+}
+
+type RepositoryFile struct {
+	SHA     string `json:"sha"`
+	Content []byte `json:"-"`
 }
 
 type PullRequestMetadata struct {
@@ -40,6 +50,7 @@ type CIMetadataBackend interface {
 	GetWorkflowRunAttempt(context.Context, core.GitHubScope, int64, int) (WorkflowRunMetadata, error)
 	ListWorkflowJobsAttempt(context.Context, core.GitHubScope, int64, int) ([]WorkflowJob, error)
 	GetPullRequest(context.Context, core.GitHubScope, int) (PullRequestMetadata, error)
+	GetRepositoryFile(context.Context, core.GitHubScope, string, string) (RepositoryFile, error)
 }
 
 type workflowRunPayload struct {
@@ -52,6 +63,9 @@ type workflowRunPayload struct {
 	Conclusion   string    `json:"conclusion"`
 	HeadBranch   string    `json:"head_branch"`
 	HeadSHA      string    `json:"head_sha"`
+	HeadCommit struct {
+		TreeID string `json:"tree_id"`
+	} `json:"head_commit"`
 	CreatedAt    time.Time `json:"created_at"`
 	RunStartedAt time.Time `json:"run_started_at"`
 	UpdatedAt    time.Time `json:"updated_at"`
@@ -70,7 +84,7 @@ func workflowRunMetadata(payload workflowRunPayload) WorkflowRunMetadata {
 	return WorkflowRunMetadata{
 		ID: payload.ID, Attempt: payload.RunAttempt, Name: payload.Name, Path: payload.Path,
 		Event: payload.Event, Status: payload.Status, Conclusion: payload.Conclusion,
-		HeadBranch: payload.HeadBranch, HeadSHA: payload.HeadSHA, CreatedAt: payload.CreatedAt,
+		HeadBranch: payload.HeadBranch, HeadSHA: payload.HeadSHA, HeadTreeSHA: payload.HeadCommit.TreeID, CreatedAt: payload.CreatedAt,
 		RunStartedAt: payload.RunStartedAt, UpdatedAt: payload.UpdatedAt, PullRequestNumbers: prs,
 	}
 }
@@ -195,4 +209,41 @@ func (b *HTTPBackend) GetPullRequest(ctx context.Context, scope core.GitHubScope
 		out.MergedAt = payload.MergedAt.UTC()
 	}
 	return out, nil
+}
+
+
+func (b *HTTPBackend) GetRepositoryFile(ctx context.Context, scope core.GitHubScope, path, ref string) (RepositoryFile, error) {
+	if err := validateRepositoryScope(scope); err != nil {
+		return RepositoryFile{}, err
+	}
+	path = strings.Trim(strings.TrimSpace(path), "/")
+	ref = strings.TrimSpace(ref)
+	if path == "" || ref == "" {
+		return RepositoryFile{}, errors.New("repository file requires path and ref")
+	}
+	parts := strings.Split(path, "/")
+	for i := range parts {
+		parts[i] = url.PathEscape(parts[i])
+	}
+	var payload struct {
+		Type     string `json:"type"`
+		SHA      string `json:"sha"`
+		Encoding string `json:"encoding"`
+		Content  string `json:"content"`
+	}
+	endpoint := b.scopeBasePath(scope) + "/contents/" + strings.Join(parts, "/") + "?ref=" + url.QueryEscape(ref)
+	if err := b.doJSON(ctx, scope, http.MethodGet, endpoint, nil, http.StatusOK, &payload); err != nil {
+		return RepositoryFile{}, err
+	}
+	if payload.Type != "file" || strings.TrimSpace(payload.SHA) == "" {
+		return RepositoryFile{}, errors.New("github returned incomplete repository file metadata")
+	}
+	if payload.Encoding != "base64" || strings.TrimSpace(payload.Content) == "" {
+		return RepositoryFile{}, errors.New("github repository file content is not inline base64")
+	}
+	content, err := base64.StdEncoding.DecodeString(strings.ReplaceAll(payload.Content, "\n", ""))
+	if err != nil {
+		return RepositoryFile{}, fmt.Errorf("decode github repository file: %w", err)
+	}
+	return RepositoryFile{SHA: payload.SHA, Content: content}, nil
 }

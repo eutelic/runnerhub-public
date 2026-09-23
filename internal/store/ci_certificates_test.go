@@ -54,8 +54,8 @@ func TestCIValidationCertificateRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.ArtifactDigests[0] != "sha256:def" {
-		t.Fatalf("upsert did not replace certificate: %+v", got)
+	if got.ArtifactDigests[0] != "sha256:abc" || !got.CompletedAt.Equal(time.Date(2026, 9, 23, 12, 0, 0, 0, time.UTC)) {
+		t.Fatalf("newer certificate replaced earliest evidence: %+v", got)
 	}
 }
 
