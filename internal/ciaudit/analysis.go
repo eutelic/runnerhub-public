@@ -78,6 +78,7 @@ func ExecutionFromWorker(worker core.Worker) (JobExecution, bool) {
 		Repository:    worker.Repository,
 		WorkflowRef:   worker.WorkflowRef,
 		WorkflowRunID: worker.WorkflowRunID,
+		RunAttempt:    worker.WorkflowRunAttempt,
 		GitHubJobID:   worker.JobID,
 		StartedAt:     worker.StartedAt,
 		CompletedAt:   worker.CompletedAt,
