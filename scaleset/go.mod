@@ -2,7 +2,7 @@ module github.com/eutelic/runnerhub/scaleset
 
 go 1.25.3
 
-require github.com/actions/scaleset v0.3.0
+require github.com/actions/scaleset v0.4.0
 
 require (
 	github.com/golang-jwt/jwt/v4 v4.5.2 // indirect
