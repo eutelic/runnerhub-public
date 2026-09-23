@@ -2,6 +2,7 @@ package web
 
 import (
 	"regexp"
+	"strings"
 	"testing"
 )
 
@@ -25,6 +26,30 @@ func TestDashboardStaticElementReferencesExist(t *testing.T) {
 		id := string(match[1])
 		if !ids[id] {
 			t.Errorf("app.js references missing dashboard element id %q", id)
+		}
+	}
+}
+
+
+func TestDashboardIncludesVercelDeployPreset(t *testing.T) {
+	app, err := content.ReadFile("app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(app)
+	for _, want := range []string{
+		"runnerhub-vercel",
+		"VERCEL_TOKEN",
+		"VERCEL_ORG_ID",
+		"VERCEL_PROJECT_ID",
+		"const VERCEL_CLI_VERSION='59.16.0'",
+		"vercel@'+VERCEL_CLI_VERSION",
+		"--prebuilt --prod --skip-domain",
+		"promote",
+		"container-trusted",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("Vercel deploy preset missing %q", want)
 		}
 	}
 }

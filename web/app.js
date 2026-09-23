@@ -23,6 +23,54 @@ const els={
 };
 let csrf='';
 let auth={enabled:false,authenticated:false};
+const VERCEL_PROFILE_NAME='runnerhub-vercel';
+const VERCEL_MACHINE_TAG='vercel';
+const VERCEL_CLI_VERSION='59.16.0';
+const vercelWorkflowTemplate=[
+  'name: Deploy to Vercel',
+  '',
+  'on:',
+  '  push:',
+  '    branches: [main]',
+  '  workflow_dispatch:',
+  '',
+  'concurrency:',
+  '  group: vercel-production-${{ github.repository }}',
+  '  cancel-in-progress: false',
+  '',
+  'jobs:',
+  '  deploy:',
+  '    runs-on: runnerhub-vercel',
+  '    environment: production',
+  '    permissions:',
+  '      contents: read',
+  '    env:',
+  '      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}',
+  '      VERCEL_ORG_ID: ${{ vars.VERCEL_ORG_ID }}',
+  '      VERCEL_PROJECT_ID: ${{ vars.VERCEL_PROJECT_ID }}',
+  '    steps:',
+  '      - uses: actions/checkout@v6',
+  '      - uses: actions/setup-node@v6',
+  '        with:',
+  '          node-version: 24',
+  '      - name: Pull Vercel production settings',
+  '        run: npx --yes vercel@'+VERCEL_CLI_VERSION+' pull --yes --environment=production --token="'+ '$VERCEL_TOKEN' +'"',
+  '      - name: Build Vercel output',
+  '        run: npx --yes vercel@'+VERCEL_CLI_VERSION+' build --prod --token="'+ '$VERCEL_TOKEN' +'"',
+  '      - name: Stage production deployment',
+  '        id: deploy',
+  '        shell: bash',
+  '        run: |',
+  '          set -euo pipefail',
+  '          url="$(npx --yes vercel@'+VERCEL_CLI_VERSION+' deploy --prebuilt --prod --skip-domain --token="'+ '$VERCEL_TOKEN' +'")"',
+  '          echo "url=$url" >> "$GITHUB_OUTPUT"',
+  '          echo "### Vercel staged deployment" >> "$GITHUB_STEP_SUMMARY"',
+  '          echo "$url" >> "$GITHUB_STEP_SUMMARY"',
+  '      - name: Verify staged deployment',
+  '        run: npx --yes vercel@'+VERCEL_CLI_VERSION+' inspect "${{ steps.deploy.outputs.url }}" --token="'+ '$VERCEL_TOKEN' +'"',
+  '      - name: Promote to production',
+  '        run: npx --yes vercel@'+VERCEL_CLI_VERSION+' promote "${{ steps.deploy.outputs.url }}" --yes --token="'+ '$VERCEL_TOKEN' +'"',
+].join('\n');
 
 els.token.value=sessionStorage.getItem('runnerhub-token')||'';
 els.token.addEventListener('input',()=>{sessionStorage.setItem('runnerhub-token',els.token.value);refresh()});
@@ -42,6 +90,10 @@ els.repos.addEventListener('click',e=>{
   if(learning){resetPoolLearning(learning);return}
   const repoLearning=e.target.closest('button[data-repo-learning-reset]');
   if(repoLearning){resetRepositoryLearning(repoLearning);return}
+  const vercelCopy=e.target.closest('button[data-vercel-copy]');
+  if(vercelCopy){copyVercelWorkflow(vercelCopy);return}
+  const vercel=e.target.closest('button[data-vercel-action]');
+  if(vercel){saveVercelProfile(vercel);return}
   const profile=e.target.closest('button[data-profile-action]');
   if(profile){saveRunnerProfile(profile);return}
   const publisher=e.target.closest('button[data-publisher-action]');
@@ -102,6 +154,7 @@ function reservedCPU(capacity){const used=cpuCores(capacity?.reserved?.cpuMillis
 function reservedRAM(capacity){const used=gib(capacity?.reserved?.memoryBytes);const total=gib(capacity?.capacity?.memoryBytes);return total?used+' / '+total+' GiB':'—'}
 function repoName(pool){return pool?.scope?.repository?pool.scope.owner+'/'+pool.scope.repository:pool?.scope?.owner||''}
 function isPublisherPool(pool){return Boolean(pool)&&(String(pool.scaleSetName||'').toLowerCase()==='runnerhub-publisher'||(pool.labels||[]).some(x=>String(x).toLowerCase()==='runnerhub-publisher'))}
+function isVercelProfile(pool){return Boolean(pool)&&String(pool.scaleSetName||'').toLowerCase()===VERCEL_PROFILE_NAME}
 function isStandardPool(pool){const name=String(pool?.scaleSetName||'').toLowerCase();return Boolean(pool)&&(name===''||name==='runnerhub')}
 function runnerClass(pool){if(!pool)return 'standard';if(isPublisherPool(pool))return 'publisher';if(isStandardPool(pool))return 'standard';return pool.scaleSetName||'custom'}
 function resourceEnvelopeFactor(pool,worker){
@@ -485,8 +538,33 @@ function publisherEditor(repo,pool,status,runtime,hostAvailable,standardConnecte
   '</details>';
 }
 
+function vercelProfileEditor(repo,pool,status,runtime,hostAvailable,standardConnected){
+  const enabled=Boolean(pool)&&Number(pool.githubInstallationId)>0;
+  const listener=enabled?(status?.state||'pending'):'disabled';
+  const runtimeState=enabled?(runtime?.state||'unknown'):'disabled';
+  let badge='<span class="badge neutral">Vercel runner disabled</span>';
+  if(enabled){
+    const listenerClass=listener==='ready'?'':' warn';
+    const runtimeClass=(runtimeState==='healthy'||runtimeState==='active')?'':' warn';
+    badge='<span class="badge'+listenerClass+'">Vercel '+esc(listener)+'</span><span class="badge'+runtimeClass+'">Runtime '+esc(runtimeState)+'</span>';
+  }else if(!hostAvailable){
+    badge='<span class="badge warn">No online machine tagged '+esc(VERCEL_MACHINE_TAG)+'</span>';
+  }
+  let note='Runs Vercel CLI deployments on <code>runs-on: '+VERCEL_PROFILE_NAME+'</code> using standard <code>container-trusted</code> isolation. Jobs are restricted to machines tagged <code>'+VERCEL_MACHINE_TAG+'</code>; no Docker socket or privileged worker is used.';
+  if(!standardConnected)note='Connect the standard runner first, then enable the Vercel deploy runner.';
+  else if(!hostAvailable&&!enabled)note+=' Add the <code>'+VERCEL_MACHINE_TAG+'</code> tag to an online RunnerHub machine first.';
+  const canEnable=standardConnected&&(hostAvailable||enabled);
+  const required='<div class="resource-note muted"><strong>GitHub configuration:</strong> secret <code>VERCEL_TOKEN</code>; variables <code>VERCEL_ORG_ID</code> and <code>VERCEL_PROJECT_ID</code>. Prefer a protected <code>production</code> Environment. RunnerHub never stores the Vercel token. Vercel CLI is pinned to <code>'+esc(VERCEL_CLI_VERSION)+'</code>.</div>';
+  const workflowBlock='<details class="workflow-template"><summary>Copy production workflow</summary>'+required+'<textarea readonly rows="20" spellcheck="false">'+esc(vercelWorkflowTemplate)+'</textarea><button class="secondary compact" data-vercel-copy>Copy workflow</button></details>';
+  const action=enabled
+    ? '<div class="publisher-actions"><button data-vercel-action="enable" data-repo="'+esc(repo.fullName)+'" data-installation="'+esc(repo.installationId)+'">Repair / reapply preset</button><button class="secondary" data-learning-reset data-pool-id="'+esc(pool.id)+'" data-learning-label="Vercel deploy runner">Reset learning</button><button class="secondary" data-vercel-action="disable" data-repo="'+esc(repo.fullName)+'" data-installation="'+esc(repo.installationId)+'">Disable Vercel runner</button></div>'
+    : '<button data-vercel-action="enable" data-repo="'+esc(repo.fullName)+'" data-installation="'+esc(repo.installationId)+'"'+(canEnable?'':' disabled')+'>Enable Vercel deploy runner</button>';
+  return '<details class="repo-config vercel-config"><summary>Vercel deploy runner</summary><div class="repo-status">'+badge+'</div><div class="resource-note">'+note+'</div><div class="resource-summary">2 CPU · 4 GiB RAM · max 1 · machine tag '+esc(VERCEL_MACHINE_TAG)+'</div>'+action+workflowBlock+'</details>';
+}
+
 function runnerProfileEditor(repo,profiles,standardConnected){
-  const active=(profiles||[]).filter(p=>Number(p.githubInstallationId)>0);
+  profiles=(profiles||[]).filter(p=>!isVercelProfile(p));
+  const active=profiles.filter(p=>Number(p.githubInstallationId)>0);
   const existing=(profiles||[]).map(p=>{
     const tags=Object.keys(p.hostSelector||{}).join(', ')||'—';
     const enabled=Number(p.githubInstallationId)>0;
@@ -526,6 +604,7 @@ function renderRepos(repos,pools,statuses,runtimeHealth,hosts,installations){
   const statusByPool=new Map((statuses||[]).map(s=>[s.poolId,s]));
   const runtimeByPool=new Map((runtimeHealth||[]).map(s=>[s.poolId,s]));
   const publisherHostAvailable=(hosts||[]).some(h=>h.state==='online'&&h.tags?.['isolation.container-dind']==='true');
+  const vercelHostAvailable=(hosts||[]).some(h=>h.state==='online'&&String((h.tags||{})[VERCEL_MACHINE_TAG]||'').toLowerCase()==='true');
   const installationByAccount=new Map((installations||[]).map(x=>[String(x.account||'').toLowerCase(),x]));
   const hasPersonalInstallation=(installations||[]).some(x=>String(x.accountType||'').toLowerCase()==='user');
   const installedAccountText=(installations||[]).length
@@ -554,10 +633,13 @@ function renderRepos(repos,pools,statuses,runtimeHealth,hosts,installations){
     const entry=poolsByRepo.get(repo.fullName.toLowerCase())||{standard:null,publisher:null,profiles:[]};
     const pool=entry.standard;
     const publisher=entry.publisher;
+    const vercelProfile=entry.profiles.find(isVercelProfile)||null;
     const status=pool?statusByPool.get(pool.id):null;
     const runtime=pool?runtimeByPool.get(pool.id):null;
     const publisherStatus=publisher?statusByPool.get(publisher.id):null;
     const publisherRuntime=publisher?runtimeByPool.get(publisher.id):null;
+    const vercelStatus=vercelProfile?statusByPool.get(vercelProfile.id):null;
+    const vercelRuntime=vercelProfile?runtimeByPool.get(vercelProfile.id):null;
     const privacy=repo.private?'Private':'Public';
     const learningPoolIds=[pool,publisher,...entry.profiles].filter(Boolean).map(p=>p.id);
     let statusHtml='';
@@ -590,6 +672,7 @@ function renderRepos(repos,pools,statuses,runtimeHealth,hosts,installations){
         (learningPoolIds.length?'<button class="secondary compact" data-repo-learning-reset="'+esc(learningPoolIds.join(','))+'" data-repo-name="'+esc(repo.fullName)+'">Reset all learning</button>':'')+
       '</div>'+
       (repo.private?resourceEditor(repo,pool):'')+
+      (repo.private?vercelProfileEditor(repo,vercelProfile,vercelStatus,vercelRuntime,vercelHostAvailable,Boolean(pool)):'')+
       (repo.private?runnerProfileEditor(repo,entry.profiles,Boolean(pool)):'')+
       (repo.private?publisherEditor(repo,publisher,publisherStatus,publisherRuntime,publisherHostAvailable,Boolean(pool)):'')+
       '</article>';
@@ -702,6 +785,38 @@ async function resetRepositoryLearning(button){
     message('Reset resource learning for all '+ids.length+' runner class'+(ids.length===1?'':'es')+' in '+repo+'. Historical jobs were kept.','success');
     await refresh();
   }catch(e){message(e.message,'error')}finally{button.disabled=false}
+}
+
+async function copyVercelWorkflow(button){
+  try{
+    await navigator.clipboard.writeText(vercelWorkflowTemplate);
+    message('Vercel deployment workflow copied.','success');
+  }catch{
+    const panel=button.closest('.vercel-config');
+    const area=panel?panel.querySelector('textarea'):null;
+    if(area){area.focus();area.select()}
+    message('Could not access the clipboard. The workflow is selected for manual copy.','error');
+  }
+}
+
+async function saveVercelProfile(button){
+  const enabled=button.dataset.vercelAction!=='disable';
+  const body={installationId:Number(button.dataset.installation),repository:button.dataset.repo,name:VERCEL_PROFILE_NAME,enabled};
+  if(enabled){
+    body.tags=[VERCEL_MACHINE_TAG];
+    body.isolation='container-trusted';
+    body.maxConcurrency=1;
+    body.resources={cpuMillis:2000,memoryBytes:4294967296,diskBytes:21474836480};
+    body.autoTuneResources=false;
+  }
+  button.disabled=true;
+  try{
+    message((enabled?'Configuring ':'Disabling ')+button.dataset.repo+' Vercel deploy runner…');
+    await j('/api/v1/github/profile',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});
+    message(enabled?'Vercel deploy runner configured. Use runs-on: '+VERCEL_PROFILE_NAME+'.':'Vercel deploy runner disabled.','success');
+    const panel=button.closest('.vercel-config');if(panel)panel.open=false;
+    await refresh();
+  }catch(e){message(e.message,'error');button.disabled=false}
 }
 
 async function saveRunnerProfile(button){

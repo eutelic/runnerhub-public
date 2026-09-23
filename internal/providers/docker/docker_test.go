@@ -591,6 +591,17 @@ func TestInspectFailedContainerCapturesRedactedDiagnostics(t *testing.T) {
 	}
 }
 
+func TestSanitizeDiagnosticsRedactsVercelToken(t *testing.T) {
+	const token = "vcp_abcdefghijklmnopqrstuvwxyz012345"
+	got := sanitizeDiagnostics("startup failed token=" + token + "\nraw " + token)
+	if strings.Contains(got, token) {
+		t.Fatalf("vercel token leaked from diagnostics: %q", got)
+	}
+	if !strings.Contains(got, "vcp_[REDACTED]") {
+		t.Fatalf("vercel token redaction marker missing: %q", got)
+	}
+}
+
 func TestSanitizeDiagnosticsBoundsOutputAndRedactsJWT(t *testing.T) {
 	jwt := "eyJaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.cccccccccccccccccccccccccccccccc"
 	input := jwt + "\n" + strings.Repeat("x ", maxDiagnosticsBytes)

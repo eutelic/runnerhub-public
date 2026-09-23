@@ -6,9 +6,9 @@ import (
 )
 
 func TestSanitizeSupportDiagnosticsRedactsSecrets(t *testing.T) {
-	in := "Authorization: Bearer super-secret-token\npassword=hunter2\ngithub_pat_abcdefghijklmnopqrstuvwxyz\nstartup failed"
+	in := "Authorization: Bearer super-secret-token\npassword=hunter2\ngithub_pat_abcdefghijklmnopqrstuvwxyz\nvcp_abcdefghijklmnopqrstuvwxyz012345\nstartup failed"
 	got := sanitizeSupportDiagnostics(in)
-	if strings.Contains(got, "super-secret-token") || strings.Contains(got, "hunter2") || strings.Contains(got, "github_pat_abcdefghijklmnopqrstuvwxyz") {
+	if strings.Contains(got, "super-secret-token") || strings.Contains(got, "hunter2") || strings.Contains(got, "github_pat_abcdefghijklmnopqrstuvwxyz") || strings.Contains(got, "vcp_abcdefghijklmnopqrstuvwxyz012345") {
 		t.Fatalf("secret leaked from diagnostics: %q", got)
 	}
 	if !strings.Contains(got, "startup failed") {

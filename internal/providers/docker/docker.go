@@ -37,6 +37,7 @@ var diagnosticSecretPatterns = []struct {
 	{regexp.MustCompile(`(?i)(authorization\s*:\s*(?:bearer|token|basic)\s+)\S+`), "$1[REDACTED]"},
 	{regexp.MustCompile(`(?i)(bearer\s+)[A-Za-z0-9._~+/=-]+`), "$1[REDACTED]"},
 	{regexp.MustCompile(`(?i)(github_pat_|gh[pousr]_)[A-Za-z0-9_]{12,}`), "$1[REDACTED]"},
+	{regexp.MustCompile(`(?i)(vcp_)[A-Za-z0-9_-]{12,}`), "$1[REDACTED]"},
 	{regexp.MustCompile(`\beyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{10,}\b`), "[REDACTED-JWT]"},
 	{regexp.MustCompile(`(?i)((?:token|secret|password|jitconfig)\s*[=:]\s*)\S+`), "$1[REDACTED]"},
 	{regexp.MustCompile(`[A-Za-z0-9_-]{96,}`), "[REDACTED-LONG-TOKEN]"},

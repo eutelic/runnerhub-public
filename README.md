@@ -41,6 +41,7 @@ RunnerHub separates **soft host preference** from **hard placement constraints**
 - Use machine tags for hard capabilities or intentional placement boundaries such as `gpu`, `high-memory`, or `fast`.
 - Use a custom runner profile when a workflow must explicitly select a machine class. A profile named `fast` is exposed to GitHub as `runs-on: runnerhub-fast`.
 - Custom profiles can use either `container-trusted` or `container-dind`. Docker-capable profiles require privileged-worker support on both the RunnerHub deployment and the selected host.
+- The Vercel deployment preset creates `runnerhub-vercel` as a `container-trusted` profile pinned to machines tagged `vercel`, with max concurrency 1. RunnerHub keeps `VERCEL_TOKEN` out of its database; the dashboard provides a copyable GitHub Actions workflow that reads the token from GitHub Actions secrets and uses `VERCEL_ORG_ID` / `VERCEL_PROJECT_ID` variables.
 
 This keeps ordinary workflows portable while still supporting explicit lanes for specialized hardware or Docker-heavy release jobs.
 

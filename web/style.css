@@ -252,3 +252,6 @@ pre{white-space:pre-wrap;margin:12px 0 0;color:var(--muted)}
   .overview-grid{gap:12px}
   .summary-pill:not(:empty){white-space:normal}
 }
+
+.workflow-template{margin-top:12px}
+.workflow-template textarea{width:100%;margin:10px 0;font:12px ui-monospace,SFMono-Regular,Consolas,monospace;resize:vertical;white-space:pre}
