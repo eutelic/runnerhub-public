@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/eutelic/runnerhub/internal/ciaudit"
 	"github.com/eutelic/runnerhub/internal/core"
 	"github.com/eutelic/runnerhub/internal/store"
 )
@@ -46,7 +47,7 @@ func TestSummarizeCIEfficiencyUsesWindowAndRunnerClasses(t *testing.T) {
 		},
 	}
 
-	got := summarizeCIEfficiencyAt("eutelic/runnerhub", "30d", 30*24*time.Hour, now, workers, pools)
+	got := summarizeCIEfficiencyAt("eutelic/runnerhub", "30d", 30*24*time.Hour, now, workers, pools, nil, false)
 	if got.Jobs != 3 {
 		t.Fatalf("jobs=%d want 3", got.Jobs)
 	}
@@ -103,6 +104,19 @@ func TestCIEfficiencyEndpoint(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	if err := st.UpsertCIFinding(context.Background(), "eutelic/runnerhub", ciaudit.Finding{
+		JobID:           "job",
+		DetectorID:      "post-merge-validation",
+		Class:           ciaudit.EvidenceConfirmed,
+		AnalysisVersion: ciaudit.AnalyzerVersion,
+		Interval: ciaudit.Interval{
+			Start: ctxNow.Add(-45 * time.Second),
+			End:   ctxNow.Add(-30 * time.Second),
+		},
+		Evidence: []string{"merged before validation completed"},
+	}); err != nil {
+		t.Fatal(err)
+	}
 
 	svc := &Service{Store: st}
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/repositories/eutelic/runnerhub/ci-efficiency?window=7d", nil)
@@ -117,6 +131,12 @@ func TestCIEfficiencyEndpoint(t *testing.T) {
 	}
 	if got.Repository != "eutelic/runnerhub" || got.Window != "7d" || got.Jobs != 1 {
 		t.Fatalf("response=%+v", got)
+	}
+	if !got.Coverage.WasteFindings || got.Waste.Findings != 1 {
+		t.Fatalf("waste coverage=%+v waste=%+v", got.Coverage, got.Waste)
+	}
+	if got.Waste.Confirmed.RunnerSeconds != 15 || got.Waste.ConfirmedPercent != 50 {
+		t.Fatalf("confirmed waste=%+v", got.Waste)
 	}
 
 	req = httptest.NewRequest(http.MethodGet, "/api/v1/repositories/eutelic/runnerhub/ci-efficiency?window=14d", nil)

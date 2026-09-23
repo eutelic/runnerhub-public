@@ -10,6 +10,7 @@ import (
 
 	"github.com/eutelic/runnerhub/internal/ciaudit"
 	"github.com/eutelic/runnerhub/internal/core"
+	"github.com/eutelic/runnerhub/internal/store"
 )
 
 type ciEfficiencyCoverage struct {
@@ -29,6 +30,14 @@ type ciEfficiencyQueue struct {
 	ByRunnerClass map[string]ciEfficiencyQueueSummary `json:"byRunnerClass"`
 }
 
+type ciEfficiencyWaste struct {
+	Findings                  int                    `json:"findings"`
+	Confirmed                 ciaudit.ResourceTotals `json:"confirmed"`
+	ProvablyAvoidable         ciaudit.ResourceTotals `json:"provablyAvoidable"`
+	ConfirmedPercent          float64                `json:"confirmedPercent"`
+	ProvablyAvoidablePercent  float64                `json:"provablyAvoidablePercent"`
+}
+
 type ciEfficiencyResponse struct {
 	AnalysisVersion string               `json:"analysisVersion"`
 	Repository      string               `json:"repository"`
@@ -37,6 +46,7 @@ type ciEfficiencyResponse struct {
 	WindowEnd       time.Time            `json:"windowEnd"`
 	Jobs            int                  `json:"jobs"`
 	Execution       ciaudit.ResourceTotals `json:"execution"`
+	Waste           ciEfficiencyWaste    `json:"waste"`
 	Queue           ciEfficiencyQueue    `json:"queue"`
 	Coverage        ciEfficiencyCoverage `json:"coverage"`
 }
@@ -76,10 +86,21 @@ func (s *Service) ciEfficiency(w http.ResponseWriter, r *http.Request) {
 		problem(w, http.StatusInternalServerError, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, summarizeCIEfficiencyAt(owner+"/"+repo, windowName, window, time.Now().UTC(), workers, pools))
+	now := time.Now().UTC()
+	var findings []ciaudit.Finding
+	findingsAvailable := false
+	if findingStore, ok := s.Store.(store.CIFindingStore); ok {
+		findingsAvailable = true
+		findings, err = findingStore.ListCIFindings(r.Context(), owner+"/"+repo, now.Add(-window), now)
+		if err != nil {
+			problem(w, http.StatusInternalServerError, err)
+			return
+		}
+	}
+	writeJSON(w, http.StatusOK, summarizeCIEfficiencyAt(owner+"/"+repo, windowName, window, now, workers, pools, findings, findingsAvailable))
 }
 
-func summarizeCIEfficiencyAt(repository, windowName string, window time.Duration, now time.Time, workers []core.Worker, pools []core.RunnerPool) ciEfficiencyResponse {
+func summarizeCIEfficiencyAt(repository, windowName string, window time.Duration, now time.Time, workers []core.Worker, pools []core.RunnerPool, findings []ciaudit.Finding, findingsAvailable bool) ciEfficiencyResponse {
 	start := now.Add(-window)
 	poolByID := make(map[string]core.RunnerPool, len(pools))
 	for _, pool := range pools {
@@ -87,6 +108,7 @@ func summarizeCIEfficiencyAt(repository, windowName string, window time.Duration
 	}
 
 	jobs := make([]ciaudit.JobExecution, 0, len(workers))
+	jobIDs := make(map[string]struct{}, len(workers))
 	queueAll := make([]float64, 0, len(workers))
 	queueByClass := map[string][]float64{}
 	for _, worker := range workers {
@@ -102,6 +124,7 @@ func summarizeCIEfficiencyAt(repository, windowName string, window time.Duration
 			}
 			if job.StartedAt.Before(job.CompletedAt) {
 				jobs = append(jobs, job)
+				jobIDs[job.ID] = struct{}{}
 			}
 		}
 		if worker.QueuedAt.IsZero() || worker.StartedAt.IsZero() || !worker.StartedAt.After(worker.QueuedAt) {
@@ -116,7 +139,13 @@ func summarizeCIEfficiencyAt(repository, windowName string, window time.Duration
 		queueByClass[class] = append(queueByClass[class], seconds)
 	}
 
-	report := ciaudit.Summarize(jobs, nil)
+	report := ciaudit.Summarize(jobs, findings)
+	relevantFindings := 0
+	for _, finding := range findings {
+		if _, ok := jobIDs[finding.JobID]; ok {
+			relevantFindings++
+		}
+	}
 	byClass := make(map[string]ciEfficiencyQueueSummary, len(queueByClass))
 	for class, samples := range queueByClass {
 		byClass[class] = summarizeQueueSamples(samples)
@@ -129,14 +158,21 @@ func summarizeCIEfficiencyAt(repository, windowName string, window time.Duration
 		WindowEnd:       now,
 		Jobs:            len(jobs),
 		Execution:       report.Total,
+		Waste: ciEfficiencyWaste{
+			Findings:                 relevantFindings,
+			Confirmed:                report.ConfirmedWaste,
+			ProvablyAvoidable:        report.ProvablyAvoidable,
+			ConfirmedPercent:         report.ConfirmedWastePct,
+			ProvablyAvoidablePercent: report.ProvablyAvoidablePct,
+		},
 		Queue: ciEfficiencyQueue{
 			Overall:       summarizeQueueSamples(queueAll),
 			ByRunnerClass: byClass,
 		},
 		Coverage: ciEfficiencyCoverage{
 			ExecutionLedger: true,
-			WasteFindings:   false,
-			Detail:          "execution and queue metrics are live; deterministic waste findings are not yet persisted/ingested by this endpoint",
+			WasteFindings:   findingsAvailable,
+			Detail:          ciEfficiencyCoverageDetail(findingsAvailable),
 		},
 	}
 }
@@ -185,4 +221,12 @@ func percentileNearestRank(sorted []float64, percentile float64) float64 {
 		rank = len(sorted) - 1
 	}
 	return sorted[rank]
+}
+
+
+func ciEfficiencyCoverageDetail(findingsAvailable bool) string {
+	if findingsAvailable {
+		return "persisted deterministic findings are included; detector coverage is partial, so zero findings does not imply zero avoidable work"
+	}
+	return "execution and queue metrics are live; this store does not provide persisted deterministic waste findings"
 }
