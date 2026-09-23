@@ -74,24 +74,7 @@ jobs:
             "RUNNERHUB_GITHUB_APP_PRIVATE_KEY_FILE=$keyfile" \
             'RUNNERHUB_GITHUB_URL=https://github.com/acme/app' > "$envfile"
 
-          secret_dir="$tmp/secrets"
-          mkdir -p "$secret_dir"
-          cp "$keyfile" "$secret_dir/github-app.pem"
-          RUNNERHUB_SECRETS_DIR="$secret_dir" \
-            RUNNERHUB_GITHUB_APP_PRIVATE_KEY_FILE="$secret_dir/github-app.pem" \
-            sh deploy/docker/init-secrets.sh
-
-          for secret in enrollment-token agent-secret admin-key scaleset-key; do
-            test -s "$secret_dir/$secret"
-            test "$(wc -c < "$secret_dir/$secret")" -eq 65
-          done
-
-          before="$(sha256sum "$secret_dir/enrollment-token" "$secret_dir/agent-secret" "$secret_dir/admin-key" "$secret_dir/scaleset-key")"
-          RUNNERHUB_SECRETS_DIR="$secret_dir" \
-            RUNNERHUB_GITHUB_APP_PRIVATE_KEY_FILE="$secret_dir/github-app.pem" \
-            sh deploy/docker/init-secrets.sh
-          after="$(sha256sum "$secret_dir/enrollment-token" "$secret_dir/agent-secret" "$secret_dir/admin-key" "$secret_dir/scaleset-key")"
-          test "$before" = "$after"
+          bash deploy/docker/test-secret-init.sh
 
           probe="$tmp/secret-probe"
           printf 'from-file\n' > "$probe"
@@ -116,6 +99,12 @@ jobs:
             echo 'empty secret file unexpectedly succeeded' >&2
             exit 1
           fi
+
+          bash deploy/truenas/test-prepare-compose.sh
+          bash deploy/truenas/test-preflight-host.sh
+          bash deploy/truenas/test-verify.sh
+          bash deploy/truenas/test-check-images.sh
+          bash deploy/truenas/test-verify-image-set.sh
 
           docker compose --env-file "$envfile" -f deploy/docker/compose.yaml --profile autoscale config >/dev/null
           docker compose --env-file "$envfile" -f deploy/docker/compose.release.yaml config >/dev/null

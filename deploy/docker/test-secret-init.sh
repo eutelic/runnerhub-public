@@ -1,0 +1,71 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
+cd "$repo_root"
+
+tmp="$(mktemp -d "${RUNNER_TEMP:-/tmp}/runnerhub-secret-init.XXXXXX")"
+trap 'rm -rf "$tmp"' EXIT
+secret_dir="$tmp/secrets"
+mkdir -p "$secret_dir"
+openssl genrsa -out "$secret_dir/github-app.pem" 2048 >/dev/null 2>&1
+chmod 0600 "$secret_dir/github-app.pem"
+
+run_init() {
+  RUNNERHUB_SECRETS_DIR="$secret_dir" \
+    RUNNERHUB_GITHUB_APP_PRIVATE_KEY_FILE="$secret_dir/github-app.pem" \
+    sh deploy/docker/init-secrets.sh
+}
+
+run_init
+
+for secret in enrollment-token agent-secret admin-key scaleset-key; do
+  path="$secret_dir/$secret"
+  test -f "$path"
+  test ! -L "$path"
+  test "$(wc -c < "$path")" -eq 65
+  value="$(cat "$path")"
+  test "${#value}" -eq 64
+  [[ "$value" =~ ^[0-9a-fA-F]{64}$ ]]
+  test "$(stat -c '%a' "$path")" = "600"
+done
+
+before="$(sha256sum \
+  "$secret_dir/enrollment-token" \
+  "$secret_dir/agent-secret" \
+  "$secret_dir/admin-key" \
+  "$secret_dir/scaleset-key")"
+run_init
+after="$(sha256sum \
+  "$secret_dir/enrollment-token" \
+  "$secret_dir/agent-secret" \
+  "$secret_dir/admin-key" \
+  "$secret_dir/scaleset-key")"
+test "$before" = "$after"
+
+chmod 0644 "$secret_dir/admin-key"
+run_init
+test "$(stat -c '%a' "$secret_dir/admin-key")" = "600"
+
+cp "$secret_dir/admin-key" "$tmp/admin-key.good"
+printf '   \n' > "$secret_dir/admin-key"
+if run_init; then
+  echo 'whitespace-only persisted secret unexpectedly succeeded' >&2
+  exit 1
+fi
+
+cp "$tmp/admin-key.good" "$secret_dir/admin-key"
+printf '%s\n' 'xyz-not-a-valid-secret' > "$secret_dir/admin-key"
+if run_init; then
+  echo 'malformed persisted secret unexpectedly succeeded' >&2
+  exit 1
+fi
+
+rm -f "$secret_dir/admin-key"
+ln -s "$tmp/admin-key.good" "$secret_dir/admin-key"
+if run_init; then
+  echo 'symlinked persisted secret unexpectedly succeeded' >&2
+  exit 1
+fi
+
+echo "[ ok ] persistent secret lifecycle"

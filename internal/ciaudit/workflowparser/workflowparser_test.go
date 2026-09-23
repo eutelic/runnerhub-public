@@ -1,6 +1,9 @@
 package workflowparser
 
-import "testing"
+import (
+	"reflect"
+	"testing"
+)
 
 func TestFingerprintJobNormalizesFormattingAndIgnoresOtherJobs(t *testing.T) {
 	first := []byte(`name: ci
@@ -155,5 +158,39 @@ func TestContextHashFailsClosedOnMissingReferencedContext(t *testing.T) {
 func TestFingerprintJobRejectsMalformedWorkflow(t *testing.T) {
 	if _, err := FingerprintJob([]byte("jobs: ["), "core"); err == nil {
 		t.Fatal("expected malformed workflow to fail closed")
+	}
+}
+
+func TestJobDependenciesUsesParsedNeedsGraph(t *testing.T) {
+	source := []byte(`name: test
+on: [push]
+jobs:
+  plan:
+    runs-on: runnerhub
+    steps:
+      - run: echo plan
+  test:
+    needs: plan
+    runs-on: runnerhub
+    steps:
+      - run: echo test
+  publish:
+    needs: [plan, test]
+    runs-on: runnerhub
+    steps:
+      - run: echo publish
+`)
+	got, err := JobDependencies(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got["plan"]) != 0 {
+		t.Fatalf("plan needs=%v", got["plan"])
+	}
+	if want := []string{"plan"}; !reflect.DeepEqual(got["test"], want) {
+		t.Fatalf("test needs=%v want=%v", got["test"], want)
+	}
+	if want := []string{"plan", "test"}; !reflect.DeepEqual(got["publish"], want) {
+		t.Fatalf("publish needs=%v want=%v", got["publish"], want)
 	}
 }

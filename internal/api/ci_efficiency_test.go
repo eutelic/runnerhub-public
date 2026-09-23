@@ -138,6 +138,12 @@ func TestCIEfficiencyEndpoint(t *testing.T) {
 	if got.Waste.Confirmed.RunnerSeconds != 15 || got.Waste.ConfirmedPercent != 50 {
 		t.Fatalf("confirmed waste=%+v", got.Waste)
 	}
+	if len(got.Findings) != 1 || got.Findings[0].DetectorID != "post-merge-validation" {
+		t.Fatalf("finding details=%+v", got.Findings)
+	}
+	if got.Findings[0].SuggestedFix == "" || len(got.Findings[0].Evidence) == 0 {
+		t.Fatalf("finding must expose evidence and remediation: %+v", got.Findings[0])
+	}
 
 	req = httptest.NewRequest(http.MethodGet, "/api/v1/repositories/eutelic/runnerhub/ci-efficiency?window=14d", nil)
 	rr = httptest.NewRecorder()

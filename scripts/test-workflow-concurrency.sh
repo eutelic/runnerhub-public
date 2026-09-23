@@ -17,8 +17,6 @@ ordinary_workflows=(
   "$workflow_dir/deployment-ci.yml"
   "$workflow_dir/dind-runtime-ci.yml"
   "$workflow_dir/hardening-validation.yml"
-  "$workflow_dir/secret-init-ci.yml"
-  "$workflow_dir/truenas-compose-prep-ci.yml"
 )
 
 for workflow in "${ordinary_workflows[@]}"; do
@@ -31,8 +29,6 @@ scoped_workflows=(
   "$workflow_dir/ci.yml"
   "$workflow_dir/deployment-ci.yml"
   "$workflow_dir/dind-runtime-ci.yml"
-  "$workflow_dir/secret-init-ci.yml"
-  "$workflow_dir/truenas-compose-prep-ci.yml"
 )
 
 for workflow in "${scoped_workflows[@]}"; do

@@ -131,3 +131,34 @@ func TestExecutionFromWorkerUsesExistingTelemetry(t *testing.T) {
 		t.Fatalf("execution=%+v", got)
 	}
 }
+
+func TestPotentialSavingsRemainSeparateFromProvableWaste(t *testing.T) {
+	base := time.Date(2026, 9, 23, 12, 0, 0, 0, time.UTC)
+	job := JobExecution{ID: "job-potential", StartedAt: base, CompletedAt: base.Add(10 * time.Minute)}
+	got := Summarize([]JobExecution{job}, []Finding{{
+		JobID: "job-potential", DetectorID: "duplicate-artifact-build", Class: EvidenceHighConfidence,
+		Interval: Interval{Start: base, End: base.Add(4 * time.Minute)},
+	}})
+	assertNear(t, got.PotentialSavings.RunnerSeconds, 240)
+	assertNear(t, got.PotentialSavingsPct, 40)
+	assertNear(t, got.ProvablyAvoidable.RunnerSeconds, 0)
+	assertNear(t, got.ConfirmedWaste.RunnerSeconds, 0)
+}
+
+func TestStaleSnapshotPublicationFinding(t *testing.T) {
+	base := time.Date(2026, 9, 23, 12, 0, 0, 0, time.UTC)
+	job := JobExecution{ID: "publish", StartedAt: base, CompletedAt: base.Add(20 * time.Minute)}
+	got, ok := StaleSnapshotPublicationFinding(job, base.Add(7*time.Minute), true)
+	if !ok {
+		t.Fatal("expected stale publication finding")
+	}
+	if got.DetectorID != "stale-snapshot-publication" || got.Class != EvidenceConfirmed {
+		t.Fatalf("finding=%+v", got)
+	}
+	if got.Interval.Start != base.Add(7*time.Minute) || got.Interval.End != job.CompletedAt {
+		t.Fatalf("interval=%+v", got.Interval)
+	}
+	if _, ok := StaleSnapshotPublicationFinding(job, base.Add(7*time.Minute), false); ok {
+		t.Fatal("immutable release publication must not be classified as stale snapshot waste")
+	}
+}

@@ -415,3 +415,39 @@ func hashParts(parts ...string) string {
 	}
 	return hex.EncodeToString(h.Sum(nil))
 }
+
+
+// JobDependencies returns the normalized GitHub Actions needs DAG from the same
+// pinned actionlint syntax tree used for semantic fingerprints.
+func JobDependencies(source []byte) (map[string][]string, error) {
+	workflow, parseErrors := actionlint.Parse(source)
+	if len(parseErrors) > 0 || workflow == nil {
+		if len(parseErrors) > 0 {
+			return nil, fmt.Errorf("parse workflow: %s", parseErrors[0])
+		}
+		return nil, errors.New("parse workflow: no syntax tree")
+	}
+	out := make(map[string][]string, len(workflow.Jobs))
+	for _, job := range workflow.Jobs {
+		if job == nil || job.ID == nil || strings.TrimSpace(job.ID.Value) == "" {
+			continue
+		}
+		id := strings.TrimSpace(job.ID.Value)
+		seen := map[string]struct{}{}
+		var deps []string
+		for _, raw := range collectStrings(reflect.ValueOf(job.Needs)) {
+			dep := strings.TrimSpace(raw)
+			if dep == "" || dep == id {
+				continue
+			}
+			if _, ok := seen[dep]; ok {
+				continue
+			}
+			seen[dep] = struct{}{}
+			deps = append(deps, dep)
+		}
+		sort.Strings(deps)
+		out[id] = deps
+	}
+	return out, nil
+}

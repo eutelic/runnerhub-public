@@ -22,3 +22,14 @@ func TestOrdinaryValidationWorkflowFailsClosed(t *testing.T) {
 		}
 	}
 }
+
+func TestMutableSnapshotPublicationWorkflowFailsClosed(t *testing.T) {
+	if !MutableSnapshotPublicationWorkflow("publish-images") {
+		t.Fatal("publish-images must be recognized as mutable snapshot publication")
+	}
+	for _, name := range []string{"ci", "release", "deploy-production", "", "unknown"} {
+		if MutableSnapshotPublicationWorkflow(name) {
+			t.Fatalf("workflow %q must not be treated as mutable snapshot publication", name)
+		}
+	}
+}

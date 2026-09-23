@@ -31,11 +31,24 @@ type ciEfficiencyQueue struct {
 }
 
 type ciEfficiencyWaste struct {
-	Findings                  int                    `json:"findings"`
-	Confirmed                 ciaudit.ResourceTotals `json:"confirmed"`
-	ProvablyAvoidable         ciaudit.ResourceTotals `json:"provablyAvoidable"`
-	ConfirmedPercent          float64                `json:"confirmedPercent"`
-	ProvablyAvoidablePercent  float64                `json:"provablyAvoidablePercent"`
+	Findings                 int                    `json:"findings"`
+	Confirmed                ciaudit.ResourceTotals `json:"confirmed"`
+	ProvablyAvoidable        ciaudit.ResourceTotals `json:"provablyAvoidable"`
+	PotentialSavings         ciaudit.ResourceTotals `json:"potentialSavings"`
+	ConfirmedPercent         float64                `json:"confirmedPercent"`
+	ProvablyAvoidablePercent float64                `json:"provablyAvoidablePercent"`
+	PotentialSavingsPercent  float64                `json:"potentialSavingsPercent"`
+}
+
+type ciEfficiencyFindingDetail struct {
+	JobID         string                `json:"jobId"`
+	WorkflowRef   string                `json:"workflowRef,omitempty"`
+	WorkflowRunID int64                 `json:"workflowRunId,omitempty"`
+	DetectorID    string                `json:"detectorId"`
+	Class         ciaudit.EvidenceClass `json:"class"`
+	Interval      ciaudit.Interval      `json:"interval"`
+	Evidence      []string              `json:"evidence,omitempty"`
+	SuggestedFix  string                `json:"suggestedFix,omitempty"`
 }
 
 type ciEfficiencyResponse struct {
@@ -48,7 +61,8 @@ type ciEfficiencyResponse struct {
 	Execution       ciaudit.ResourceTotals `json:"execution"`
 	Waste           ciEfficiencyWaste    `json:"waste"`
 	Queue           ciEfficiencyQueue    `json:"queue"`
-	Coverage        ciEfficiencyCoverage `json:"coverage"`
+	Coverage        ciEfficiencyCoverage       `json:"coverage"`
+	Findings        []ciEfficiencyFindingDetail `json:"findings,omitempty"`
 }
 
 func parseCIEfficiencyWindow(raw string) (string, time.Duration, error) {
@@ -109,6 +123,7 @@ func summarizeCIEfficiencyAt(repository, windowName string, window time.Duration
 
 	jobs := make([]ciaudit.JobExecution, 0, len(workers))
 	jobIDs := make(map[string]struct{}, len(workers))
+	jobByID := make(map[string]ciaudit.JobExecution, len(workers))
 	queueAll := make([]float64, 0, len(workers))
 	queueByClass := map[string][]float64{}
 	for _, worker := range workers {
@@ -125,6 +140,7 @@ func summarizeCIEfficiencyAt(repository, windowName string, window time.Duration
 			if job.StartedAt.Before(job.CompletedAt) {
 				jobs = append(jobs, job)
 				jobIDs[job.ID] = struct{}{}
+				jobByID[job.ID] = job
 			}
 		}
 		if worker.QueuedAt.IsZero() || worker.StartedAt.IsZero() || !worker.StartedAt.After(worker.QueuedAt) {
@@ -141,10 +157,18 @@ func summarizeCIEfficiencyAt(repository, windowName string, window time.Duration
 
 	report := ciaudit.Summarize(jobs, findings)
 	relevantFindings := 0
+	details := make([]ciEfficiencyFindingDetail, 0, len(findings))
 	for _, finding := range findings {
-		if _, ok := jobIDs[finding.JobID]; ok {
-			relevantFindings++
+		job, ok := jobByID[finding.JobID]
+		if !ok {
+			continue
 		}
+		relevantFindings++
+		details = append(details, ciEfficiencyFindingDetail{
+			JobID: finding.JobID, WorkflowRef: job.WorkflowRef, WorkflowRunID: job.WorkflowRunID,
+			DetectorID: finding.DetectorID, Class: finding.Class, Interval: finding.Interval,
+			Evidence: append([]string(nil), finding.Evidence...), SuggestedFix: ciFindingSuggestedFix(finding.DetectorID),
+		})
 	}
 	byClass := make(map[string]ciEfficiencyQueueSummary, len(queueByClass))
 	for class, samples := range queueByClass {
@@ -160,10 +184,12 @@ func summarizeCIEfficiencyAt(repository, windowName string, window time.Duration
 		Execution:       report.Total,
 		Waste: ciEfficiencyWaste{
 			Findings:                 relevantFindings,
-			Confirmed:                report.ConfirmedWaste,
-			ProvablyAvoidable:        report.ProvablyAvoidable,
-			ConfirmedPercent:         report.ConfirmedWastePct,
-			ProvablyAvoidablePercent: report.ProvablyAvoidablePct,
+			Confirmed:                 report.ConfirmedWaste,
+			ProvablyAvoidable:         report.ProvablyAvoidable,
+			PotentialSavings:          report.PotentialSavings,
+			ConfirmedPercent:          report.ConfirmedWastePct,
+			ProvablyAvoidablePercent:  report.ProvablyAvoidablePct,
+			PotentialSavingsPercent:   report.PotentialSavingsPct,
 		},
 		Queue: ciEfficiencyQueue{
 			Overall:       summarizeQueueSamples(queueAll),
@@ -174,6 +200,24 @@ func summarizeCIEfficiencyAt(repository, windowName string, window time.Duration
 			WasteFindings:   findingsAvailable,
 			Detail:          ciEfficiencyCoverageDetail(findingsAvailable),
 		},
+		Findings: details,
+	}
+}
+
+func ciFindingSuggestedFix(detectorID string) string {
+	switch strings.TrimSpace(detectorID) {
+	case "post-merge-validation":
+		return "Cancel queued or running side-effect-free pull-request validation once the pull request merges."
+	case "superseded-validation":
+		return "Use a branch/PR concurrency group with cancel-in-progress for ordinary validation."
+	case "equivalent-validation":
+		return "Reuse the matching validation certificate when definition, transitive inputs, context, and freshness are identical."
+	case "stale-snapshot-publication":
+		return "Cancel superseded mutable main publication and verify remote main before moving mutable tags such as latest."
+	case "dependency-unaffected":
+		return "Gate this job on its proven transitive input set instead of running it for unrelated changes."
+	default:
+		return ""
 	}
 }
 

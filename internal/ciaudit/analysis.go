@@ -57,11 +57,13 @@ type ResourceTotals struct {
 }
 
 type Report struct {
-	Total               ResourceTotals `json:"total"`
-	ConfirmedWaste      ResourceTotals `json:"confirmedWaste"`
-	ProvablyAvoidable   ResourceTotals `json:"provablyAvoidable"`
-	ConfirmedWastePct   float64        `json:"confirmedWastePercent"`
-	ProvablyAvoidablePct float64       `json:"provablyAvoidablePercent"`
+	Total                ResourceTotals `json:"total"`
+	ConfirmedWaste       ResourceTotals `json:"confirmedWaste"`
+	ProvablyAvoidable    ResourceTotals `json:"provablyAvoidable"`
+	PotentialSavings     ResourceTotals `json:"potentialSavings"`
+	ConfirmedWastePct    float64        `json:"confirmedWastePercent"`
+	ProvablyAvoidablePct float64        `json:"provablyAvoidablePercent"`
+	PotentialSavingsPct  float64        `json:"potentialSavingsPercent"`
 }
 
 func isProvable(class EvidenceClass) bool {
@@ -108,6 +110,7 @@ func Summarize(jobs []JobExecution, findings []Finding) Report {
 
 		var confirmed []Interval
 		var provable []Interval
+		var potential []Interval
 		for _, finding := range byJob[job.ID] {
 			clipped, ok := clip(finding.Interval, full[0])
 			if !ok {
@@ -119,14 +122,19 @@ func Summarize(jobs []JobExecution, findings []Finding) Report {
 			if isProvable(finding.Class) {
 				provable = append(provable, clipped)
 			}
+			if finding.Class == EvidenceHighConfidence {
+				potential = append(potential, clipped)
+			}
 		}
 		report.ConfirmedWaste = addTotals(report.ConfirmedWaste, measure(job, union(confirmed)))
 		report.ProvablyAvoidable = addTotals(report.ProvablyAvoidable, measure(job, union(provable)))
+		report.PotentialSavings = addTotals(report.PotentialSavings, measure(job, union(potential)))
 	}
 
 	if report.Total.RunnerSeconds > 0 {
 		report.ConfirmedWastePct = report.ConfirmedWaste.RunnerSeconds / report.Total.RunnerSeconds * 100
 		report.ProvablyAvoidablePct = report.ProvablyAvoidable.RunnerSeconds / report.Total.RunnerSeconds * 100
+		report.PotentialSavingsPct = report.PotentialSavings.RunnerSeconds / report.Total.RunnerSeconds * 100
 	}
 	return report
 }
@@ -165,6 +173,27 @@ func SupersededFinding(job JobExecution, supersededAt time.Time, safeToSupersede
 	return Finding{
 		JobID:      job.ID,
 		DetectorID:      "superseded-validation",
+		Class:           EvidenceConfirmed,
+		AnalysisVersion: AnalyzerVersion,
+		Interval:        Interval{Start: start, End: job.CompletedAt},
+	}, true
+}
+
+
+// StaleSnapshotPublicationFinding reports compute spent after a newer main
+// snapshot superseded a mutable branch publication. Immutable tag/release
+// publication must never call this detector.
+func StaleSnapshotPublicationFinding(job JobExecution, supersededAt time.Time, mutableSnapshot bool) (Finding, bool) {
+	if !mutableSnapshot || !validJob(job) || supersededAt.IsZero() || !supersededAt.Before(job.CompletedAt) {
+		return Finding{}, false
+	}
+	start := supersededAt
+	if job.StartedAt.After(start) {
+		start = job.StartedAt
+	}
+	return Finding{
+		JobID:           job.ID,
+		DetectorID:      "stale-snapshot-publication",
 		Class:           EvidenceConfirmed,
 		AnalysisVersion: AnalyzerVersion,
 		Interval:        Interval{Start: start, End: job.CompletedAt},

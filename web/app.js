@@ -7,6 +7,7 @@ const els={
   workers:document.getElementById('workers'),
   workerSummary:document.getElementById('worker-summary'),
   audit:document.getElementById('audit'),
+  ciEfficiency:document.getElementById('ci-efficiency'),
   msg:document.getElementById('msg'),
   repos:document.getElementById('repos'),
   authstatus:document.getElementById('authstatus'),
@@ -415,7 +416,7 @@ async function refresh(){
   await loadAuth();
   const canAPI=auth.authenticated||Boolean(els.token.value);
   if(!canAPI){
-    els.hosts.innerHTML=els.pools.innerHTML=els.activeRunners.innerHTML=els.workers.innerHTML=els.audit.innerHTML='<span class="muted">Sign in to view.</span>';
+    els.hosts.innerHTML=els.pools.innerHTML=els.activeRunners.innerHTML=els.workers.innerHTML=els.audit.innerHTML=els.ciEfficiency.innerHTML='<span class="muted">Sign in to view.</span>';
     els.deployerSummary.textContent='';
     els.deployerStatus.innerHTML='<span class="muted">Sign in to view.</span>';
     els.activeRunnerSummary.textContent='';
@@ -450,8 +451,17 @@ async function refresh(){
       catch{return [pool.id,null]}
     }));
     const recommendationByPool=new Map(recommendationPairs);
+    const connectedRepoNames=[...new Set((p||[])
+      .filter(pool=>pool.scope?.kind==='repository'&&pool.scope.owner&&pool.scope.repository)
+      .map(pool=>pool.scope.owner+'/'+pool.scope.repository))];
+    const efficiencyPairs=await Promise.all(connectedRepoNames.map(async repository=>{
+      const [owner,name]=repository.split('/');
+      try{return {repository,data:await j('/api/v1/repositories/'+encodeURIComponent(owner)+'/'+encodeURIComponent(name)+'/ci-efficiency?window=30d')}}
+      catch(e){return {repository,error:e.message}}
+    }));
 
     renderDeployerStatus(deployer);
+    renderCIEfficiency(efficiencyPairs);
     renderHosts(h);
     renderPreservingTableScroll(els.pools,tab(p,[
       ['Repository',x=>repoName(x)],
@@ -487,6 +497,64 @@ async function refresh(){
     ]));
     if(auth.authenticated&&!els.repos.querySelector('.repo-config[open]'))renderRepos(repos||[],p||[],statuses||[],runtimeHealth||[],h||[],installations||[]);
   }catch(e){message(e.message,'error')}
+}
+
+function efficiencyPercent(value){
+  const n=Number(value);
+  return Number.isFinite(n)?n.toFixed(1)+'%':'—';
+}
+
+function efficiencySeconds(value){
+  const n=Number(value);
+  if(!Number.isFinite(n)||n<0)return '—';
+  if(n<60)return Math.round(n)+'s';
+  if(n<3600)return (n/60).toFixed(n<600?1:0)+'m';
+  return (n/3600).toFixed(n<36000?1:0)+'h';
+}
+
+function renderCIEfficiency(items){
+  if(!els.ciEfficiency)return;
+  if(!items.length){
+    els.ciEfficiency.innerHTML='<div class="empty">Connect a repository to collect CI efficiency evidence.</div>';
+    return;
+  }
+  const rows=items.map(item=>{
+    if(item.error)return [item.repository,'—','—','—','—','error'];
+    const d=item.data||{};
+    return [
+      item.repository,
+      String(d.jobs??0),
+      efficiencyPercent(d.waste?.provablyAvoidablePercent),
+      efficiencyPercent(d.waste?.confirmedPercent),
+      efficiencyPercent(d.waste?.potentialSavingsPercent),
+      efficiencySeconds(d.queue?.overall?.p95Seconds)
+    ];
+  });
+  let html='<div class="table-wrap"><table><thead><tr><th>Repository</th><th>Jobs</th><th>Provably avoidable</th><th>Confirmed waste</th><th>Potential</th><th>Queue p95</th></tr></thead><tbody>'+
+    rows.map(row=>'<tr>'+row.map(cell=>'<td>'+esc(cell)+'</td>').join('')+'</tr>').join('')+
+    '</tbody></table></div>';
+  for(const item of items){
+    if(item.error){
+      html+='<div class="resource-note muted">'+esc(item.repository)+': '+esc(item.error)+'</div>';
+      continue;
+    }
+    const d=item.data||{};
+    const findings=Array.isArray(d.findings)?d.findings:[];
+    html+='<details class="advanced-details"><summary>'+esc(item.repository)+' evidence · '+findings.length+' finding'+(findings.length===1?'':'s')+'</summary><div class="advanced-body">';
+    if(!findings.length){
+      html+='<div class="muted small">'+esc(d.coverage?.detail||'No deterministic findings in this window.')+'</div>';
+    }else{
+      for(const finding of findings){
+        html+='<div class="resource-note"><strong>'+esc(finding.detectorId)+'</strong> · '+esc(finding.class)+
+          (finding.workflowRunId?' · run '+esc(finding.workflowRunId):'')+
+          '<div class="muted small">'+(finding.evidence||[]).map(esc).join(' · ')+'</div>'+
+          (finding.suggestedFix?'<div class="small"><strong>Fix:</strong> '+esc(finding.suggestedFix)+'</div>':'')+
+          '</div>';
+      }
+    }
+    html+='</div></details>';
+  }
+  els.ciEfficiency.innerHTML=html;
 }
 
 function resourceEditor(repo,pool){

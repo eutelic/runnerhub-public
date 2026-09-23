@@ -5,11 +5,12 @@ repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 full=false
 registry_tag=""
 keep_images=false
+skip_runtime_builds=false
 
 usage() {
   cat <<'EOF'
 Usage:
-  bash scripts/validate-release-local.sh [--full] [--registry-tag TAG] [--keep-images]
+  bash scripts/validate-release-local.sh [--full] [--registry-tag TAG] [--keep-images] [--skip-runtime-builds]
 
 Runs the deployment and TrueNAS validation that can be reproduced on a normal
 Docker host without GitHub Actions credentials.
@@ -28,6 +29,10 @@ image used by production builds.
 --registry-tag TAG additionally verifies that all five GHCR images for TAG are
 readable and publish linux/amd64 + linux/arm64. Docker must already be logged in
 when the packages are private.
+
+--skip-runtime-builds runs release/deployment validation without building local
+throwaway runtime images. CI uses this before Buildx publishes the real staged
+artifacts, then validates those staged artifacts directly.
 EOF
 }
 
@@ -53,6 +58,10 @@ while (($#)); do
       ;;
     --keep-images)
       keep_images=true
+      shift
+      ;;
+    --skip-runtime-builds)
+      skip_runtime_builds=true
       shift
       ;;
     -h|--help)
@@ -112,6 +121,9 @@ for script in deploy/truenas/*.sh; do
   bash -n "$script"
 done
 
+step 'Run persistent secret lifecycle tests'
+bash deploy/docker/test-secret-init.sh
+
 step 'Run self-contained TrueNAS deployment-tool tests'
 bash deploy/truenas/test-prepare-compose.sh
 bash deploy/truenas/test-preflight-host.sh
@@ -147,20 +159,22 @@ docker compose --env-file "$envfile" -f deploy/docker/compose.release.yaml confi
 docker compose -f deploy/truenas/compose.yaml config >/dev/null
 docker compose -f deploy/truenas/deployer.compose.yaml config >/dev/null
 
-step 'Build all published runtime image targets'
-version="local-validation"
-if command -v git >/dev/null 2>&1; then
-  version="$(git rev-parse --verify HEAD 2>/dev/null || printf local-validation)"
+if [ "$skip_runtime_builds" != true ]; then
+  step 'Build all published runtime image targets'
+  version="local-validation"
+  if command -v git >/dev/null 2>&1; then
+    version="$(git rev-parse --verify HEAD 2>/dev/null || printf local-validation)"
+  fi
+
+  docker build --build-arg "VERSION=$version" --target control -f deploy/docker/Dockerfile -t "${images[0]}" .
+  docker build --build-arg "VERSION=$version" --target agent -f deploy/docker/Dockerfile -t "${images[1]}" .
+  docker build --build-arg "VERSION=$version" --target bootstrap -f deploy/docker/Dockerfile -t "${images[2]}" .
+  docker build --build-arg "VERSION=$version" --target scaleset -f deploy/docker/Dockerfile -t "${images[3]}" .
+  docker build --build-arg "VERSION=$version" --target deployer -f deploy/docker/Dockerfile -t "${images[4]}" .
+
+  step 'Exercise persisted control-data ownership migration'
+  bash deploy/docker/test-control-data-ownership.sh "${images[0]}"
 fi
-
-docker build --build-arg "VERSION=$version" --target control -f deploy/docker/Dockerfile -t "${images[0]}" .
-docker build --build-arg "VERSION=$version" --target agent -f deploy/docker/Dockerfile -t "${images[1]}" .
-docker build --build-arg "VERSION=$version" --target bootstrap -f deploy/docker/Dockerfile -t "${images[2]}" .
-docker build --build-arg "VERSION=$version" --target scaleset -f deploy/docker/Dockerfile -t "${images[3]}" .
-docker build --build-arg "VERSION=$version" --target deployer -f deploy/docker/Dockerfile -t "${images[4]}" .
-
-step 'Exercise persisted control-data ownership migration'
-bash deploy/docker/test-control-data-ownership.sh "${images[0]}"
 
 if [ "$full" = true ]; then
   step 'Run full core Go validation in production toolchain'
@@ -204,6 +218,8 @@ fi
 if [ -z "$registry_tag" ]; then
   printf '[note] Use --registry-tag TAG to validate a published GHCR release set\n'
 fi
-if [ "$keep_images" = true ]; then
+if [ "$skip_runtime_builds" = true ]; then
+  printf '[note] Runtime image builds skipped; validate the staged published artifacts separately\n'
+elif [ "$keep_images" = true ]; then
   printf '[note] Validation images retained with prefix %s\n' "$image_prefix"
 fi

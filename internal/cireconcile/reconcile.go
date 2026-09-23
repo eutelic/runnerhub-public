@@ -277,11 +277,32 @@ func (r *Reconciler) Once(ctx context.Context) error {
 	workflowFileCache := map[string]githubrunner.RepositoryFile{}
 	for _, worker := range candidates {
 		run, ok := runByWorker[worker.ID]
-		if !ok || !ciaudit.OrdinaryValidationWorkflow(run.Name) {
+		if !ok {
 			continue
 		}
 		job, ok := ciaudit.ExecutionFromWorker(worker)
 		if !ok {
+			continue
+		}
+
+		if ciaudit.MutableSnapshotPublicationWorkflow(run.Name) &&
+			strings.EqualFold(run.Event, "push") &&
+			strings.EqualFold(strings.TrimSpace(run.HeadBranch), "main") {
+			if supersededAt, newer, ok := supersedingPublicationRun(run, uniqueRuns, worker.CompletedAt); ok {
+				if finding, ok := ciaudit.StaleSnapshotPublicationFinding(job, supersededAt, true); ok {
+					finding.Evidence = []string{
+						fmt.Sprintf("workflow %q is explicitly classified as mutable snapshot publication", run.Name),
+						fmt.Sprintf("run %d (%s) was superseded by run %d (%s)", run.RunID, run.HeadSHA, newer.RunID, newer.HeadSHA),
+						fmt.Sprintf("newer main publication was created at %s", supersededAt.UTC().Format(time.RFC3339)),
+					}
+					if err := findingStore.UpsertCIFinding(ctx, normalizeRepository(worker.Repository), finding); err != nil {
+						errs = append(errs, err)
+					}
+				}
+			}
+		}
+
+		if !ciaudit.OrdinaryValidationWorkflow(run.Name) {
 			continue
 		}
 
@@ -383,6 +404,40 @@ func supersedingRun(current store.CIWorkflowRun, runs map[string]store.CIWorkflo
 			continue
 		}
 		if event == "pull_request" && !samePullRequest(current.PullRequestNumbers, candidate.PullRequestNumbers) {
+			continue
+		}
+		if best.RunID == 0 || candidate.CreatedAt.Before(best.CreatedAt) {
+			best = candidate
+		}
+	}
+	if best.RunID == 0 {
+		return time.Time{}, store.CIWorkflowRun{}, false
+	}
+	return best.CreatedAt, best, true
+}
+
+
+func supersedingPublicationRun(current store.CIWorkflowRun, runs map[string]store.CIWorkflowRun, completedAt time.Time) (time.Time, store.CIWorkflowRun, bool) {
+	if !ciaudit.MutableSnapshotPublicationWorkflow(current.Name) ||
+		!strings.EqualFold(strings.TrimSpace(current.Event), "push") ||
+		!strings.EqualFold(strings.TrimSpace(current.HeadBranch), "main") ||
+		strings.TrimSpace(current.Path) == "" ||
+		current.CreatedAt.IsZero() {
+		return time.Time{}, store.CIWorkflowRun{}, false
+	}
+	var best store.CIWorkflowRun
+	for _, candidate := range runs {
+		if candidate.Repository != current.Repository || candidate.RunID == current.RunID {
+			continue
+		}
+		if !ciaudit.MutableSnapshotPublicationWorkflow(candidate.Name) ||
+			!strings.EqualFold(candidate.Name, current.Name) ||
+			strings.TrimSpace(candidate.Path) != strings.TrimSpace(current.Path) ||
+			!strings.EqualFold(candidate.Event, "push") ||
+			!strings.EqualFold(strings.TrimSpace(candidate.HeadBranch), "main") ||
+			candidate.HeadSHA == "" || candidate.HeadSHA == current.HeadSHA ||
+			!candidate.CreatedAt.After(current.CreatedAt) ||
+			!candidate.CreatedAt.Before(completedAt) {
 			continue
 		}
 		if best.RunID == 0 || candidate.CreatedAt.Before(best.CreatedAt) {

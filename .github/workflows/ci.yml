@@ -37,17 +37,112 @@ on:
       - 'go.sum'
 permissions:
   contents: read
+  actions: read
+  pull-requests: read
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 jobs:
+  plan:
+    name: Plan deterministic CI work
+    runs-on: runnerhub
+    outputs:
+      core: ${{ steps.changed.outputs.core }}
+      minimum: ${{ steps.changed.outputs.minimum }}
+      root_permission: ${{ steps.changed.outputs.root_permission }}
+      core_race: ${{ steps.changed.outputs.core_race }}
+      scaleset: ${{ steps.changed.outputs.scaleset }}
+      agent: ${{ steps.changed.outputs.agent }}
+      docker_stack: ${{ steps.changed.outputs.docker_stack }}
+      reuse_core: ${{ steps.reuse.outputs.core }}
+      reuse_minimum: ${{ steps.reuse.outputs.minimum }}
+      reuse_scaleset: ${{ steps.reuse.outputs.scaleset }}
+      reuse_agent: ${{ steps.reuse.outputs.agent }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Determine affected validation lanes
+        id: changed
+        env:
+          BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ github.sha }}
+        run: bash scripts/ci-changes.sh "$BASE_SHA" "$HEAD_SHA"
+      - name: Prove reusable merged-PR validation
+        id: reuse
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
+        with:
+          script: |
+            const outputs = {core: false, minimum: false, scaleset: false, agent: false};
+            for (const [name, value] of Object.entries(outputs)) core.setOutput(name, String(value));
+
+            const {owner, repo} = context.repo;
+            const sha = context.sha;
+            const associated = await github.paginate(
+              github.rest.repos.listPullRequestsAssociatedWithCommit,
+              {owner, repo, commit_sha: sha, per_page: 100}
+            );
+            const merged = associated
+              .filter(pr => pr.merged_at)
+              .sort((a, b) => new Date(b.merged_at) - new Date(a.merged_at))[0];
+            if (!merged) {
+              core.info('No merged pull request is associated with this main commit; validation will run normally.');
+              return;
+            }
+
+            const runs = await github.paginate(
+              github.rest.actions.listWorkflowRuns,
+              {owner, repo, workflow_id: 'ci.yml', event: 'pull_request', status: 'success', per_page: 100}
+            );
+            const source = runs.find(run =>
+              Array.isArray(run.pull_requests) &&
+              run.pull_requests.some(pr => pr.number === merged.number)
+            );
+            if (!source) {
+              core.info('No successful pull-request CI run found for the merged PR.');
+              return;
+            }
+
+            const [mainCommit, prCommit] = await Promise.all([
+              github.rest.repos.getCommit({owner, repo, ref: sha}),
+              github.rest.repos.getCommit({owner, repo, ref: source.head_sha}),
+            ]);
+            const mainTree = mainCommit.data.commit.tree.sha;
+            const prTree = prCommit.data.commit.tree.sha;
+            if (!mainTree || mainTree !== prTree) {
+              core.info(`PR/main trees differ (${prTree || 'unknown'} != ${mainTree || 'unknown'}); validation will run normally.`);
+              return;
+            }
+
+            const jobs = await github.paginate(
+              github.rest.actions.listJobsForWorkflowRun,
+              {owner, repo, run_id: source.id, per_page: 100}
+            );
+            const succeeded = name => jobs.some(job => job.name === name && job.conclusion === 'success');
+            const prefixSucceeded = prefix => {
+              const matches = jobs.filter(job => job.name.startsWith(prefix));
+              return matches.length > 0 && matches.every(job => job.conclusion === 'success');
+            };
+
+            outputs.core = succeeded('core');
+            outputs.minimum = succeeded('Minimum declared Go toolchains');
+            outputs.scaleset = succeeded('scaleset');
+            outputs.agent = prefixSucceeded('agent-crossbuild');
+            for (const [name, value] of Object.entries(outputs)) core.setOutput(name, String(value));
+            core.info(`Tree-identical PR #${merged.number} run ${source.id} provides reusable validation: ${JSON.stringify(outputs)}`);
+
   core:
+    needs: plan
+    if: needs.plan.outputs.core == 'true' && needs.plan.outputs.reuse_core != 'true'
     # Standard unprivileged CI stays on RunnerHub.
     runs-on: runnerhub
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Validate workflow concurrency policy
         run: bash scripts/test-workflow-concurrency.sh
+      - name: Validate deterministic affected-job planner
+        run: bash scripts/test-ci-changes.sh
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version: '1.26.6'
@@ -62,6 +157,8 @@ jobs:
       - run: go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...
 
   minimum-toolchains:
+    needs: plan
+    if: needs.plan.outputs.minimum == 'true' && needs.plan.outputs.reuse_minimum != 'true'
     name: Minimum declared Go toolchains
     runs-on: runnerhub
     steps:
@@ -81,6 +178,8 @@ jobs:
         working-directory: scaleset
 
   root-permission-regression:
+    needs: plan
+    if: needs.plan.outputs.root_permission == 'true'
     # Docker-heavy validation uses RunnerHub's isolated publisher pool.
     runs-on: runnerhub-publisher
     steps:
@@ -99,6 +198,8 @@ jobs:
             bash -lc '/usr/local/go/bin/go test ./internal/providers/docker ./internal/providers/truenas -run TestWriteJITSecretNormalizesPermissions -count=1'
 
   core-race:
+    needs: plan
+    if: needs.plan.outputs.core_race == 'true'
     # Docker/CGO race validation uses RunnerHub's isolated publisher pool.
     runs-on: runnerhub-publisher
     steps:
@@ -117,6 +218,8 @@ jobs:
             bash -lc '/usr/local/go/bin/go test -race ./internal/...'
 
   scaleset:
+    needs: plan
+    if: needs.plan.outputs.scaleset == 'true' && needs.plan.outputs.reuse_scaleset != 'true'
     runs-on: runnerhub
     defaults:
       run:
@@ -132,6 +235,8 @@ jobs:
       - run: go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...
 
   agent-crossbuild:
+    needs: plan
+    if: needs.plan.outputs.agent == 'true' && needs.plan.outputs.reuse_agent != 'true'
     runs-on: runnerhub
     strategy:
       matrix:
@@ -145,6 +250,8 @@ jobs:
       - run: GOOS=${{ matrix.goos }} GOARCH=amd64 CGO_ENABLED=0 go build ./cmd/runnerhub-agent
 
   docker-stack-smoke:
+    needs: plan
+    if: needs.plan.outputs.docker_stack == 'true'
     # Docker stack validation uses RunnerHub's isolated publisher pool.
     runs-on: runnerhub-publisher
     steps:

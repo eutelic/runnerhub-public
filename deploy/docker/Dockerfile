@@ -1,14 +1,31 @@
 ARG VERSION=dev
 
-FROM golang:1.26.6-bookworm AS build
-ARG VERSION
+FROM golang:1.26.6-bookworm AS root-deps
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
-COPY . .
-RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" -o /out/runnerhubd ./cmd/runnerhubd && \
-    CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" -o /out/runnerhub-agent ./cmd/runnerhub-agent && \
-    CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" -o /out/runnerhub-deployer ./cmd/runnerhub-deployer
+
+# Keep runtime binary build inputs isolated. In particular, embedded web assets
+# are only inputs to runnerhubd, so a UI-only change does not invalidate the
+# agent or standalone deployer build cache.
+FROM root-deps AS control-build
+ARG VERSION
+COPY internal/ ./internal/
+COPY cmd/runnerhubd/ ./cmd/runnerhubd/
+COPY web/ ./web/
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" -o /out/runnerhubd ./cmd/runnerhubd
+
+FROM root-deps AS agent-build
+ARG VERSION
+COPY internal/ ./internal/
+COPY cmd/runnerhub-agent/ ./cmd/runnerhub-agent/
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" -o /out/runnerhub-agent ./cmd/runnerhub-agent
+
+FROM root-deps AS deployer-build
+ARG VERSION
+COPY internal/ ./internal/
+COPY cmd/runnerhub-deployer/ ./cmd/runnerhub-deployer/
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" -o /out/runnerhub-deployer ./cmd/runnerhub-deployer
 
 FROM golang:1.26.6-bookworm AS scaleset-build
 WORKDIR /src
@@ -24,7 +41,7 @@ FROM debian:bookworm-slim AS control
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl openssh-client sshpass util-linux && rm -rf /var/lib/apt/lists/* && \
     groupadd --gid 10001 runnerhub && useradd --uid 10001 --gid runnerhub --home-dir /nonexistent --shell /usr/sbin/nologin --no-create-home runnerhub && \
     mkdir -p /data && chown runnerhub:runnerhub /data
-COPY --from=build /out/runnerhubd /usr/local/bin/runnerhubd
+COPY --from=control-build /out/runnerhubd /usr/local/bin/runnerhubd
 COPY deploy/docker/secret-file.sh /usr/local/lib/runnerhub/secret-file.sh
 COPY deploy/docker/control-entrypoint.sh /usr/local/bin/runnerhub-control-entrypoint
 RUN chmod 0755 /usr/local/bin/runnerhub-control-entrypoint
@@ -37,7 +54,7 @@ FROM debian:bookworm-slim AS deployer
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl && rm -rf /var/lib/apt/lists/* && \
     groupadd --gid 10001 runnerhub && useradd --uid 10001 --gid runnerhub --home-dir /nonexistent --shell /usr/sbin/nologin --no-create-home runnerhub && \
     mkdir -p /data && chown runnerhub:runnerhub /data
-COPY --from=build /out/runnerhub-deployer /usr/local/bin/runnerhub-deployer
+COPY --from=deployer-build /out/runnerhub-deployer /usr/local/bin/runnerhub-deployer
 USER runnerhub
 VOLUME ["/data"]
 ENTRYPOINT ["/usr/local/bin/runnerhub-deployer"]
@@ -47,7 +64,7 @@ ENTRYPOINT ["/usr/local/bin/runnerhub-deployer"]
 # Docker Engine releases instead of Debian Bookworm's older docker.io client.
 FROM docker:29.8.1-cli@sha256:018edbc908e08fcc9dbf029c812c34251e9b4719e6f71ca0e5eae2a987d014ca AS agent
 RUN apk add --no-cache ca-certificates
-COPY --from=build /out/runnerhub-agent /usr/local/bin/runnerhub-agent
+COPY --from=agent-build /out/runnerhub-agent /usr/local/bin/runnerhub-agent
 COPY deploy/docker/secret-file.sh /usr/local/lib/runnerhub/secret-file.sh
 COPY deploy/docker/agent-entrypoint.sh /usr/local/bin/runnerhub-agent-entrypoint
 RUN chmod 0755 /usr/local/bin/runnerhub-agent-entrypoint
