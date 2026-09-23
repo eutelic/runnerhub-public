@@ -35,7 +35,7 @@ jobs:
     # Docker-heavy deployment validation runs on the repository publisher pool.
     runs-on: runnerhub-publisher
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Set up Docker Compose
         uses: docker/setup-compose-action@54042514f505b273907334ae2b9cdbb9a0213c1a # v2
 
