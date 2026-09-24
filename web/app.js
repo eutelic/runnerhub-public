@@ -10,6 +10,8 @@ const els={
   ciEfficiency:document.getElementById('ci-efficiency'),
   msg:document.getElementById('msg'),
   repos:document.getElementById('repos'),
+  repoSearch:document.getElementById('repo-search'),
+  repoShowPublic:document.getElementById('repo-show-public'),
   authstatus:document.getElementById('authstatus'),
   account:document.getElementById('account'),
   login:document.getElementById('login'),
@@ -24,6 +26,8 @@ const els={
 };
 let csrf='';
 let auth={enabled:false,authenticated:false};
+let lastRepoRenderArgs=null;
+let hiddenRepoAccounts=loadHiddenRepoAccounts();
 const VERCEL_PROFILE_NAME='runnerhub-vercel';
 const VERCEL_MACHINE_TAG='vercel';
 const VERCEL_CLI_VERSION='59.16.0';
@@ -85,6 +89,15 @@ const deployerHealth=document.getElementById('deployer-health-url');
 if(!deployerEndpoint.value&&location.hostname)deployerEndpoint.value='wss://'+location.hostname+'/api/current';
 if(!deployerHealth.value)deployerHealth.value=location.origin.replace(/\/$/,'')+'/healthz';
 els.logout.addEventListener('click',logout);
+if(els.repoSearch)els.repoSearch.addEventListener('input',rerenderRepositories);
+if(els.repoShowPublic){
+  const saved=localStorage.getItem('runnerhub-show-public-unsupported');
+  els.repoShowPublic.checked=saved===null?true:saved==='true';
+  els.repoShowPublic.addEventListener('change',()=>{
+    localStorage.setItem('runnerhub-show-public-unsupported',String(els.repoShowPublic.checked));
+    rerenderRepositories();
+  });
+}
 els.hosts.addEventListener('click',e=>{const button=e.target.closest('button[data-host-tags]');if(button)saveHostTags(button)});
 els.repos.addEventListener('click',e=>{
   const learning=e.target.closest('button[data-learning-reset]');
@@ -102,7 +115,27 @@ els.repos.addEventListener('click',e=>{
   const button=e.target.closest('button[data-resource-action]');
   if(button)saveRepositoryResources(button);
 });
+els.repos.addEventListener('change',e=>{
+  const account=e.target.closest('input[data-repo-account-toggle]');
+  if(!account)return;
+  setRepoAccountVisibility(account.dataset.repoAccountToggle,account.checked);
+  rerenderRepositories();
+});
 
+function loadHiddenRepoAccounts(){
+  try{
+    const value=JSON.parse(localStorage.getItem('runnerhub-hidden-repo-accounts')||'[]');
+    return new Set((Array.isArray(value)?value:[]).map(x=>String(x).toLowerCase()).filter(Boolean));
+  }catch{return new Set()}
+}
+function repoAccountVisible(account){return !hiddenRepoAccounts.has(String(account||'').toLowerCase())}
+function setRepoAccountVisibility(account,visible){
+  const key=String(account||'').toLowerCase();
+  if(!key)return;
+  if(visible)hiddenRepoAccounts.delete(key);else hiddenRepoAccounts.add(key);
+  localStorage.setItem('runnerhub-hidden-repo-accounts',JSON.stringify([...hiddenRepoAccounts].sort()));
+}
+function rerenderRepositories(){if(lastRepoRenderArgs)renderRepos(...lastRepoRenderArgs)}
 function esc(value){return String(value??'').replace(/[&<>"']/g,ch=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]))}
 function show(el,on){el.classList.toggle('hidden',!on)}
 function bind(id,event,handler){const el=document.getElementById(id);if(el)el.addEventListener(event,handler)}
@@ -240,16 +273,25 @@ function renderPreservingTableScroll(container,html){
 function hostTagText(host){return Object.keys(host?.userTags||{}).sort().join(', ')}
 function renderHosts(hosts){
   if(!Array.isArray(hosts)||!hosts.length){els.hosts.innerHTML='<span class="muted">None</span>';return}
-  renderPreservingTableScroll(els.hosts,'<div class="table-wrap"><table><tr><th>Name</th><th>State</th><th>CPU</th><th>Memory</th><th>Priority</th><th>Tags</th><th></th></tr>'+
-    hosts.map(h=>'<tr>'+
-      '<td>'+esc(h.name)+'</td>'+
-      '<td>'+esc(h.state)+'</td>'+
-      '<td>'+esc(h.capacity?.cpuMillis?cpuCores(h.capacity.cpuMillis)+' cores':'unknown')+'</td>'+
-      '<td>'+esc(h.capacity?.memoryBytes?gib(h.capacity.memoryBytes)+' GiB':'unknown')+'</td>'+
-      '<td><input class="inline-tags" data-host-priority-input="'+esc(h.id)+'" type="number" min="-1000" max="1000" step="1" value="'+esc(Number(h.priority||0))+'"></td>'+
-      '<td><input class="inline-tags" data-host-tag-input="'+esc(h.id)+'" value="'+esc(hostTagText(h))+'" placeholder="gpu, high-memory"></td>'+
-      '<td><button class="secondary compact" data-host-tags="'+esc(h.id)+'">Save</button></td>'+
-    '</tr>').join('')+'</table></div>');
+  const onlineVersions=[...new Set(hosts.filter(h=>String(h.state||'').toLowerCase()==='online').map(h=>String(h.agentVersion||'').trim()).filter(Boolean))];
+  const warning=onlineVersions.length>1
+    ? '<div class="resource-note warn"><strong>Agent version skew:</strong> online hosts are running '+onlineVersions.map(v=>esc(v.slice(0,8))).join(', ')+'. Review or update hosts so the fleet is on the intended agent revision.</div>'
+    : '';
+  const html='<div class="table-wrap"><table><tr><th>Name</th><th>State</th><th>Agent</th><th>CPU</th><th>Memory</th><th>Priority</th><th>Tags</th><th></th></tr>'+
+    hosts.map(h=>{
+      const version=String(h.agentVersion||'').trim();
+      return '<tr>'+
+        '<td>'+esc(h.name)+'</td>'+
+        '<td>'+esc(h.state)+'</td>'+
+        '<td><code title="'+esc(version)+'">'+esc(version?version.slice(0,8):'unknown')+'</code></td>'+
+        '<td>'+esc(h.capacity?.cpuMillis?cpuCores(h.capacity.cpuMillis)+' cores':'unknown')+'</td>'+
+        '<td>'+esc(h.capacity?.memoryBytes?gib(h.capacity.memoryBytes)+' GiB':'unknown')+'</td>'+
+        '<td><input class="inline-tags" data-host-priority-input="'+esc(h.id)+'" type="number" min="-1000" max="1000" step="1" value="'+esc(Number(h.priority||0))+'"></td>'+
+        '<td><input class="inline-tags" data-host-tag-input="'+esc(h.id)+'" value="'+esc(hostTagText(h))+'" placeholder="gpu, high-memory"></td>'+
+        '<td><button class="secondary compact" data-host-tags="'+esc(h.id)+'">Save</button></td>'+
+      '</tr>';
+    }).join('')+'</table></div>'+warning;
+  renderPreservingTableScroll(els.hosts,html);
 }
 
 function renderActiveRunners(workers,poolByID,hostByID,progressByWorker){
@@ -278,8 +320,8 @@ function renderActiveRunners(workers,poolByID,hostByID,progressByWorker){
     ['Step progress',x=>{const p=progressByWorker?.get(x.id);return p?.available&&p.totalSteps>0?p.completedSteps+' / '+p.totalSteps+' · '+p.percent+'%':'—'}],
     ['Current step',x=>progressByWorker?.get(x.id)?.currentStep||'—'],
     ['Host',x=>hostByID?.get(x.hostId)?.name||x.hostId||'pending'],
-    ['CPU allocation',x=>allocatedCPUText(x,poolByID?.get(x.poolId))],
-    ['RAM allocation',x=>allocatedRAMText(x,poolByID?.get(x.poolId))],
+    ['CPU limit / reserve',x=>allocatedCPUText(x,poolByID?.get(x.poolId))],
+    ['RAM limit / reserve',x=>allocatedRAMText(x,poolByID?.get(x.poolId))],
     ['Disk',x=>x.resources?.diskBytes?gib(x.resources.diskBytes)+' GiB':'—'],
     ['Runner started',x=>fmtTime(x.createdAt)],
     ['Job started',x=>fmtTime(x.startedAt)],
@@ -316,14 +358,23 @@ function renderWorkers(workers,poolByID){
     ['Class',x=>runnerClass(poolByID?.get(x.poolId))],
     ['Job',x=>x.jobName||'startup'],
     ['Result',x=>workerDisplayState(x)],
-    ['CPU now total',x=>!terminal.has(String(x.state||'').toLowerCase())&&x.usage?.updatedAt?usageCPU(x.usage.currentCpuMillis):'—'],
-    ['CPU peak total',x=>x.usage?.samples?usageCPU(x.usage.peakCpuMillis):'—'],
-    ['RAM now total',x=>!terminal.has(String(x.state||'').toLowerCase())&&x.usage?.updatedAt?usageRAM(x.usage.currentMemoryBytes):'—'],
-    ['RAM peak total',x=>x.usage?.samples?usageRAM(x.usage.peakMemoryBytes):'—'],
-    ['Allocated',x=>allocatedCPUText(x,poolByID?.get(x.poolId))+' / '+allocatedRAMText(x,poolByID?.get(x.poolId))],
+    ['CPU now · total',x=>!terminal.has(String(x.state||'').toLowerCase())&&x.usage?.updatedAt?usageCPU(x.usage.currentCpuMillis):'—'],
+    ['CPU peak · total',x=>x.usage?.samples?usageCPU(x.usage.peakCpuMillis):'—'],
+    ['CPU peak · / container',x=>{
+      const pool=poolByID?.get(x.poolId);
+      const envelope=Number(x.usage?.peakEnvelopeCpuMillis||x.usage?.peakEnvelopeCPUMillis||0);
+      return envelope?usageCPU(envelope):(resourceEnvelopeFactor(pool,x)===1&&x.usage?.samples?usageCPU(x.usage.peakCpuMillis):'—');
+    }],
+    ['RAM peak · total',x=>x.usage?.samples?usageRAM(x.usage.peakMemoryBytes):'—'],
+    ['RAM peak · / container',x=>{
+      const pool=poolByID?.get(x.poolId);
+      const envelope=Number(x.usage?.peakEnvelopeMemoryBytes||0);
+      return envelope?usageRAM(envelope):(resourceEnvelopeFactor(pool,x)===1&&x.usage?.samples?usageRAM(x.usage.peakMemoryBytes):'—');
+    }],
+    ['Limit / host reserve',x=>allocatedCPUText(x,poolByID?.get(x.poolId))+' / '+allocatedRAMText(x,poolByID?.get(x.poolId))],
     ['Updated',x=>fmtTime(workerTimestamp(x))],
     ['Failure',x=>x.failureReason||'']
-  ])+'<div class="muted small workers-note">Historical and deleted worker records are hidden here. Diagnostics retains the full history.</div>');
+  ])+'<div class="muted small workers-note">CPU/RAM limits are per container. Publisher/DinD jobs use a runner plus a sidecar, so total observed usage and host reservation can be up to two envelopes. Implausible samples above configured envelopes are ignored for new telemetry and autosizing. Historical and deleted records remain available in Diagnostics.</div>');
 }
 
 function renderDeployerStatus(status){
@@ -466,7 +517,7 @@ async function refresh(){
     renderPreservingTableScroll(els.pools,tab(p,[
       ['Repository',x=>repoName(x)],
       ['Class',x=>runnerClass(x)],
-      ['Request',x=>cpuCores(x.resources?.cpuMillis)+' cores / '+gib(x.resources?.memoryBytes)+' GiB'],
+      ['Per-container limit',x=>cpuCores(x.resources?.cpuMillis)+' cores / '+gib(x.resources?.memoryBytes)+' GiB'],
       ['Active',x=>{const r=recommendationByPool.get(x.id);return r?(r.capacity.activeWorkers+' / '+x.maxConcurrency):'—'}],
       ['Hosts',x=>recommendationByPool.get(x.id)?.capacity?.compatibleHosts??'—'],
       ['Queue',x=>fmtDuration(recommendationByPool.get(x.id)?.latencies?.queue)],
@@ -572,7 +623,7 @@ function resourceEditor(repo,pool){
       '<label>Max concurrent<input data-field="concurrency" type="number" min="1" step="1" value="'+esc(max)+'"></label>'+
     '</div>'+
     '<label class="check-row"><input data-field="autotune" type="checkbox"'+(pool?.autoTuneResources?' checked':'')+'> Auto-size CPU/RAM from observed job usage</label>'+
-    '<div class="resource-note muted">Auto-size waits for at least 5 valid completed jobs, uses CPU p95 / RAM max per-container peaks + 25% headroom, and ignores impossible telemetry. Manual CPU/RAM changes start a fresh learning window. Limits apply to newly created runners.</div>'+
+    '<div class="resource-note muted">CPU/RAM are per-container ceilings. Publisher/DinD jobs reserve two envelopes (runner + sidecar). Auto-size waits for at least 5 valid completed jobs, uses CPU p95 / RAM max per-container peaks + 25% headroom, and ignores impossible telemetry. Manual CPU/RAM changes start a fresh learning window. Limits apply to newly created runners.</div>'+
     '<div class="publisher-actions"><button data-resource-action="'+(connected?'update':'connect')+'" data-repo="'+esc(repo.fullName)+'" data-installation="'+esc(repo.installationId)+'"'+poolAttr+'>'+esc(action)+'</button>'+
       (connected?'<button class="secondary" data-learning-reset data-pool-id="'+esc(pool.id)+'" data-learning-label="standard runner">Reset learning</button>':'')+
     '</div>'+
@@ -673,6 +724,7 @@ function runnerProfileEditor(repo,profiles,standardConnected){
 }
 
 function renderRepos(repos,pools,statuses,runtimeHealth,hosts,installations){
+  lastRepoRenderArgs=[repos,pools,statuses,runtimeHealth,hosts,installations];
   const poolsByRepo=new Map();
   (pools||[]).filter(p=>p.scope?.kind==='repository').forEach(p=>{
     const key=(p.scope.owner+'/'+p.scope.repository).toLowerCase();
@@ -691,7 +743,16 @@ function renderRepos(repos,pools,statuses,runtimeHealth,hosts,installations){
   const installedAccountText=(installations||[]).length
     ? (installations||[]).map(x=>'@'+String(x.account||'')+' · '+(String(x.accountType||'').toLowerCase()==='user'?'personal':'organization')).join(' · ')
     : 'No GitHub App installations detected.';
-  const accountHint='<div class="repo-account-summary"><div><strong>GitHub App accounts</strong><div class="muted small">'+esc(installedAccountText)+'</div></div>'+
+  const accountNames=[...new Set([
+    ...(installations||[]).map(x=>String(x.account||'')).filter(Boolean),
+    ...(repos||[]).map(x=>String(x.account||x.fullName?.split('/')[0]||'')).filter(Boolean)
+  ])].sort((a,b)=>a.toLowerCase().localeCompare(b.toLowerCase()));
+  const accountToggles=accountNames.length
+    ? '<div class="repo-account-filters"><span class="muted small">Visible accounts</span>'+accountNames.map(account=>
+        '<label class="repo-filter-chip"><input type="checkbox" data-repo-account-toggle="'+esc(account)+'"'+(repoAccountVisible(account)?' checked':'')+'> @'+esc(account)+'</label>'
+      ).join('')+'</div>'
+    : '';
+  const accountHint='<div class="repo-account-summary"><div><strong>GitHub App accounts</strong><div class="muted small">'+esc(installedAccountText)+'</div>'+accountToggles+'</div>'+
     (!hasPersonalInstallation?'<a class="button secondary compact" href="/auth/github/install">Add personal account</a>':'')+
     '</div>';
 
@@ -708,6 +769,21 @@ function renderRepos(repos,pools,statuses,runtimeHealth,hosts,installations){
     const bc=poolsByRepo.get(b.fullName.toLowerCase())?.standard?1:0;
     if(ac!==bc)return bc-ac;
     return a.fullName.localeCompare(b.fullName);
+  });
+  const search=String(els.repoSearch?.value||'').trim().toLowerCase();
+  const showPublicUnsupported=els.repoShowPublic?.checked??true;
+  const visibleRepos=sorted.filter(repo=>{
+    const account=String(repo.account||repo.fullName?.split('/')[0]||'unknown');
+    if(!repoAccountVisible(account))return false;
+    const entry=poolsByRepo.get(repo.fullName.toLowerCase())||{standard:null};
+    if(!showPublicUnsupported&&!repo.private&&!entry.standard)return false;
+    if(!search)return true;
+    const haystack=[
+      repo.fullName,account,repo.defaultBranch,
+      repo.private?'private':'public',
+      entry.standard?'connected':(!repo.private?'unsupported':'not connected')
+    ].join(' ').toLowerCase();
+    return haystack.includes(search);
   });
 
   function renderRepoCard(repo){
@@ -760,7 +836,7 @@ function renderRepos(repos,pools,statuses,runtimeHealth,hosts,installations){
   }
 
   const grouped=new Map();
-  for(const repo of sorted){
+  for(const repo of visibleRepos){
     const account=String(repo.account||repo.fullName?.split('/')[0]||'unknown');
     const key=account.toLowerCase();
     const group=grouped.get(key)||{account,repos:[]};
@@ -773,12 +849,14 @@ function renderRepos(repos,pools,statuses,runtimeHealth,hosts,installations){
     const accountType=String(installation?.accountType||group.repos[0]?.accountType||'').toLowerCase();
     const label=accountType==='user'?'Personal account':accountType==='organization'?'Organization':'GitHub account';
     return '<section class="repo-account-group">'+
-      '<div class="repo-account-head"><div><h3>@'+esc(group.account)+'</h3><div class="muted small">'+esc(label)+' · '+group.repos.length+' repositor'+(group.repos.length===1?'y':'ies')+'</div></div></div>'+
+      '<div class="repo-account-head"><div><h3>@'+esc(group.account)+'</h3><div class="muted small">'+esc(label)+' · '+group.repos.length+' visible repositor'+(group.repos.length===1?'y':'ies')+'</div></div></div>'+
       '<div class="repo-account-grid">'+group.repos.map(renderRepoCard).join('')+'</div>'+
       '</section>';
   }).join('');
 
-  els.repos.innerHTML=accountHint+groups;
+  const count='<div class="repo-filter-summary muted small">Showing '+visibleRepos.length+' of '+repos.length+' repositories</div>';
+  const empty=visibleRepos.length?'':'<div class="empty">No repositories match the current search and visibility filters.</div>';
+  els.repos.innerHTML=accountHint+count+groups+empty;
 }
 async function scanMachineHostKey(){
   const button=document.getElementById('machine-scan-fingerprint');

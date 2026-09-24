@@ -140,6 +140,42 @@ func TestScaleEventTreatsLateTerminalEventForDeletedWorkerAsSuccess(t *testing.T
 }
 
 
+
+func TestScaleEventNormalizesCompletionBeforeStart(t *testing.T){
+	ctx:=context.Background()
+	st,err:=store.OpenSQLite(":memory:")
+	if err!=nil{t.Fatal(err)}
+	defer st.Close()
+	started:=time.Now().UTC().Add(-2*time.Second)
+	wk:=core.Worker{ID:"w-skew",PoolID:"pool-skew",RunnerName:"runner-skew",State:core.WorkerBusy,StartedAt:started,RegisteredAt:started.Add(-time.Second),UpdatedAt:started}
+	if err:=st.UpsertWorker(ctx,wk);err!=nil{t.Fatal(err)}
+	svc:=&Service{Store:st}
+	completed:=started.Add(-500*time.Millisecond).Format(time.RFC3339Nano)
+	body:=fmt.Sprintf(`{"poolId":"pool-skew","runnerName":"runner-skew","state":"completed","completedAt":%q,"result":"succeeded"}`,completed)
+	req:=httptest.NewRequest(http.MethodPost,"/api/v1/scale-events",bytes.NewBufferString(body))
+	req.Header.Set("Content-Type","application/json")
+	rr:=httptest.NewRecorder()
+	svc.Handler().ServeHTTP(rr,req)
+	if rr.Code!=http.StatusOK{t.Fatalf("status=%d body=%s",rr.Code,rr.Body.String())}
+	got,err:=st.GetWorker(ctx,"w-skew")
+	if err!=nil{t.Fatal(err)}
+	if got.CompletedAt.Before(got.StartedAt){t.Fatalf("completion precedes start: start=%s completion=%s",got.StartedAt,got.CompletedAt)}
+}
+
+func TestRecordWorkerUsageRejectsImpossibleConfiguredUsage(t *testing.T){
+	now:=time.Date(2026,9,24,12,0,0,0,time.UTC)
+	trusted:=core.Worker{Isolation:core.IsolationContainerTrusted,Resources:core.Resources{CPUMillis:2500,MemoryBytes:4<<30}}
+	recordWorkerUsage(&trusted,&provider.WorkerUsage{CPUMillis:12000,MemoryBytes:1<<30,EnvelopeCPUMillis:12000,EnvelopeMemoryBytes:1<<30},now,true)
+	if trusted.Usage.Samples!=0||trusted.Usage.PeakCPUMillis!=0{t.Fatalf("accepted impossible trusted usage: %+v",trusted.Usage)}
+	if !trusted.Usage.UpdatedAt.Equal(now){t.Fatalf("usage heartbeat not recorded: %+v",trusted.Usage)}
+
+	dind:=core.Worker{Isolation:core.IsolationContainerDinD,Resources:core.Resources{CPUMillis:2500,MemoryBytes:4<<30}}
+	recordWorkerUsage(&dind,&provider.WorkerUsage{CPUMillis:4500,MemoryBytes:3<<30,EnvelopeCPUMillis:2400,EnvelopeMemoryBytes:2<<30},now,true)
+	if dind.Usage.Samples!=1||dind.Usage.PeakCPUMillis!=4500||dind.Usage.PeakEnvelopeCPUMillis!=2400{t.Fatalf("rejected valid DinD aggregate usage: %+v",dind.Usage)}
+	recordWorkerUsage(&dind,&provider.WorkerUsage{CPUMillis:12000,MemoryBytes:3<<30,EnvelopeCPUMillis:6000,EnvelopeMemoryBytes:2<<30},now.Add(time.Second),true)
+	if dind.Usage.Samples!=1||dind.Usage.PeakCPUMillis!=4500{t.Fatalf("impossible DinD sample changed history: %+v",dind.Usage)}
+}
+
 func TestPoolRecommendationsUsePoolSpecificQueueAndCapacity(t *testing.T){
 	ctx:=context.Background()
 	st,err:=store.OpenSQLite(":memory:")

@@ -53,3 +53,36 @@ func TestDashboardIncludesVercelDeployPreset(t *testing.T) {
 		}
 	}
 }
+
+
+func TestDashboardIncludesRepositoryVisibilityFilters(t *testing.T) {
+	index, err := content.ReadFile("index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	app, err := content.ReadFile("app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	indexText := string(index)
+	appText := string(app)
+	for _, want := range []string{
+		`id="repo-search"`,
+		`id="repo-show-public"`,
+		"Show public unsupported repositories",
+	} {
+		if !strings.Contains(indexText, want) {
+			t.Fatalf("repository filter UI missing %q", want)
+		}
+	}
+	for _, want := range []string{
+		"data-repo-account-toggle",
+		"runnerhub-hidden-repo-accounts",
+		"runnerhub-show-public-unsupported",
+		"rerenderRepositories",
+	} {
+		if !strings.Contains(appText, want) {
+			t.Fatalf("repository filter behavior missing %q", want)
+		}
+	}
+}

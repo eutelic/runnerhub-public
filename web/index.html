@@ -146,6 +146,13 @@
           <button id="logout" class="secondary hidden">Sign out</button>
         </div>
       </div>
+      <div class="repo-toolbar" role="search">
+        <label class="repo-search-label">
+          <span class="muted small">Find repositories</span>
+          <input id="repo-search" type="search" autocomplete="off" placeholder="Search repository, account, branch, or status">
+        </label>
+        <label class="check-row repo-public-toggle"><input id="repo-show-public" type="checkbox" checked> Show public unsupported repositories</label>
+      </div>
       <div id="repos" class="repo-grid"></div>
       <details id="legacy-auth" class="advanced-details">
         <summary>Advanced: API token</summary>
