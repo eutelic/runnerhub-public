@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/eutelic/runnerhub/internal/agent"
@@ -23,6 +24,46 @@ type Reconciler struct {
 	ProvisionTimeout  time.Duration
 	RegistrationGrace time.Duration
 	Now               func() time.Time
+
+	githubPollMu   sync.Mutex
+	githubLastPoll map[string]time.Time
+}
+
+func githubRunnerPollInterval(state core.WorkerState) time.Duration {
+	switch state {
+	case core.WorkerRegistering:
+		return 15 * time.Second
+	case core.WorkerReady:
+		return 2 * time.Minute
+	case core.WorkerBusy:
+		return 5 * time.Minute
+	default:
+		return 0
+	}
+}
+
+func (r *Reconciler) githubRunnerPollDue(w core.Worker, now time.Time) bool {
+	interval := githubRunnerPollInterval(w.State)
+	if interval <= 0 {
+		return false
+	}
+	r.githubPollMu.Lock()
+	defer r.githubPollMu.Unlock()
+	if r.githubLastPoll == nil {
+		r.githubLastPoll = map[string]time.Time{}
+	}
+	last, ok := r.githubLastPoll[w.ID]
+	if ok && now.Sub(last) < interval {
+		return false
+	}
+	r.githubLastPoll[w.ID] = now
+	return true
+}
+
+func (r *Reconciler) clearGitHubPoll(workerID string) {
+	r.githubPollMu.Lock()
+	delete(r.githubLastPoll, workerID)
+	r.githubPollMu.Unlock()
 }
 
 func (r *Reconciler) Run(ctx context.Context) error {
@@ -85,6 +126,7 @@ func (r *Reconciler) Once(ctx context.Context) error {
 
 func (r *Reconciler) reconcileWorker(ctx context.Context, w *core.Worker) error {
 	if w.State == core.WorkerDeleted {
+		r.clearGitHubPoll(w.ID)
 		return nil
 	}
 
@@ -119,7 +161,7 @@ func (r *Reconciler) reconcileWorker(ctx context.Context, w *core.Worker) error 
 		})
 	}
 
-	if r.GitHub != nil && w.GitHubRunnerID > 0 && (w.State == core.WorkerRegistering || w.State == core.WorkerReady || w.State == core.WorkerBusy) {
+	if r.GitHub != nil && w.GitHubRunnerID > 0 && (w.State == core.WorkerRegistering || w.State == core.WorkerReady || w.State == core.WorkerBusy) && r.githubRunnerPollDue(*w, now) {
 		gr, err := r.GitHub.GetRunner(ctx, w.Scope, w.GitHubRunnerID)
 		switch {
 		case err == nil:
@@ -202,6 +244,7 @@ func (r *Reconciler) reconcileWorker(ctx context.Context, w *core.Worker) error 
 	if w.State != core.WorkerCompleted && w.State != core.WorkerFailed && w.State != core.WorkerCleanupPending {
 		return nil
 	}
+	r.clearGitHubPoll(w.ID)
 
 	if w.GitHubRunnerID > 0 && r.GitHub != nil {
 		err := r.GitHub.DeleteRunner(ctx, w.Scope, w.GitHubRunnerID)

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"io"
 	"log/slog"
 	"net"
@@ -21,6 +22,7 @@ import (
 
 	"github.com/actions/scaleset"
 	"github.com/actions/scaleset/listener"
+	"github.com/hashicorp/go-retryablehttp"
 )
 
 type config struct {
@@ -38,6 +40,163 @@ type config struct {
 	AppPrivateKey     string
 	PAT               string
 	AllowInsecureHTTP bool
+	rateLimit         *githubRateLimitTracker
+}
+
+type githubRateLimitSnapshot struct {
+	Resource   string
+	Limit      int64
+	Remaining  int64
+	Reset      time.Time
+	RetryAfter time.Time
+	StatusCode int
+	RequestID  string
+}
+
+type githubRateLimitTracker struct {
+	mu   sync.RWMutex
+	snap githubRateLimitSnapshot
+}
+
+func (t *githubRateLimitTracker) observe(resp *http.Response) {
+	if t == nil || resp == nil {
+		return
+	}
+	s := githubRateLimitSnapshot{
+		Resource:   strings.TrimSpace(resp.Header.Get("X-RateLimit-Resource")),
+		Limit:      -1,
+		Remaining:  -1,
+		StatusCode: resp.StatusCode,
+		RequestID:  strings.TrimSpace(resp.Header.Get("X-GitHub-Request-Id")),
+	}
+	if v, err := strconv.ParseInt(strings.TrimSpace(resp.Header.Get("X-RateLimit-Limit")), 10, 64); err == nil {
+		s.Limit = v
+	}
+	if v, err := strconv.ParseInt(strings.TrimSpace(resp.Header.Get("X-RateLimit-Remaining")), 10, 64); err == nil {
+		s.Remaining = v
+	}
+	if v, err := strconv.ParseInt(strings.TrimSpace(resp.Header.Get("X-RateLimit-Reset")), 10, 64); err == nil && v > 0 {
+		s.Reset = time.Unix(v, 0)
+	}
+	if raw := strings.TrimSpace(resp.Header.Get("Retry-After")); raw != "" {
+		if seconds, err := strconv.ParseInt(raw, 10, 64); err == nil && seconds >= 0 {
+			s.RetryAfter = time.Now().Add(time.Duration(seconds) * time.Second)
+		} else if when, err := http.ParseTime(raw); err == nil {
+			s.RetryAfter = when
+		}
+	}
+	t.mu.Lock()
+	t.snap = s
+	t.mu.Unlock()
+}
+
+func (t *githubRateLimitTracker) cooldown(now time.Time) (time.Time, bool) {
+	if t == nil {
+		return time.Time{}, false
+	}
+	t.mu.RLock()
+	s := t.snap
+	t.mu.RUnlock()
+	until := s.RetryAfter
+	if s.Remaining == 0 && s.Reset.After(until) {
+		until = s.Reset
+	}
+	return until, until.After(now)
+}
+
+func (t *githubRateLimitTracker) detail(now time.Time) string {
+	if t == nil {
+		return ""
+	}
+	t.mu.RLock()
+	s := t.snap
+	t.mu.RUnlock()
+	parts := []string{}
+	if s.Resource != "" {
+		parts = append(parts, "resource="+s.Resource)
+	}
+	if s.Remaining >= 0 {
+		if s.Limit >= 0 {
+			parts = append(parts, fmt.Sprintf("remaining=%d/%d", s.Remaining, s.Limit))
+		} else {
+			parts = append(parts, fmt.Sprintf("remaining=%d", s.Remaining))
+		}
+	}
+	if until, ok := t.cooldown(now); ok {
+		parts = append(parts, "cooldownUntil="+until.UTC().Format(time.RFC3339))
+	}
+	if s.StatusCode != 0 {
+		parts = append(parts, fmt.Sprintf("status=%d", s.StatusCode))
+	}
+	if s.RequestID != "" {
+		parts = append(parts, "requestId="+s.RequestID)
+	}
+	return strings.Join(parts, " ")
+}
+
+type cooldownRoundTripper struct {
+	base    http.RoundTripper
+	tracker *githubRateLimitTracker
+}
+
+func (t cooldownRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	if until, ok := t.tracker.cooldown(time.Now()); ok {
+		timer := time.NewTimer(time.Until(until))
+		defer timer.Stop()
+		select {
+		case <-req.Context().Done():
+			return nil, req.Context().Err()
+		case <-timer.C:
+		}
+	}
+	base := t.base
+	if base == nil {
+		base = http.DefaultTransport
+	}
+	resp, err := base.RoundTrip(req)
+	if resp != nil {
+		t.tracker.observe(resp)
+	}
+	return resp, err
+}
+
+func githubRetryBackoff(minWait, maxWait time.Duration, attempt int, resp *http.Response) time.Duration {
+	wait := retryablehttp.DefaultBackoff(minWait, maxWait, attempt, resp)
+	if resp == nil {
+		return wait
+	}
+	now := time.Now()
+	var explicit time.Time
+	if raw := strings.TrimSpace(resp.Header.Get("Retry-After")); raw != "" {
+		if seconds, err := strconv.ParseInt(raw, 10, 64); err == nil && seconds >= 0 {
+			explicit = now.Add(time.Duration(seconds) * time.Second)
+		} else if when, err := http.ParseTime(raw); err == nil {
+			explicit = when
+		}
+	}
+	if remaining, err := strconv.ParseInt(strings.TrimSpace(resp.Header.Get("X-RateLimit-Remaining")), 10, 64); err == nil && remaining == 0 {
+		if reset, err := strconv.ParseInt(strings.TrimSpace(resp.Header.Get("X-RateLimit-Reset")), 10, 64); err == nil {
+			when := time.Unix(reset, 0)
+			if when.After(explicit) {
+				explicit = when
+			}
+		}
+	}
+	if explicit.After(now) && explicit.Sub(now) > wait {
+		return explicit.Sub(now)
+	}
+	return wait
+}
+
+func newGitHubRetryClient(tracker *githubRateLimitTracker) *retryablehttp.Client {
+	client := retryablehttp.NewClient()
+	client.Logger = nil
+	client.RetryMax = 3
+	client.RetryWaitMin = time.Second
+	client.RetryWaitMax = 5 * time.Minute
+	client.Backoff = githubRetryBackoff
+	client.HTTPClient.Transport = cooldownRoundTripper{base: client.HTTPClient.Transport, tracker: tracker}
+	return client
 }
 
 func loadConfig() (config, error) {
@@ -78,6 +237,7 @@ func loadConfig() (config, error) {
 	if c.RunnerGroup == "" {
 		c.RunnerGroup = scaleset.DefaultRunnerGroup
 	}
+	c.rateLimit = &githubRateLimitTracker{}
 	if c.RegistrationURL == "" || c.Name == "" || c.PoolID == "" || c.ControlURL == "" {
 		return c, errors.New("RUNNERHUB_GITHUB_URL, RUNNERHUB_SCALESET_NAME, RUNNERHUB_POOL_ID and RUNNERHUB_CONTROL_URL are required")
 	}
@@ -98,13 +258,18 @@ func loadConfig() (config, error) {
 
 func (c config) client() (*scaleset.Client, error) {
 	info := scaleset.SystemInfo{System: "runnerhub", Subsystem: "scaleset", Version: "0.3.0", CommitSHA: "unknown"}
+	tracker := c.rateLimit
+	if tracker == nil {
+		tracker = &githubRateLimitTracker{}
+	}
+	httpOptions := []scaleset.HTTPOption{scaleset.WithRetryableHTTPClint(newGitHubRetryClient(tracker))}
 	app := scaleset.GitHubAppAuth{ClientID: c.AppClientID, InstallationID: c.AppInstallationID, PrivateKey: c.AppPrivateKey}
 	if app.Validate() == nil {
 		return scaleset.NewClientWithGitHubApp(scaleset.ClientWithGitHubAppConfig{
 			GitHubConfigURL: c.RegistrationURL,
 			GitHubAppAuth:   app,
 			SystemInfo:      info,
-		})
+		}, httpOptions...)
 	}
 	if c.PAT == "" {
 		return nil, errors.New("github app credentials or RUNNERHUB_GITHUB_TOKEN are required")
@@ -113,7 +278,7 @@ func (c config) client() (*scaleset.Client, error) {
 		GitHubConfigURL:     c.RegistrationURL,
 		PersonalAccessToken: c.PAT,
 		SystemInfo:          info,
-	})
+	}, httpOptions...)
 }
 
 type runnerHubClient struct {
@@ -414,6 +579,36 @@ type managedListener struct {
 	ready       bool
 }
 
+type listenerRetryState struct {
+	attempt     int
+	nextAttempt time.Time
+	fingerprint string
+}
+
+func listenerRetryDelay(attempt int, key string) time.Duration {
+	if attempt < 1 {
+		attempt = 1
+	}
+	base := 10 * time.Second
+	for i := 1; i < attempt && base < 5*time.Minute; i++ {
+		base *= 2
+		if base > 5*time.Minute {
+			base = 5 * time.Minute
+		}
+	}
+	jitterMax := base / 4
+	if jitterMax <= 0 {
+		return base
+	}
+	h := fnv.New64a()
+	_, _ = h.Write([]byte(key + ":" + strconv.Itoa(attempt)))
+	jitter := time.Duration(h.Sum64() % uint64(jitterMax+1))
+	if base+jitter > 5*time.Minute {
+		return 5 * time.Minute
+	}
+	return base + jitter
+}
+
 type listenerResult struct {
 	key         string
 	fingerprint string
@@ -500,6 +695,16 @@ func runDynamicManager(ctx context.Context, base config) error {
 	}
 	active := map[string]managedListener{}
 	desired := map[string]managedConfig{}
+	retries := map[string]listenerRetryState{}
+	rateLimits := map[int64]*githubRateLimitTracker{}
+	trackerFor := func(installationID int64) *githubRateLimitTracker {
+		tracker := rateLimits[installationID]
+		if tracker == nil {
+			tracker = &githubRateLimitTracker{}
+			rateLimits[installationID] = tracker
+		}
+		return tracker
+	}
 	results := make(chan listenerResult, 64)
 	ticker := time.NewTicker(10 * time.Second)
 	defer ticker.Stop()
@@ -533,6 +738,7 @@ func runDynamicManager(ctx context.Context, base config) error {
 			if !ok || configFingerprint(item) != running.fingerprint {
 				running.cancel()
 				delete(active, key)
+				delete(retries, key)
 				continue
 			}
 			state := "starting"
@@ -545,9 +751,27 @@ func runDynamicManager(ctx context.Context, base config) error {
 			if _, ok := active[key]; ok {
 				continue
 			}
-			cfg := configFromManaged(base, item)
-			childCtx, childCancel := context.WithCancel(ctx)
 			fingerprint := configFingerprint(item)
+			if retry, ok := retries[key]; ok {
+				if retry.fingerprint != fingerprint {
+					delete(retries, key)
+				} else if retry.nextAttempt.After(time.Now()) {
+					_ = hub.scaleSetStatus(ctx, key, "backing_off", "listener restart delayed until "+retry.nextAttempt.UTC().Format(time.RFC3339))
+					continue
+				}
+			}
+			tracker := trackerFor(item.AppInstallationID)
+			if until, ok := tracker.cooldown(time.Now()); ok {
+				detail := "GitHub rate-limit cooldown until " + until.UTC().Format(time.RFC3339)
+				if rateDetail := tracker.detail(time.Now()); rateDetail != "" {
+					detail += " (" + rateDetail + ")"
+				}
+				_ = hub.scaleSetStatus(ctx, key, "backing_off", detail)
+				continue
+			}
+			cfg := configFromManaged(base, item)
+			cfg.rateLimit = tracker
+			childCtx, childCancel := context.WithCancel(ctx)
 			active[key] = managedListener{cancel: childCancel, fingerprint: fingerprint}
 			_ = hub.scaleSetStatus(ctx, key, "starting", "")
 			slog.Info("starting managed scale-set listener", "pool", key, "repository", item.RegistrationURL, "name", item.Name)
@@ -584,6 +808,7 @@ func runDynamicManager(ctx context.Context, base config) error {
 			if result.ready {
 				running.ready = true
 				active[result.key] = running
+				delete(retries, result.key)
 				_ = hub.scaleSetStatus(ctx, result.key, "ready", "")
 				updateReadiness()
 				continue
@@ -591,8 +816,24 @@ func runDynamicManager(ctx context.Context, base config) error {
 
 			delete(active, result.key)
 			if result.err != nil && !errors.Is(result.err, context.Canceled) {
-				_ = hub.scaleSetStatus(ctx, result.key, "error", result.err.Error())
-				slog.Error("managed scale-set listener stopped", "pool", result.key, "error", result.err)
+				prev := retries[result.key]
+				attempt := prev.attempt + 1
+				nextAttempt := time.Now().Add(listenerRetryDelay(attempt, result.key))
+				if item, ok := desired[result.key]; ok {
+					tracker := trackerFor(item.AppInstallationID)
+					if until, limited := tracker.cooldown(time.Now()); limited && until.After(nextAttempt) {
+						nextAttempt = until
+					}
+				}
+				retries[result.key] = listenerRetryState{attempt: attempt, nextAttempt: nextAttempt, fingerprint: result.fingerprint}
+				detail := fmt.Sprintf("listener stopped; retry at %s: %v", nextAttempt.UTC().Format(time.RFC3339), result.err)
+				if item, ok := desired[result.key]; ok {
+					if rateDetail := trackerFor(item.AppInstallationID).detail(time.Now()); rateDetail != "" {
+						detail += " (" + rateDetail + ")"
+					}
+				}
+				_ = hub.scaleSetStatus(ctx, result.key, "backing_off", detail)
+				slog.Error("managed scale-set listener stopped; backing off", "pool", result.key, "retryAt", nextAttempt, "attempt", attempt, "error", result.err)
 			}
 			updateReadiness()
 		}

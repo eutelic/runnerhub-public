@@ -3,12 +3,15 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/actions/scaleset"
 )
@@ -341,5 +344,46 @@ func TestRunnerHubClientCreateSendsGitHubRunnerID(t *testing.T) {
 	}
 	if got.ID != "worker-1" {
 		t.Fatalf("worker=%+v", got)
+	}
+}
+
+
+func TestListenerRetryDelayIsBoundedAndDeterministic(t *testing.T) {
+	first := listenerRetryDelay(1, "pool-a")
+	second := listenerRetryDelay(2, "pool-a")
+	if first < 10*time.Second || first > 12500*time.Millisecond {
+		t.Fatalf("first delay=%s outside expected jitter window", first)
+	}
+	if second <= first {
+		t.Fatalf("second delay=%s did not grow beyond first=%s", second, first)
+	}
+	if got := listenerRetryDelay(2, "pool-a"); got != second {
+		t.Fatalf("retry jitter is not deterministic: first=%s second=%s", second, got)
+	}
+	if got := listenerRetryDelay(20, "pool-a"); got > 5*time.Minute {
+		t.Fatalf("retry delay exceeded cap: %s", got)
+	}
+}
+
+func TestRateLimitTrackerUsesResetAndRetryAfter(t *testing.T) {
+	now := time.Now()
+	resp := &http.Response{StatusCode:http.StatusForbidden, Header:make(http.Header)}
+	resp.Header.Set("X-RateLimit-Resource", "actions_runner_registration")
+	resp.Header.Set("X-RateLimit-Limit", "100")
+	resp.Header.Set("X-RateLimit-Remaining", "0")
+	resp.Header.Set("X-RateLimit-Reset", fmt.Sprintf("%d", now.Add(2*time.Minute).Unix()))
+	resp.Header.Set("Retry-After", "30")
+	resp.Header.Set("X-GitHub-Request-Id", "req-123")
+	tracker := &githubRateLimitTracker{}
+	tracker.observe(resp)
+	until, ok := tracker.cooldown(now)
+	if !ok || until.Before(now.Add(90*time.Second)) {
+		t.Fatalf("cooldown=%s ok=%v, expected reset-based cooldown", until, ok)
+	}
+	detail := tracker.detail(now)
+	for _, want := range []string{"resource=actions_runner_registration", "remaining=0/100", "requestId=req-123"} {
+		if !strings.Contains(detail, want) {
+			t.Fatalf("detail=%q missing %q", detail, want)
+		}
 	}
 }

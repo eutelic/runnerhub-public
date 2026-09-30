@@ -202,3 +202,43 @@ func TestConnectedRepositoriesComeFromAccessibleInstallations(t *testing.T) {
 		t.Fatalf("unexpected repositories: %#v", repos)
 	}
 }
+
+
+func TestDiscoveryCacheSharesInstallationsAcrossDashboardRequests(t *testing.T) {
+	installationCalls := 0
+	repositoryCalls := 0
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response,error) {
+		body := ""
+		switch {
+		case r.URL.Path == "/user/installations":
+			installationCalls++
+			body = `{"installations":[{"id":42,"account":{"login":"eutelic","type":"Organization"}}]}`
+		case r.URL.Path == "/user/installations/42/repositories":
+			repositoryCalls++
+			body = `{"repositories":[{"id":7,"full_name":"eutelic/runnerhub","private":true,"default_branch":"main"}]}`
+		default:
+			return &http.Response{StatusCode:404,Body:io.NopCloser(strings.NewReader(`{"error":"not found"}`)),Header:make(http.Header),Request:r},nil
+		}
+		return &http.Response{StatusCode:200,Body:io.NopCloser(strings.NewReader(body)),Header:make(http.Header),Request:r},nil
+	})}
+	m, err := New(Config{
+		ClientID:"Iv1.test",ClientSecret:"secret",AppSlug:"runnerhub-test",
+		PublicURL:"http://runnerhub.example.test:8787",APIURL:"https://api.github.test",StateDir:t.TempDir(),HTTPClient:client,
+	})
+	if err != nil { t.Fatal(err) }
+	m.sessions["sid"] = session{Login:"example-user",Token:"user-token",CSRF:"csrf",ExpiresAt:time.Now().Add(time.Hour)}
+	req := httptest.NewRequest(http.MethodGet, "http://runnerhub.example.test:8787/api/v1/github/installations", nil)
+	req.AddCookie(&http.Cookie{Name:sessionCookieName,Value:"sid"})
+
+	if _, err := m.AccessibleInstallations(req); err != nil { t.Fatal(err) }
+	if _, err := m.ConnectedRepositories(req); err != nil { t.Fatal(err) }
+	if _, err := m.AccessibleInstallations(req); err != nil { t.Fatal(err) }
+	if _, err := m.ConnectedRepositories(req); err != nil { t.Fatal(err) }
+
+	if installationCalls != 1 {
+		t.Fatalf("installation API calls=%d, want 1", installationCalls)
+	}
+	if repositoryCalls != 1 {
+		t.Fatalf("repository API calls=%d, want 1", repositoryCalls)
+	}
+}

@@ -26,6 +26,7 @@ const (
 	apiVersion                 = "2026-03-10"
 	persistentSessionLifetime  = 90 * 24 * time.Hour
 	tokenRefreshSkew           = 5 * time.Minute
+	discoveryCacheTTL          = 60 * time.Second
 )
 
 type Config struct {
@@ -50,6 +51,12 @@ type Manager struct {
 	mu       sync.Mutex
 	states   map[string]time.Time
 	sessions map[string]session
+
+	discoveryMu          sync.Mutex
+	installationsCache   map[string]installationCacheEntry
+	repositoriesCache    map[string]repositoryCacheEntry
+	installationsPending map[string]*installationFlight
+	repositoriesPending  map[string]*repositoryFlight
 }
 
 type session struct {
@@ -99,6 +106,28 @@ type ConnectedRepository struct {
 	AccountType    string `json:"accountType,omitempty"`
 }
 
+type installationCacheEntry struct {
+	Items     []Installation
+	ExpiresAt time.Time
+}
+
+type repositoryCacheEntry struct {
+	Items     []ConnectedRepository
+	ExpiresAt time.Time
+}
+
+type installationFlight struct {
+	done  chan struct{}
+	items []Installation
+	err   error
+}
+
+type repositoryFlight struct {
+	done  chan struct{}
+	items []ConnectedRepository
+	err   error
+}
+
 type Status struct {
 	Enabled       bool   `json:"enabled"`
 	Authenticated bool   `json:"authenticated"`
@@ -145,8 +174,12 @@ func New(c Config) (*Manager, error) {
 		apiURL:       apiURL,
 		stateDir:     stateDir,
 		http:         client,
-		states:       map[string]time.Time{},
-		sessions:     map[string]session{},
+		states:               map[string]time.Time{},
+		sessions:             map[string]session{},
+		installationsCache:   map[string]installationCacheEntry{},
+		repositoriesCache:    map[string]repositoryCacheEntry{},
+		installationsPending: map[string]*installationFlight{},
+		repositoriesPending:  map[string]*repositoryFlight{},
 	}
 	if err := m.loadSessions(); err != nil {
 		return nil, err
@@ -258,7 +291,8 @@ func (m *Manager) Setup(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid github installation id", http.StatusBadRequest)
 		return
 	}
-	installations, err := m.installations(r, s.Token)
+	m.invalidateDiscovery(s.Login)
+	installations, err := m.cachedInstallations(r, s)
 	if err != nil {
 		http.Error(w, "could not verify github installation", http.StatusBadGateway)
 		return
@@ -326,12 +360,116 @@ func (m *Manager) Status(r *http.Request) Status {
 	return out
 }
 
+func cloneInstallations(items []Installation) []Installation {
+	return append([]Installation(nil), items...)
+}
+
+func cloneRepositories(items []ConnectedRepository) []ConnectedRepository {
+	return append([]ConnectedRepository(nil), items...)
+}
+
+func discoveryKey(s session) string {
+	return strings.ToLower(strings.TrimSpace(s.Login))
+}
+
+func (m *Manager) invalidateDiscovery(login string) {
+	key := strings.ToLower(strings.TrimSpace(login))
+	m.discoveryMu.Lock()
+	delete(m.installationsCache, key)
+	delete(m.repositoriesCache, key)
+	m.discoveryMu.Unlock()
+}
+
+func (m *Manager) cachedInstallations(r *http.Request, s session) ([]Installation, error) {
+	key := discoveryKey(s)
+	now := time.Now()
+	m.discoveryMu.Lock()
+	if entry, ok := m.installationsCache[key]; ok && entry.ExpiresAt.After(now) {
+		items := cloneInstallations(entry.Items)
+		m.discoveryMu.Unlock()
+		return items, nil
+	}
+	if pending, ok := m.installationsPending[key]; ok {
+		done := pending.done
+		m.discoveryMu.Unlock()
+		select {
+		case <-r.Context().Done():
+			return nil, r.Context().Err()
+		case <-done:
+		}
+		return cloneInstallations(pending.items), pending.err
+	}
+	pending := &installationFlight{done: make(chan struct{})}
+	m.installationsPending[key] = pending
+	m.discoveryMu.Unlock()
+
+	items, err := m.installations(r, s.Token)
+	m.discoveryMu.Lock()
+	pending.items = cloneInstallations(items)
+	pending.err = err
+	if err == nil {
+		m.installationsCache[key] = installationCacheEntry{Items: cloneInstallations(items), ExpiresAt: time.Now().Add(discoveryCacheTTL)}
+	}
+	delete(m.installationsPending, key)
+	close(pending.done)
+	m.discoveryMu.Unlock()
+	return cloneInstallations(items), err
+}
+
+func (m *Manager) cachedRepositories(r *http.Request, s session) ([]ConnectedRepository, error) {
+	key := discoveryKey(s)
+	now := time.Now()
+	m.discoveryMu.Lock()
+	if entry, ok := m.repositoriesCache[key]; ok && entry.ExpiresAt.After(now) {
+		items := cloneRepositories(entry.Items)
+		m.discoveryMu.Unlock()
+		return items, nil
+	}
+	if pending, ok := m.repositoriesPending[key]; ok {
+		done := pending.done
+		m.discoveryMu.Unlock()
+		select {
+		case <-r.Context().Done():
+			return nil, r.Context().Err()
+		case <-done:
+		}
+		return cloneRepositories(pending.items), pending.err
+	}
+	pending := &repositoryFlight{done: make(chan struct{})}
+	m.repositoriesPending[key] = pending
+	m.discoveryMu.Unlock()
+
+	installations, err := m.cachedInstallations(r, s)
+	var items []ConnectedRepository
+	if err == nil {
+		for _, installation := range installations {
+			var repos []ConnectedRepository
+			repos, err = m.repositoriesForInstallation(r, s.Token, installation)
+			if err != nil {
+				break
+			}
+			items = append(items, repos...)
+		}
+	}
+
+	m.discoveryMu.Lock()
+	pending.items = cloneRepositories(items)
+	pending.err = err
+	if err == nil {
+		m.repositoriesCache[key] = repositoryCacheEntry{Items: cloneRepositories(items), ExpiresAt: time.Now().Add(discoveryCacheTTL)}
+	}
+	delete(m.repositoriesPending, key)
+	close(pending.done)
+	m.discoveryMu.Unlock()
+	return cloneRepositories(items), err
+}
+
 func (m *Manager) AccessibleInstallations(r *http.Request) ([]Installation, error) {
 	s, ok := m.sessionFor(r, false)
 	if !ok {
 		return nil, errors.New("github login required")
 	}
-	return m.installations(r, s.Token)
+	return m.cachedInstallations(r, s)
 }
 
 func (m *Manager) ConnectedRepositories(r *http.Request) ([]ConnectedRepository, error) {
@@ -339,19 +477,7 @@ func (m *Manager) ConnectedRepositories(r *http.Request) ([]ConnectedRepository,
 	if !ok {
 		return nil, errors.New("github login required")
 	}
-	installations, err := m.installations(r, s.Token)
-	if err != nil {
-		return nil, err
-	}
-	var out []ConnectedRepository
-	for _, installation := range installations {
-		repos, err := m.repositoriesForInstallation(r, s.Token, installation)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, repos...)
-	}
-	return out, nil
+	return m.cachedRepositories(r, s)
 }
 
 func (m *Manager) ValidateRepository(r *http.Request, installationID int64, fullName string) (ConnectedRepository, error) {
