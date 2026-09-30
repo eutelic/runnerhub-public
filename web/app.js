@@ -551,16 +551,52 @@ async function refresh(){
 }
 
 function efficiencyPercent(value){
+  if(value===null||value===undefined)return '—';
   const n=Number(value);
   return Number.isFinite(n)?n.toFixed(1)+'%':'—';
 }
 
 function efficiencySeconds(value){
+  if(value===null||value===undefined)return '—';
   const n=Number(value);
   if(!Number.isFinite(n)||n<0)return '—';
-  if(n<60)return Math.round(n)+'s';
+  if(n<1)return n.toFixed(2)+'s';
+  if(n<60)return n.toFixed(n<10?1:0)+'s';
   if(n<3600)return (n/60).toFixed(n<600?1:0)+'m';
   return (n/3600).toFixed(n<36000?1:0)+'h';
+}
+
+function efficiencyCoverage(samples,total){
+  const s=Number(samples||0);
+  const t=Number(total||0);
+  if(!Number.isFinite(t)||t<=0)return '—';
+  return s+'/'+t+' · '+efficiencyPercent((s/t)*100);
+}
+
+function efficiencyAnalyzerLabel(analyzer){
+  const state=String(analyzer?.state||'unavailable');
+  if(state==='healthy')return 'Analyzer healthy';
+  if(state==='degraded')return 'Analyzer degraded';
+  if(state==='pending')return 'Analyzer pending';
+  return 'Analyzer unavailable';
+}
+
+function efficiencyExclusionLabel(reason){
+  const labels={
+    'missing-workflow-metadata':'Missing workflow/job metadata',
+    'unsupported-isolation':'Unsupported runner isolation',
+    'unpinned-runner-image':'Runner image is not pinned',
+    'missing-host-context':'Missing host architecture/context',
+    'invalid-repository':'Invalid repository identity',
+    'workflow-parse':'Workflow could not be parsed safely',
+    'runtime-environment':'Reads opaque runtime environment',
+    'mutable-action':'Uses a mutable action reference',
+    'opaque-action':'Uses an action RunnerHub cannot model yet',
+    'unresolved-context':'Referenced GitHub context is unavailable',
+    'workflow-not-classified':'Workflow semantics are not classified',
+    'side-effecting-workflow':'Publish/deploy workflow is not reusable validation'
+  };
+  return labels[reason]||reason;
 }
 
 function renderCIEfficiency(items){
@@ -570,18 +606,26 @@ function renderCIEfficiency(items){
     return;
   }
   const rows=items.map(item=>{
-    if(item.error)return [item.repository,'—','—','—','—','error'];
+    if(item.error)return [item.repository,'—','—','—','—','—','error'];
     const d=item.data||{};
+    const coverage=d.coverage||{};
+    const jobs=Number(d.jobs||0);
+    const validationCoverage=efficiencyCoverage(coverage.validationIdentityJobs,jobs);
+    const queueSamples=Number(d.queue?.overall?.samples||0);
+    const queueText=queueSamples
+      ? efficiencySeconds(d.queue?.overall?.p95Seconds)+' · '+queueSamples+'/'+jobs
+      : '— · 0/'+jobs;
     return [
       item.repository,
-      String(d.jobs??0),
+      String(jobs),
+      validationCoverage,
       efficiencyPercent(d.waste?.provablyAvoidablePercent),
       efficiencyPercent(d.waste?.confirmedPercent),
       efficiencyPercent(d.waste?.potentialSavingsPercent),
-      efficiencySeconds(d.queue?.overall?.p95Seconds)
+      queueText
     ];
   });
-  let html='<div class="table-wrap"><table><thead><tr><th>Repository</th><th>Jobs</th><th>Provably avoidable</th><th>Confirmed waste</th><th>Potential</th><th>Queue p95</th></tr></thead><tbody>'+
+  let html='<div class="table-wrap"><table><thead><tr><th>Repository</th><th>Jobs</th><th>Validation identity</th><th>Provably avoidable</th><th>Confirmed waste</th><th>Potential</th><th>Queue p95 · samples</th></tr></thead><tbody>'+
     rows.map(row=>'<tr>'+row.map(cell=>'<td>'+esc(cell)+'</td>').join('')+'</tr>').join('')+
     '</tbody></table></div>';
   for(const item of items){
@@ -590,10 +634,37 @@ function renderCIEfficiency(items){
       continue;
     }
     const d=item.data||{};
+    const coverage=d.coverage||{};
+    const analyzer=d.analyzer||{};
     const findings=Array.isArray(d.findings)?d.findings:[];
+    const jobs=Number(d.jobs||0);
+    const analyzerClass=analyzer.state==='degraded'?' warn':'';
+    const windowText=coverage.analysisWindowComplete
+      ? 'findings window covers selected period'
+      : 'findings window does not fully cover selected period';
     html+='<details class="advanced-details"><summary>'+esc(item.repository)+' evidence · '+findings.length+' finding'+(findings.length===1?'':'s')+'</summary><div class="advanced-body">';
+    html+='<div class="resource-note"><span class="badge'+analyzerClass+'">'+esc(efficiencyAnalyzerLabel(analyzer))+'</span>'+
+      '<div class="muted small">'+
+      'Queue timing '+esc(efficiencyCoverage(coverage.queueSamples,jobs))+
+      ' · validation identity '+esc(efficiencyCoverage(coverage.validationIdentityJobs,jobs))+
+      ' · '+esc(windowText)+
+      (analyzer.lastSuccessAt?' · last success '+esc(fmtTime(analyzer.lastSuccessAt)):'')+
+      '</div>'+
+      (analyzer.lastError?'<div class="small"><strong>Analyzer:</strong> '+esc(analyzer.lastError)+'</div>':'')+
+      '</div>';
+    const exclusions=Object.entries(coverage.validationExclusions||{}).sort((a,b)=>Number(b[1])-Number(a[1]));
+    if(exclusions.length||Number(coverage.validationPendingJobs||0)>0){
+      html+='<div class="resource-note"><strong>Validation identity coverage</strong>'+
+        '<div class="muted small">'+esc(String(coverage.validationIdentityJobs||0))+' reusable identities · '+
+        esc(String(coverage.validationExcludedJobs||0))+' excluded · '+
+        esc(String(coverage.validationPendingJobs||0))+' not analyzed yet</div>';
+      if(exclusions.length){
+        html+='<div class="small">'+exclusions.map(([reason,count])=>esc(String(count))+' '+esc(efficiencyExclusionLabel(reason))).join(' · ')+'</div>';
+      }
+      html+='</div>';
+    }
     if(!findings.length){
-      html+='<div class="muted small">'+esc(d.coverage?.detail||'No deterministic findings in this window.')+'</div>';
+      html+='<div class="muted small">'+esc(coverage.detail||'No deterministic findings in this window.')+'</div>';
     }else{
       for(const finding of findings){
         html+='<div class="resource-note"><strong>'+esc(finding.detectorId)+'</strong> · '+esc(finding.class)+

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/eutelic/runnerhub/internal/ciaudit"
+	"github.com/eutelic/runnerhub/internal/cireconcile"
 	"github.com/eutelic/runnerhub/internal/core"
 	"github.com/eutelic/runnerhub/internal/store"
 )
@@ -24,11 +25,13 @@ func TestSummarizeCIEfficiencyUsesWindowAndRunnerClasses(t *testing.T) {
 			ID: "normal-job", PoolID: "normal", Repository: "eutelic/runnerhub",
 			QueuedAt: now.Add(-2*time.Hour - 30*time.Second), StartedAt: now.Add(-2 * time.Hour), CompletedAt: now.Add(-time.Hour),
 			Resources: core.Resources{CPUMillis: 1000, MemoryBytes: 2 << 30},
+			ValidationAnalysisVersion: ciaudit.AnalyzerVersion, ValidationKey: "validation-key",
 		},
 		{
 			ID: "publisher-job", PoolID: "publisher", Repository: "eutelic/runnerhub",
 			QueuedAt: now.Add(-95 * time.Minute), StartedAt: now.Add(-90 * time.Minute), CompletedAt: now.Add(-30 * time.Minute),
 			Resources: core.Resources{CPUMillis: 2000, MemoryBytes: 4 << 30},
+			ValidationExclusionAnalysisVersion: ciaudit.AnalyzerVersion, ValidationExclusionReason: "unsupported-isolation",
 		},
 		{
 			ID: "window-edge", PoolID: "normal", Repository: "EUTELIC/RUNNERHUB",
@@ -57,17 +60,44 @@ func TestSummarizeCIEfficiencyUsesWindowAndRunnerClasses(t *testing.T) {
 	if got.Execution.AllocatedCPUSeconds != 54000 {
 		t.Fatalf("allocated cpu seconds=%v want 54000", got.Execution.AllocatedCPUSeconds)
 	}
-	if got.Queue.Overall.Samples != 2 || got.Queue.Overall.P50Seconds != 30 || got.Queue.Overall.P95Seconds != 300 {
+	if got.Queue.Overall.Samples != 2 || got.Queue.Overall.P50Seconds == nil || *got.Queue.Overall.P50Seconds != 30 || got.Queue.Overall.P95Seconds == nil || *got.Queue.Overall.P95Seconds != 300 {
 		t.Fatalf("overall queue=%+v", got.Queue.Overall)
 	}
-	if got.Queue.ByRunnerClass["runnerhub"].P50Seconds != 30 {
+	if got.Queue.ByRunnerClass["runnerhub"].P50Seconds == nil || *got.Queue.ByRunnerClass["runnerhub"].P50Seconds != 30 {
 		t.Fatalf("runnerhub queue=%+v", got.Queue.ByRunnerClass["runnerhub"])
 	}
-	if got.Queue.ByRunnerClass[publisherScaleSetName].P95Seconds != 300 {
+	if got.Queue.ByRunnerClass[publisherScaleSetName].P95Seconds == nil || *got.Queue.ByRunnerClass[publisherScaleSetName].P95Seconds != 300 {
 		t.Fatalf("publisher queue=%+v", got.Queue.ByRunnerClass[publisherScaleSetName])
 	}
-	if !got.Coverage.ExecutionLedger || got.Coverage.WasteFindings {
+	if !got.Coverage.ExecutionLedger || got.Coverage.WasteFindings || got.Coverage.ExecutionJobs != 3 || got.Coverage.QueueSamples != 2 {
 		t.Fatalf("coverage=%+v", got.Coverage)
+	}
+	if got.Coverage.QueueCoveragePercent < 66 || got.Coverage.QueueCoveragePercent > 67 {
+		t.Fatalf("queue coverage=%v", got.Coverage.QueueCoveragePercent)
+	}
+	if got.Coverage.ValidationIdentityJobs != 1 || got.Coverage.ValidationExcludedJobs != 1 || got.Coverage.ValidationPendingJobs != 1 {
+		t.Fatalf("validation coverage=%+v", got.Coverage)
+	}
+	if got.Coverage.ValidationExclusions["unsupported-isolation"] != 1 {
+		t.Fatalf("validation exclusions=%v", got.Coverage.ValidationExclusions)
+	}
+}
+
+func TestSummarizeCIEfficiencyDistinguishesMissingQueueSamples(t *testing.T) {
+	now := time.Date(2026, 9, 24, 12, 0, 0, 0, time.UTC)
+	workers := []core.Worker{{
+		ID: "job", Repository: "eutelic/runnerhub",
+		StartedAt: now.Add(-time.Minute), CompletedAt: now.Add(-30 * time.Second),
+	}}
+	got := summarizeCIEfficiencyAt("eutelic/runnerhub", "30d", 30*24*time.Hour, now, workers, nil, nil, true)
+	if got.Queue.Overall.Samples != 0 || got.Queue.Overall.P50Seconds != nil || got.Queue.Overall.P95Seconds != nil {
+		t.Fatalf("missing queue samples must stay unavailable: %+v", got.Queue.Overall)
+	}
+	if got.Coverage.QueueSamples != 0 || got.Coverage.QueueCoveragePercent != 0 {
+		t.Fatalf("queue coverage=%+v", got.Coverage)
+	}
+	if got.Coverage.AnalysisWindowComplete {
+		t.Fatalf("unknown analyzer window must not claim complete coverage: %+v", got.Coverage)
 	}
 }
 
@@ -118,7 +148,12 @@ func TestCIEfficiencyEndpoint(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	svc := &Service{Store: st}
+	status := cireconcile.NewStatus(cireconcile.DefaultAnalyticsLookback)
+	rec := &cireconcile.Reconciler{Status: status, Lookback: cireconcile.DefaultAnalyticsLookback, Now: func() time.Time { return ctxNow }}
+	if err := rec.Once(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	svc := &Service{Store: st, CIReconcilerStatus: status}
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/repositories/eutelic/runnerhub/ci-efficiency?window=7d", nil)
 	rr := httptest.NewRecorder()
 	svc.Handler().ServeHTTP(rr, req)
@@ -132,8 +167,14 @@ func TestCIEfficiencyEndpoint(t *testing.T) {
 	if got.Repository != "eutelic/runnerhub" || got.Window != "7d" || got.Jobs != 1 {
 		t.Fatalf("response=%+v", got)
 	}
-	if !got.Coverage.WasteFindings || got.Waste.Findings != 1 {
+	if !got.Coverage.WasteFindings || got.Waste.Findings != 1 || !got.Coverage.AnalysisWindowComplete {
 		t.Fatalf("waste coverage=%+v waste=%+v", got.Coverage, got.Waste)
+	}
+	if got.Coverage.QueueSamples != 1 || got.Coverage.QueueCoveragePercent != 100 {
+		t.Fatalf("queue coverage=%+v", got.Coverage)
+	}
+	if got.Analyzer.State != "healthy" || got.Analyzer.LookbackSeconds != int64(cireconcile.DefaultAnalyticsLookback/time.Second) {
+		t.Fatalf("analyzer=%+v", got.Analyzer)
 	}
 	if got.Waste.Confirmed.RunnerSeconds != 15 || got.Waste.ConfirmedPercent != 50 {
 		t.Fatalf("confirmed waste=%+v", got.Waste)

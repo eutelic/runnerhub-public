@@ -20,6 +20,7 @@ type Reconciler struct {
 	Interval time.Duration
 	Lookback time.Duration
 	Now      func() time.Time
+	Status   *Status
 }
 
 func (r *Reconciler) Run(ctx context.Context) error {
@@ -46,7 +47,25 @@ func (r *Reconciler) Run(ctx context.Context) error {
 	}
 }
 
-func (r *Reconciler) Once(ctx context.Context) error {
+func (r *Reconciler) Once(ctx context.Context) (resultErr error) {
+	now := time.Now().UTC()
+	if r.Now != nil {
+		now = r.Now().UTC()
+	}
+	lookback := r.Lookback
+	if lookback <= 0 {
+		lookback = DefaultAnalyticsLookback
+	}
+	if r.Status != nil {
+		r.Status.begin(now, lookback)
+		defer func() {
+			finished := time.Now().UTC()
+			if r.Now != nil {
+				finished = r.Now().UTC()
+			}
+			r.Status.finish(finished, resultErr)
+		}()
+	}
 	if r.Store == nil || r.GitHub == nil {
 		return nil
 	}
@@ -55,14 +74,6 @@ func (r *Reconciler) Once(ctx context.Context) error {
 	certificateStore, certificatesOK := r.Store.(store.CIValidationCertificateStore)
 	if !metadataOK || !findingsOK {
 		return errors.New("CI reconciliation requires metadata and finding persistence")
-	}
-	now := time.Now().UTC()
-	if r.Now != nil {
-		now = r.Now().UTC()
-	}
-	lookback := r.Lookback
-	if lookback <= 0 {
-		lookback = 72 * time.Hour
 	}
 	cutoff := now.Add(-lookback)
 
@@ -303,6 +314,13 @@ func (r *Reconciler) Once(ctx context.Context) error {
 		}
 
 		if !ciaudit.OrdinaryValidationWorkflow(run.Name) {
+			reason := validationExclusionWorkflowUnclassified
+			if ciaudit.MutableSnapshotPublicationWorkflow(run.Name) {
+				reason = validationExclusionSideEffectingWorkflow
+			}
+			if err := r.persistValidationExclusion(ctx, worker, reason); err != nil {
+				errs = append(errs, fmt.Errorf("%s worker %s validation exclusion: %w", normalizeRepository(worker.Repository), worker.ID, err))
+			}
 			continue
 		}
 

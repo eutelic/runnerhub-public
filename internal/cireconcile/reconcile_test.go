@@ -233,6 +233,69 @@ func TestReconcileFailedWorkerUsesGitHubCompletionTime(t *testing.T) {
 }
 
 
+func TestReconcilePersistsValidationCoverageExclusions(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.OpenSQLite(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	now := time.Date(2026, 9, 24, 19, 0, 0, 0, time.UTC)
+	workers := []core.Worker{
+		{
+			ID: "dind", HostID: "host-1", Repository: "eutelic/runnerhub",
+			WorkflowRunID: 700, WorkflowRunAttempt: 1, JobID: "7001", JobName: "test",
+			GitHubRunnerOS: "linux", Isolation: core.IsolationContainerDinD, Image: images.DefaultRunnerImage,
+			StartedAt: now.Add(-20 * time.Minute), CompletedAt: now.Add(-19 * time.Minute), JobResult: "success",
+		},
+		{
+			ID: "unclassified", HostID: "host-1", Repository: "eutelic/runnerhub",
+			WorkflowRunID: 701, WorkflowRunAttempt: 1, JobID: "7002", JobName: "build",
+			GitHubRunnerOS: "linux", Isolation: core.IsolationContainerTrusted, Image: images.DefaultRunnerImage,
+			StartedAt: now.Add(-10 * time.Minute), CompletedAt: now.Add(-9 * time.Minute), JobResult: "success",
+		},
+	}
+	for _, worker := range workers {
+		if err := st.UpsertWorker(ctx, worker); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	run := func(id int64, name, sha string, created time.Time) githubrunner.WorkflowRunMetadata {
+		return githubrunner.WorkflowRunMetadata{
+			ID: id, Attempt: 1, Name: name, Path: ".github/workflows/" + name + ".yml",
+			Event: "push", Status: "completed", Conclusion: "success",
+			HeadBranch: "main", HeadSHA: sha, HeadTreeSHA: "tree-" + sha, CreatedAt: created,
+		}
+	}
+	gh := fakeGitHub{
+		runs: map[int64]githubrunner.WorkflowRunMetadata{
+			700: run(700, "ci", "dind-sha", now.Add(-21*time.Minute)),
+			701: run(701, "build", "build-sha", now.Add(-11*time.Minute)),
+		},
+	}
+	rec := &Reconciler{Store: st, GitHub: gh, Lookback: 24 * time.Hour, Now: func() time.Time { return now }}
+	if err := rec.Once(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	dind, err := st.GetWorker(ctx, "dind")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dind.ValidationExclusionAnalysisVersion == "" || dind.ValidationExclusionReason != validationExclusionUnsupportedIsolation {
+		t.Fatalf("dind exclusion=%+v", dind)
+	}
+	unclassified, err := st.GetWorker(ctx, "unclassified")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if unclassified.ValidationExclusionAnalysisVersion == "" || unclassified.ValidationExclusionReason != validationExclusionWorkflowUnclassified {
+		t.Fatalf("unclassified exclusion=%+v", unclassified)
+	}
+}
+
 func TestReconcileDetectsEquivalentValidationAcrossDifferentCommitSHAs(t *testing.T) {
 	ctx := context.Background()
 	st, err := store.OpenSQLite(":memory:")

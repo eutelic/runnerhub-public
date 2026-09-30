@@ -9,20 +9,41 @@ import (
 	"time"
 
 	"github.com/eutelic/runnerhub/internal/ciaudit"
+	"github.com/eutelic/runnerhub/internal/cireconcile"
 	"github.com/eutelic/runnerhub/internal/core"
 	"github.com/eutelic/runnerhub/internal/store"
 )
 
 type ciEfficiencyCoverage struct {
-	ExecutionLedger bool   `json:"executionLedger"`
-	WasteFindings   bool   `json:"wasteFindings"`
-	Detail          string `json:"detail,omitempty"`
+	ExecutionLedger                   bool       `json:"executionLedger"`
+	WasteFindings                     bool       `json:"wasteFindings"`
+	ExecutionJobs                     int        `json:"executionJobs"`
+	QueueSamples                      int        `json:"queueSamples"`
+	QueueCoveragePercent              float64    `json:"queueCoveragePercent"`
+	ValidationIdentityJobs            int            `json:"validationIdentityJobs"`
+	ValidationIdentityCoveragePercent float64        `json:"validationIdentityCoveragePercent"`
+	ValidationExcludedJobs            int            `json:"validationExcludedJobs"`
+	ValidationPendingJobs             int            `json:"validationPendingJobs"`
+	ValidationExclusions              map[string]int `json:"validationExclusions,omitempty"`
+	FindingsWindowStart               *time.Time `json:"findingsWindowStart,omitempty"`
+	FindingsLookbackSeconds           int64      `json:"findingsLookbackSeconds,omitempty"`
+	AnalysisWindowComplete            bool       `json:"analysisWindowComplete"`
+	Detail                            string     `json:"detail,omitempty"`
+}
+
+type ciEfficiencyAnalyzerStatus struct {
+	State           string     `json:"state"`
+	AnalysisVersion string     `json:"analysisVersion"`
+	LastAttemptAt   *time.Time `json:"lastAttemptAt,omitempty"`
+	LastSuccessAt   *time.Time `json:"lastSuccessAt,omitempty"`
+	LastError       string     `json:"lastError,omitempty"`
+	LookbackSeconds int64      `json:"lookbackSeconds,omitempty"`
 }
 
 type ciEfficiencyQueueSummary struct {
-	Samples    int     `json:"samples"`
-	P50Seconds float64 `json:"p50Seconds"`
-	P95Seconds float64 `json:"p95Seconds"`
+	Samples    int      `json:"samples"`
+	P50Seconds *float64 `json:"p50Seconds"`
+	P95Seconds *float64 `json:"p95Seconds"`
 }
 
 type ciEfficiencyQueue struct {
@@ -62,6 +83,7 @@ type ciEfficiencyResponse struct {
 	Waste           ciEfficiencyWaste    `json:"waste"`
 	Queue           ciEfficiencyQueue    `json:"queue"`
 	Coverage        ciEfficiencyCoverage       `json:"coverage"`
+	Analyzer        ciEfficiencyAnalyzerStatus `json:"analyzer"`
 	Findings        []ciEfficiencyFindingDetail `json:"findings,omitempty"`
 }
 
@@ -111,10 +133,42 @@ func (s *Service) ciEfficiency(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	writeJSON(w, http.StatusOK, summarizeCIEfficiencyAt(owner+"/"+repo, windowName, window, now, workers, pools, findings, findingsAvailable))
+	analyzer, findingsLookback := ciAnalyzerStatus(s.CIReconcilerStatus, ciaudit.AnalyzerVersion)
+	writeJSON(w, http.StatusOK, summarizeCIEfficiencyAtWithAnalyzer(owner+"/"+repo, windowName, window, now, workers, pools, findings, findingsAvailable, analyzer, findingsLookback))
 }
 
+func ciAnalyzerStatus(status *cireconcile.Status, analysisVersion string) (ciEfficiencyAnalyzerStatus, time.Duration) {
+	if status == nil {
+		return ciEfficiencyAnalyzerStatus{State: "unavailable", AnalysisVersion: analysisVersion}, 0
+	}
+	snapshot := status.Snapshot()
+	out := ciEfficiencyAnalyzerStatus{
+		State:           "pending",
+		AnalysisVersion: analysisVersion,
+		LastError:       snapshot.LastError,
+		LookbackSeconds: int64(snapshot.Lookback / time.Second),
+	}
+	if !snapshot.LastAttemptAt.IsZero() {
+		at := snapshot.LastAttemptAt.UTC()
+		out.LastAttemptAt = &at
+	}
+	if !snapshot.LastSuccessAt.IsZero() {
+		at := snapshot.LastSuccessAt.UTC()
+		out.LastSuccessAt = &at
+		out.State = "healthy"
+	}
+	if snapshot.LastError != "" {
+		out.State = "degraded"
+	}
+	return out, snapshot.Lookback
+}
+
+
 func summarizeCIEfficiencyAt(repository, windowName string, window time.Duration, now time.Time, workers []core.Worker, pools []core.RunnerPool, findings []ciaudit.Finding, findingsAvailable bool) ciEfficiencyResponse {
+	return summarizeCIEfficiencyAtWithAnalyzer(repository, windowName, window, now, workers, pools, findings, findingsAvailable, ciEfficiencyAnalyzerStatus{State: "unavailable", AnalysisVersion: ciaudit.AnalyzerVersion}, 0)
+}
+
+func summarizeCIEfficiencyAtWithAnalyzer(repository, windowName string, window time.Duration, now time.Time, workers []core.Worker, pools []core.RunnerPool, findings []ciaudit.Finding, findingsAvailable bool, analyzer ciEfficiencyAnalyzerStatus, findingsLookback time.Duration) ciEfficiencyResponse {
 	start := now.Add(-window)
 	poolByID := make(map[string]core.RunnerPool, len(pools))
 	for _, pool := range pools {
@@ -126,10 +180,15 @@ func summarizeCIEfficiencyAt(repository, windowName string, window time.Duration
 	jobByID := make(map[string]ciaudit.JobExecution, len(workers))
 	queueAll := make([]float64, 0, len(workers))
 	queueByClass := map[string][]float64{}
+	validationIdentityJobs := 0
+	validationExcludedJobs := 0
+	validationPendingJobs := 0
+	validationExclusions := map[string]int{}
 	for _, worker := range workers {
 		if !strings.EqualFold(strings.TrimSpace(worker.Repository), repository) {
 			continue
 		}
+		included := false
 		if job, ok := ciaudit.ExecutionFromWorker(worker); ok && job.CompletedAt.After(start) && job.StartedAt.Before(now) {
 			if job.StartedAt.Before(start) {
 				job.StartedAt = start
@@ -141,12 +200,18 @@ func summarizeCIEfficiencyAt(repository, windowName string, window time.Duration
 				jobs = append(jobs, job)
 				jobIDs[job.ID] = struct{}{}
 				jobByID[job.ID] = job
+				included = true
+				if worker.ValidationAnalysisVersion == ciaudit.AnalyzerVersion && strings.TrimSpace(worker.ValidationKey) != "" {
+					validationIdentityJobs++
+				} else if worker.ValidationExclusionAnalysisVersion == ciaudit.AnalyzerVersion && strings.TrimSpace(worker.ValidationExclusionReason) != "" {
+					validationExcludedJobs++
+					validationExclusions[strings.TrimSpace(worker.ValidationExclusionReason)]++
+				} else {
+					validationPendingJobs++
+				}
 			}
 		}
-		if worker.QueuedAt.IsZero() || worker.StartedAt.IsZero() || !worker.StartedAt.After(worker.QueuedAt) {
-			continue
-		}
-		if worker.StartedAt.Before(start) || worker.StartedAt.After(now) {
+		if !included || worker.QueuedAt.IsZero() || worker.StartedAt.IsZero() || !worker.StartedAt.After(worker.QueuedAt) {
 			continue
 		}
 		seconds := worker.StartedAt.Sub(worker.QueuedAt).Seconds()
@@ -195,11 +260,8 @@ func summarizeCIEfficiencyAt(repository, windowName string, window time.Duration
 			Overall:       summarizeQueueSamples(queueAll),
 			ByRunnerClass: byClass,
 		},
-		Coverage: ciEfficiencyCoverage{
-			ExecutionLedger: true,
-			WasteFindings:   findingsAvailable,
-			Detail:          ciEfficiencyCoverageDetail(findingsAvailable),
-		},
+		Coverage: buildCIEfficiencyCoverage(len(jobs), len(queueAll), validationIdentityJobs, validationExcludedJobs, validationPendingJobs, validationExclusions, now, window, findingsAvailable, analyzer, findingsLookback),
+		Analyzer: analyzer,
 		Findings: details,
 	}
 }
@@ -246,10 +308,12 @@ func summarizeQueueSamples(samples []float64) ciEfficiencyQueueSummary {
 	}
 	values := append([]float64(nil), samples...)
 	sort.Float64s(values)
+	p50 := percentileNearestRank(values, 0.50)
+	p95 := percentileNearestRank(values, 0.95)
 	return ciEfficiencyQueueSummary{
 		Samples:    len(values),
-		P50Seconds: percentileNearestRank(values, 0.50),
-		P95Seconds: percentileNearestRank(values, 0.95),
+		P50Seconds: &p50,
+		P95Seconds: &p95,
 	}
 }
 
@@ -268,9 +332,50 @@ func percentileNearestRank(sorted []float64, percentile float64) float64 {
 }
 
 
-func ciEfficiencyCoverageDetail(findingsAvailable bool) string {
-	if findingsAvailable {
-		return "persisted deterministic findings are included; detector coverage is partial, so zero findings does not imply zero avoidable work"
+func buildCIEfficiencyCoverage(executionJobs, queueSamples, validationIdentityJobs, validationExcludedJobs, validationPendingJobs int, validationExclusions map[string]int, now time.Time, requestedWindow time.Duration, findingsAvailable bool, analyzer ciEfficiencyAnalyzerStatus, findingsLookback time.Duration) ciEfficiencyCoverage {
+	coverage := ciEfficiencyCoverage{
+		ExecutionLedger:                   true,
+		WasteFindings:                     findingsAvailable,
+		ExecutionJobs:                     executionJobs,
+		QueueSamples:                      queueSamples,
+		QueueCoveragePercent:              percentOf(queueSamples, executionJobs),
+		ValidationIdentityJobs:            validationIdentityJobs,
+		ValidationIdentityCoveragePercent: percentOf(validationIdentityJobs, executionJobs),
+		ValidationExcludedJobs:            validationExcludedJobs,
+		ValidationPendingJobs:             validationPendingJobs,
+		ValidationExclusions:              validationExclusions,
 	}
-	return "execution and queue metrics are live; this store does not provide persisted deterministic waste findings"
+	if findingsLookback > 0 {
+		coverage.FindingsLookbackSeconds = int64(findingsLookback / time.Second)
+		if analyzer.LastSuccessAt != nil {
+			start := now.Add(-findingsLookback)
+			coverage.FindingsWindowStart = &start
+		}
+	}
+	coverage.AnalysisWindowComplete = findingsAvailable && analyzer.State == "healthy" && findingsLookback >= requestedWindow
+	coverage.Detail = ciEfficiencyCoverageDetail(findingsAvailable, coverage.AnalysisWindowComplete, analyzer.State)
+	return coverage
+}
+
+func percentOf(samples, total int) float64 {
+	if samples <= 0 || total <= 0 {
+		return 0
+	}
+	return float64(samples) / float64(total) * 100
+}
+
+func ciEfficiencyCoverageDetail(findingsAvailable, analysisWindowComplete bool, analyzerState string) string {
+	if !findingsAvailable {
+		return "execution metrics are live; this store does not provide persisted deterministic waste findings"
+	}
+	if analyzerState == "degraded" {
+		return "the deterministic analyzer is degraded; existing findings may be stale, so zero findings does not imply zero avoidable work"
+	}
+	if analyzerState == "pending" {
+		return "the deterministic analyzer has not completed a reconciliation pass yet; zero findings is not meaningful"
+	}
+	if !analysisWindowComplete {
+		return "persisted deterministic findings cover a shorter or unknown interval than the selected execution window; zero findings does not imply zero avoidable work"
+	}
+	return "the findings window covers the selected period, but detector eligibility remains conservative; zero findings means no waste was proven by supported detectors"
 }

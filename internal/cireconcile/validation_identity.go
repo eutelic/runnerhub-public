@@ -19,7 +19,63 @@ import (
 
 const externalValidationTTL = 24 * time.Hour
 
+const (
+	validationExclusionMissingMetadata       = "missing-workflow-metadata"
+	validationExclusionUnsupportedIsolation  = "unsupported-isolation"
+	validationExclusionUnpinnedRunnerImage   = "unpinned-runner-image"
+	validationExclusionMissingHostContext    = "missing-host-context"
+	validationExclusionInvalidRepository     = "invalid-repository"
+	validationExclusionWorkflowParse         = "workflow-parse"
+	validationExclusionRuntimeEnvironment    = "runtime-environment"
+	validationExclusionMutableAction         = "mutable-action"
+	validationExclusionOpaqueAction          = "opaque-action"
+	validationExclusionUnresolvedContext     = "unresolved-context"
+	validationExclusionWorkflowUnclassified  = "workflow-not-classified"
+	validationExclusionSideEffectingWorkflow = "side-effecting-workflow"
+)
+
 var errValidationIdentityUnsupported = errors.New("validation identity is not safely derivable")
+
+type validationIdentityUnsupportedError struct {
+	reason string
+	cause  error
+}
+
+func (e *validationIdentityUnsupportedError) Error() string {
+	if e.cause != nil {
+		return fmt.Sprintf("%s: %v", e.reason, e.cause)
+	}
+	return e.reason
+}
+
+func (e *validationIdentityUnsupportedError) Unwrap() error {
+	return errValidationIdentityUnsupported
+}
+
+func unsupportedValidation(reason string, cause error) error {
+	return &validationIdentityUnsupportedError{reason: reason, cause: cause}
+}
+
+func validationExclusionReason(err error) (string, bool) {
+	var unsupported *validationIdentityUnsupportedError
+	if !errors.As(err, &unsupported) || strings.TrimSpace(unsupported.reason) == "" {
+		return "", false
+	}
+	return unsupported.reason, true
+}
+
+func (r *Reconciler) persistValidationExclusion(ctx context.Context, worker core.Worker, reason string) error {
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		return nil
+	}
+	if worker.ValidationExclusionAnalysisVersion == ciaudit.AnalyzerVersion && worker.ValidationExclusionReason == reason {
+		return nil
+	}
+	worker.ValidationExclusionAnalysisVersion = ciaudit.AnalyzerVersion
+	worker.ValidationExclusionReason = reason
+	return r.Store.UpsertWorker(ctx, worker)
+}
 
 func sortWorkersByCompletion(workers []core.Worker) {
 	sort.SliceStable(workers, func(i, j int) bool {
@@ -52,7 +108,11 @@ func (r *Reconciler) reconcileValidationIdentity(
 	}
 	identity, updatedWorker, err := r.validationIdentity(ctx, worker, run, fileCache)
 	if errors.Is(err, errValidationIdentityUnsupported) {
-		return nil
+		reason, ok := validationExclusionReason(err)
+		if !ok {
+			reason = validationExclusionMissingMetadata
+		}
+		return r.persistValidationExclusion(ctx, worker, reason)
 	}
 	if err != nil {
 		return err
@@ -112,19 +172,23 @@ func (r *Reconciler) validationIdentity(
 		strings.TrimSpace(run.Path) == "" ||
 		strings.TrimSpace(worker.JobName) == "" ||
 		strings.TrimSpace(worker.GitHubRunnerOS) == "" ||
-		strings.TrimSpace(worker.HostID) == "" ||
-		worker.Isolation != core.IsolationContainerTrusted ||
-		images.ValidatePinned(worker.Image) != nil {
-		return ciaudit.ValidationIdentity{}, false, errValidationIdentityUnsupported
+		strings.TrimSpace(worker.HostID) == "" {
+		return ciaudit.ValidationIdentity{}, false, unsupportedValidation(validationExclusionMissingMetadata, nil)
+	}
+	if worker.Isolation != core.IsolationContainerTrusted {
+		return ciaudit.ValidationIdentity{}, false, unsupportedValidation(validationExclusionUnsupportedIsolation, nil)
+	}
+	if err := images.ValidatePinned(worker.Image); err != nil {
+		return ciaudit.ValidationIdentity{}, false, unsupportedValidation(validationExclusionUnpinnedRunnerImage, nil)
 	}
 
 	host, err := r.Store.GetHost(ctx, worker.HostID)
 	if err != nil || strings.TrimSpace(host.Architecture) == "" {
-		return ciaudit.ValidationIdentity{}, false, errValidationIdentityUnsupported
+		return ciaudit.ValidationIdentity{}, false, unsupportedValidation(validationExclusionMissingHostContext, nil)
 	}
 	scope, ok := repositoryScope(worker.Repository)
 	if !ok {
-		return ciaudit.ValidationIdentity{}, false, errValidationIdentityUnsupported
+		return ciaudit.ValidationIdentity{}, false, unsupportedValidation(validationExclusionInvalidRepository, nil)
 	}
 	cacheKey := normalizeRepository(worker.Repository) + ":" + run.HeadSHA + ":" + run.Path
 	file, ok := fileCache[cacheKey]
@@ -137,10 +201,16 @@ func (r *Reconciler) validationIdentity(
 	}
 	fingerprint, err := workflowparser.FingerprintJob(file.Content, worker.JobName)
 	if err != nil {
-		return ciaudit.ValidationIdentity{}, false, fmt.Errorf("%w: %v", errValidationIdentityUnsupported, err)
+		return ciaudit.ValidationIdentity{}, false, unsupportedValidation(validationExclusionWorkflowParse, err)
 	}
-	if fingerprint.UsesRuntimeEnvironment || fingerprint.HasMutableAction || fingerprint.HasOpaqueAction {
-		return ciaudit.ValidationIdentity{}, false, errValidationIdentityUnsupported
+	if fingerprint.UsesRuntimeEnvironment {
+		return ciaudit.ValidationIdentity{}, false, unsupportedValidation(validationExclusionRuntimeEnvironment, nil)
+	}
+	if fingerprint.HasMutableAction {
+		return ciaudit.ValidationIdentity{}, false, unsupportedValidation(validationExclusionMutableAction, nil)
+	}
+	if fingerprint.HasOpaqueAction {
+		return ciaudit.ValidationIdentity{}, false, unsupportedValidation(validationExclusionOpaqueAction, nil)
 	}
 
 	contextHash, err := workflowparser.ContextHash(
@@ -153,7 +223,7 @@ func (r *Reconciler) validationIdentity(
 		strings.TrimSpace(worker.Image),
 	)
 	if err != nil {
-		return ciaudit.ValidationIdentity{}, false, errValidationIdentityUnsupported
+		return ciaudit.ValidationIdentity{}, false, unsupportedValidation(validationExclusionUnresolvedContext, err)
 	}
 	freshness := ciaudit.FreshnessContentAddressed
 	if fingerprint.ExternalState {
@@ -177,6 +247,8 @@ func (r *Reconciler) validationIdentity(
 	worker.ValidationFreshness = string(identity.Freshness)
 	worker.ValidationKey = key
 	worker.ValidationWorkflowBlobSHA = file.SHA
+	worker.ValidationExclusionAnalysisVersion = ""
+	worker.ValidationExclusionReason = ""
 	if err := r.Store.UpsertWorker(ctx, worker); err != nil {
 		return ciaudit.ValidationIdentity{}, false, err
 	}
