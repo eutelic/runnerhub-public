@@ -153,7 +153,6 @@ func TestHelpers(t *testing.T) {
 	}
 }
 
-
 func TestAllDesiredListenersReady(t *testing.T) {
 	if !allDesiredListenersReady(map[string]managedConfig{}, map[string]managedListener{}) {
 		t.Fatal("zero desired listeners should be ready")
@@ -200,7 +199,6 @@ func TestScaleSetStatusPostsPoolState(t *testing.T) {
 		t.Fatal(err)
 	}
 }
-
 
 type fakeScaleSetRunnerClient struct {
 	generateCalls int
@@ -347,7 +345,6 @@ func TestRunnerHubClientCreateSendsGitHubRunnerID(t *testing.T) {
 	}
 }
 
-
 func TestListenerRetryDelayIsBoundedAndDeterministic(t *testing.T) {
 	first := listenerRetryDelay(1, "pool-a")
 	second := listenerRetryDelay(2, "pool-a")
@@ -367,7 +364,7 @@ func TestListenerRetryDelayIsBoundedAndDeterministic(t *testing.T) {
 
 func TestRateLimitTrackerUsesResetAndRetryAfter(t *testing.T) {
 	now := time.Now()
-	resp := &http.Response{StatusCode:http.StatusForbidden, Header:make(http.Header)}
+	resp := &http.Response{StatusCode: http.StatusForbidden, Header: make(http.Header)}
 	resp.Header.Set("X-RateLimit-Resource", "actions_runner_registration")
 	resp.Header.Set("X-RateLimit-Limit", "100")
 	resp.Header.Set("X-RateLimit-Remaining", "0")
@@ -385,5 +382,79 @@ func TestRateLimitTrackerUsesResetAndRetryAfter(t *testing.T) {
 		if !strings.Contains(detail, want) {
 			t.Fatalf("detail=%q missing %q", detail, want)
 		}
+	}
+}
+
+func TestScaleSetClientConstructionDoesNotPanicOnCustomRetries(t *testing.T) {
+	// Regression: actions/scaleset v0.4.0 asserts that the retryable HTTP
+	// client's transport is *http.Transport. A RoundTripper wrapper panicked
+	// in newCommonClient before GitHub could receive any requests.
+	cfg := config{
+		RegistrationURL:   "https://github.com/eutelic/file-ingest",
+		AppClientID:       "Iv1.test",
+		AppInstallationID: 123,
+		AppPrivateKey:     "placeholder-nonempty-key",
+		rateLimit:         &githubRateLimitTracker{},
+	}
+	client, err := cfg.client()
+	if err != nil {
+		t.Fatalf("construct scale-set client: %v", err)
+	}
+	if client == nil {
+		t.Fatal("scale-set client is nil")
+	}
+	if _, ok := newGitHubRetryClient(cfg.rateLimit).HTTPClient.Transport.(*http.Transport); !ok {
+		t.Fatal("retry client must preserve concrete *http.Transport for actions/scaleset")
+	}
+}
+
+func TestGitHubRetryClientTracksRateLimitWithoutTransportWrapper(t *testing.T) {
+	tracker := &githubRateLimitTracker{}
+	client := newGitHubRetryClient(tracker)
+	now := time.Now()
+	limited := &http.Response{StatusCode: http.StatusForbidden, Header: make(http.Header)}
+	limited.Header.Set("X-RateLimit-Remaining", "0")
+	limited.Header.Set("X-RateLimit-Reset", fmt.Sprintf("%d", now.Add(2*time.Minute).Unix()))
+	limited.Header.Set("X-GitHub-Request-Id", "retry-test")
+
+	retry, err := client.CheckRetry(context.Background(), limited, nil)
+	if err != nil || !retry {
+		t.Fatalf("rate-limited GitHub 403: retry=%v err=%v", retry, err)
+	}
+	if until, ok := tracker.cooldown(now); !ok || until.Before(now.Add(time.Minute)) {
+		t.Fatalf("missing shared installation cooldown: until=%v active=%v", until, ok)
+	}
+	if got := tracker.detail(now); !strings.Contains(got, "requestId=retry-test") {
+		t.Fatalf("lost GitHub rate-limit metadata: %q", got)
+	}
+
+	forbidden := &http.Response{StatusCode: http.StatusForbidden, Header: make(http.Header)}
+	retry, err = client.CheckRetry(context.Background(), forbidden, nil)
+	if err != nil || retry {
+		t.Fatalf("ordinary GitHub 403 should not retry: retry=%v err=%v", retry, err)
+	}
+	tooMany := &http.Response{StatusCode: http.StatusTooManyRequests, Header: make(http.Header)}
+	retry, err = client.CheckRetry(context.Background(), tooMany, nil)
+	if err != nil || !retry {
+		t.Fatalf("GitHub 429 should retry: retry=%v err=%v", retry, err)
+	}
+}
+
+func TestGitHubCooldownWaitRespectsCancellation(t *testing.T) {
+	tracker := &githubRateLimitTracker{}
+	limited := &http.Response{StatusCode: http.StatusTooManyRequests, Header: make(http.Header)}
+	limited.Header.Set("Retry-After", "3600")
+	tracker.observe(limited)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	done := make(chan struct{})
+	go func() {
+		waitForGitHubCooldown(ctx, tracker)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("cancelled request remained blocked by GitHub rate-limit cooldown")
 	}
 }

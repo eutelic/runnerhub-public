@@ -134,30 +134,19 @@ func (t *githubRateLimitTracker) detail(now time.Time) string {
 	return strings.Join(parts, " ")
 }
 
-type cooldownRoundTripper struct {
-	base    http.RoundTripper
-	tracker *githubRateLimitTracker
-}
-
-func (t cooldownRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
-	if until, ok := t.tracker.cooldown(time.Now()); ok {
+// The upstream actions/scaleset client requires an *http.Transport (it type-asserts
+// when applying TLS/proxy options). Do not replace retryablehttp's Transport with
+// a RoundTripper wrapper: doing so panics during scale-set client construction.
+// Instead, wait before each retryablehttp attempt using its request hook.
+func waitForGitHubCooldown(ctx context.Context, tracker *githubRateLimitTracker) {
+	if until, limited := tracker.cooldown(time.Now()); limited {
 		timer := time.NewTimer(time.Until(until))
 		defer timer.Stop()
 		select {
-		case <-req.Context().Done():
-			return nil, req.Context().Err()
+		case <-ctx.Done():
 		case <-timer.C:
 		}
 	}
-	base := t.base
-	if base == nil {
-		base = http.DefaultTransport
-	}
-	resp, err := base.RoundTrip(req)
-	if resp != nil {
-		t.tracker.observe(resp)
-	}
-	return resp, err
 }
 
 func githubRetryBackoff(minWait, maxWait time.Duration, attempt int, resp *http.Response) time.Duration {
@@ -195,7 +184,25 @@ func newGitHubRetryClient(tracker *githubRateLimitTracker) *retryablehttp.Client
 	client.RetryWaitMin = time.Second
 	client.RetryWaitMax = 5 * time.Minute
 	client.Backoff = githubRetryBackoff
-	client.HTTPClient.Transport = cooldownRoundTripper{base: client.HTTPClient.Transport, tracker: tracker}
+	// Keep the default concrete *http.Transport for actions/scaleset v0.4.0.
+	client.RequestLogHook = func(_ retryablehttp.Logger, req *http.Request, _ int) {
+		waitForGitHubCooldown(req.Context(), tracker)
+	}
+	client.CheckRetry = func(ctx context.Context, resp *http.Response, err error) (bool, error) {
+		tracker.observe(resp)
+		// GitHub also reports installation rate limiting as HTTP 403, not
+		// only 429. Retry those responses according to reset/retry headers,
+		// but never retry ordinary permission-related 403s.
+		if resp != nil && resp.StatusCode == http.StatusForbidden &&
+			(strings.TrimSpace(resp.Header.Get("Retry-After")) != "" ||
+				strings.TrimSpace(resp.Header.Get("X-RateLimit-Remaining")) == "0") {
+			if err := ctx.Err(); err != nil {
+				return false, err
+			}
+			return true, nil
+		}
+		return retryablehttp.DefaultRetryPolicy(ctx, resp, err)
+	}
 	return client
 }
 

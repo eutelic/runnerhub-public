@@ -13,7 +13,7 @@ permissions:
   contents: read
 jobs:
   affected-go-packages:
-    if: github.head_ref == 'fix/github-api-backoff-listener-starts' || github.head_ref == 'fix/emergency-hosted-release-20261013'
+    if: github.head_ref == 'fix/github-api-backoff-listener-starts' || github.head_ref == 'fix/emergency-hosted-release-20261013' || github.head_ref == 'fix/scaleset-retry-http-transport-panic-20261013'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -27,7 +27,7 @@ jobs:
       - name: Verify Go formatting
         shell: bash
         run: |
-          output="$(gofmt -l internal/cireconcile/reconcile.go internal/cireconcile/reconcile_test.go scaleset/cmd/runnerhub-scaleset/main.go)"
+          output="$(gofmt -l internal/cireconcile/reconcile.go internal/cireconcile/reconcile_test.go scaleset/cmd/runnerhub-scaleset/main.go scaleset/cmd/runnerhub-scaleset/main_test.go)"
           test -z "$output" || { printf 'Ungofmt files:\n%s\n' "$output"; exit 1; }
       - name: Reconciler regression tests
         run: go test ./internal/cireconcile -count=1
