@@ -112,7 +112,7 @@ func TestReconcilePersistsAttemptsAndDeterministicFindings(t *testing.T) {
 	newRun := run(200, "ci", "bbb", newCreated, 5)
 	publishRun := run(300, "publish-images", "ccc", publishCreated, 6)
 	gh := fakeGitHub{
-		runs: map[int64]githubrunner.WorkflowRunMetadata{100: oldRun, 200: newRun, 300: publishRun},
+		runs:     map[int64]githubrunner.WorkflowRunMetadata{100: oldRun, 200: newRun, 300: publishRun},
 		attempts: map[string]githubrunner.WorkflowRunMetadata{"100:1": oldRun, "200:1": newRun, "300:1": publishRun},
 		jobs: map[string][]githubrunner.WorkflowJob{
 			"100:1": {{ID: 101, Name: "core", RunnerName: "runner-old"}},
@@ -175,7 +175,6 @@ func TestReconcilePersistsAttemptsAndDeterministicFindings(t *testing.T) {
 	}
 }
 
-
 func TestReconcileFailedWorkerUsesGitHubCompletionTime(t *testing.T) {
 	ctx := context.Background()
 	st, err := store.OpenSQLite(":memory:")
@@ -203,7 +202,7 @@ func TestReconcileFailedWorkerUsesGitHubCompletionTime(t *testing.T) {
 		PullRequestNumbers: []int{9},
 	}
 	gh := fakeGitHub{
-		runs: map[int64]githubrunner.WorkflowRunMetadata{400: run},
+		runs:     map[int64]githubrunner.WorkflowRunMetadata{400: run},
 		attempts: map[string]githubrunner.WorkflowRunMetadata{"400:1": run},
 		jobs: map[string][]githubrunner.WorkflowJob{
 			"400:1": {{ID: 401, Name: "core", RunnerName: "runner-failed", StartedAt: started, CompletedAt: failedAt}},
@@ -231,7 +230,6 @@ func TestReconcileFailedWorkerUsesGitHubCompletionTime(t *testing.T) {
 		t.Fatalf("findings=%+v", findings)
 	}
 }
-
 
 func TestReconcilePersistsValidationCoverageExclusions(t *testing.T) {
 	ctx := context.Background()
@@ -361,7 +359,7 @@ jobs:
 		CreatedAt: secondStart.Add(-time.Minute),
 	}
 	gh := fakeGitHub{
-		runs: map[int64]githubrunner.WorkflowRunMetadata{501: prRun, 502: mainRun},
+		runs:     map[int64]githubrunner.WorkflowRunMetadata{501: prRun, 502: mainRun},
 		attempts: map[string]githubrunner.WorkflowRunMetadata{"501:1": prRun, "502:1": mainRun},
 		prs: map[int]githubrunner.PullRequestMetadata{
 			21: {Number: 21, State: "open", HeadRef: "feature", HeadSHA: "commit-pr", BaseRef: "main"},
@@ -462,7 +460,7 @@ jobs:
 	firstRun := run(601, "commit-one", now.Add(-31*time.Minute))
 	secondRun := run(602, "commit-two", now.Add(-11*time.Minute))
 	gh := fakeGitHub{
-		runs: map[int64]githubrunner.WorkflowRunMetadata{601: firstRun, 602: secondRun},
+		runs:     map[int64]githubrunner.WorkflowRunMetadata{601: firstRun, 602: secondRun},
 		attempts: map[string]githubrunner.WorkflowRunMetadata{"601:1": firstRun, "602:1": secondRun},
 		files: map[string]githubrunner.RepositoryFile{
 			"commit-one:.github/workflows/ci.yml": {SHA: "workflow-blob", Content: []byte(workflow)},
@@ -486,5 +484,33 @@ jobs:
 		if finding.DetectorID == "equivalent-validation" {
 			t.Fatalf("unexpected equivalent finding: %+v", finding)
 		}
+	}
+}
+
+func TestGitHubMetadataRetryBackoffAvoidsAPIRateLimitLoop(t *testing.T) {
+	limited := errors.New("github api GET /repos/eutelic/runnerhub/actions/runs/42 returned 403: API rate limit exceeded for installation ID")
+	got := []time.Duration{}
+	for n := 1; n <= 7; n++ {
+		got = append(got, githubMetadataRetryDelay(limited, n, time.Minute))
+	}
+	want := []time.Duration{5 * time.Minute, 10 * time.Minute, 20 * time.Minute,
+		40 * time.Minute, time.Hour, time.Hour, time.Hour}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("rate limit retry %d = %v, want %v", i+1, got[i], want[i])
+		}
+	}
+	forbidden := errors.New("github api GET /repos/eutelic/runnerhub/actions/runs/42 returned 403: Resource not accessible by integration")
+	if d := githubMetadataRetryDelay(forbidden, 1, time.Minute); d != 30*time.Minute {
+		t.Fatalf("permission-denied cooldown = %v, want 30m", d)
+	}
+	if d := githubMetadataRetryDelay(errors.New("database read error"), 3, time.Minute); d != time.Minute {
+		t.Fatalf("non-GitHub errors should retain normal interval; got %v", d)
+	}
+	if retryGitHubAPIError(nil) {
+		t.Fatal("nil error must not trigger a cooldown")
+	}
+	if d := githubMetadataRetryDelay(limited, 1, 8*time.Minute); d != 8*time.Minute {
+		t.Fatalf("configured minimum interval ignored: %v", d)
 	}
 }

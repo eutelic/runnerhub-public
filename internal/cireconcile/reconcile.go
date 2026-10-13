@@ -28,23 +28,78 @@ func (r *Reconciler) Run(ctx context.Context) error {
 	if interval <= 0 {
 		interval = time.Minute
 	}
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
+	// GitHub App REST requests and scale-set listeners share an installation
+	// quota. Retry a rejected metadata request conservatively rather than
+	// exhausting the quota once per minute on the same historical run.
+	consecutiveGitHubFailures := 0
 	for {
-		if err := r.Once(ctx); err != nil {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		err := r.Once(ctx)
+		wait := interval
+		if err != nil {
 			if r.Store != nil {
 				_ = r.Store.AppendAudit(ctx, core.AuditEvent{
 					Actor: "ci-reconciler", Action: "reconcile", ResourceType: "ci",
 					Result: "error", SafeDetail: truncate(err.Error()),
 				})
 			}
+			if retryGitHubAPIError(err) {
+				consecutiveGitHubFailures++
+				wait = githubMetadataRetryDelay(err, consecutiveGitHubFailures, interval)
+			} else {
+				consecutiveGitHubFailures = 0
+			}
+		} else {
+			consecutiveGitHubFailures = 0
 		}
+		timer := time.NewTimer(wait)
 		select {
 		case <-ctx.Done():
+			timer.Stop()
 			return ctx.Err()
-		case <-ticker.C:
+		case <-timer.C:
 		}
 	}
+}
+
+// Back off the entire analytics-only reconciliation on installation API
+// failures. Runner registration, GitHub webhook handling, scheduling and
+// existing workflow execution remain unaffected.
+func retryGitHubAPIError(err error) bool {
+	if err == nil {
+		return false
+	}
+	detail := strings.ToLower(err.Error())
+	return strings.Contains(detail, "rate limit exceeded") ||
+		strings.Contains(detail, "rate-limit") ||
+		strings.Contains(detail, "secondary rate limit") ||
+		strings.Contains(detail, "resource not accessible by integration") ||
+		strings.Contains(detail, "returned 403") ||
+		strings.Contains(detail, "returned 429")
+}
+
+func githubMetadataRetryDelay(err error, failures int, interval time.Duration) time.Duration {
+	if !retryGitHubAPIError(err) {
+		return interval
+	}
+	wait := 5 * time.Minute
+	message := strings.ToLower(err.Error())
+	if strings.Contains(message, "resource not accessible by integration") &&
+		!strings.Contains(message, "rate limit") {
+		wait = 30 * time.Minute
+	}
+	for i := 1; i < failures && wait < time.Hour; i++ {
+		wait *= 2
+	}
+	if wait > time.Hour {
+		wait = time.Hour
+	}
+	if wait < interval {
+		return interval
+	}
+	return wait
 }
 
 func (r *Reconciler) Once(ctx context.Context) (resultErr error) {
@@ -433,7 +488,6 @@ func supersedingRun(current store.CIWorkflowRun, runs map[string]store.CIWorkflo
 	}
 	return best.CreatedAt, best, true
 }
-
 
 func supersedingPublicationRun(current store.CIWorkflowRun, runs map[string]store.CIWorkflowRun, completedAt time.Time) (time.Time, store.CIWorkflowRun, bool) {
 	if !ciaudit.MutableSnapshotPublicationWorkflow(current.Name) ||

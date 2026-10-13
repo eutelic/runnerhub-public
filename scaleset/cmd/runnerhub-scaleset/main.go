@@ -747,7 +747,18 @@ func runDynamicManager(ctx context.Context, base config) error {
 			}
 			_ = hub.scaleSetStatus(ctx, key, state, "")
 		}
-		for key, item := range desired {
+		// Launch one new listener per GitHub App installation per cycle.
+		// Starting every configured repository at once produces a burst of
+		// scale-set auth/discovery calls on shared GitHub App credentials.
+		// Stable ordering also makes startup progression observable.
+		poolIDs := make([]string, 0, len(desired))
+		for key := range desired {
+			poolIDs = append(poolIDs, key)
+		}
+		sort.Strings(poolIDs)
+		startedInstallations := map[int64]bool{}
+		for _, key := range poolIDs {
+			item := desired[key]
 			if _, ok := active[key]; ok {
 				continue
 			}
@@ -769,10 +780,14 @@ func runDynamicManager(ctx context.Context, base config) error {
 				_ = hub.scaleSetStatus(ctx, key, "backing_off", detail)
 				continue
 			}
+			if startedInstallations[item.AppInstallationID] {
+				continue
+			}
 			cfg := configFromManaged(base, item)
 			cfg.rateLimit = tracker
 			childCtx, childCancel := context.WithCancel(ctx)
 			active[key] = managedListener{cancel: childCancel, fingerprint: fingerprint}
+			startedInstallations[item.AppInstallationID] = true
 			_ = hub.scaleSetStatus(ctx, key, "starting", "")
 			slog.Info("starting managed scale-set listener", "pool", key, "repository", item.RegistrationURL, "name", item.Name)
 			go func(key, fingerprint string, cfg config) {
@@ -922,11 +937,11 @@ func runListener(ctx context.Context, c config, onReady func()) error {
 	}
 
 	gh.SetSystemInfo(scaleset.SystemInfo{
-		System:      "runnerhub",
-		Subsystem:   "scaleset",
-		Version:     "0.3.0",
-		CommitSHA:   "unknown",
-		ScaleSetID:  set.ID,
+		System:     "runnerhub",
+		Subsystem:  "scaleset",
+		Version:    "0.3.0",
+		CommitSHA:  "unknown",
+		ScaleSetID: set.ID,
 	})
 
 	hub := runnerHubClient{
