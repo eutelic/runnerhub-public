@@ -34,13 +34,17 @@ concurrency:
   group: publish-images-${{ github.ref }}
   cancel-in-progress: ${{ github.ref_type == 'branch' }}
 
+# Emergency bootstrap: a trusted main-branch commit marked [runnerhub-recovery]
+# runs acceptance, builds and registry promotion on GitHub-hosted Ubuntu.
+# The real runnerhub-release-acceptance JIT job is NEVER replaced or skipped.
+# All other commits continue using RunnerHub; remove this escape hatch after recovery.
 # Docker-capable build/validation work uses an isolated DinD lane. Registry tag
 # publication is a daemonless crane operation on runnerhub-fast.
 # Distinct live JIT acceptance remains part of publication; ordinary source and deployment validation lives in CI.
 jobs:
   acceptance-config:
     name: Verify live JIT acceptance configuration
-    runs-on: runnerhub
+    runs-on: ${{ (github.event_name == 'push' && contains(github.event.head_commit.message, '[runnerhub-recovery]')) && 'ubuntu-24.04' || 'runnerhub' }}
     timeout-minutes: 5
     steps:
       - name: Require dedicated GitHub App acceptance credentials
@@ -55,7 +59,7 @@ jobs:
   acceptance-host:
     name: Provision real JIT acceptance runner
     needs: acceptance-config
-    runs-on: runnerhub-publisher
+    runs-on: ${{ (github.event_name == 'push' && contains(github.event.head_commit.message, '[runnerhub-recovery]')) && 'ubuntu-24.04' || 'runnerhub-publisher' }}
     timeout-minutes: 15
     env:
       RUNNERHUB_ACCEPTANCE_GITHUB_APP_ISSUER: ${{ secrets.RUNNERHUB_ACCEPTANCE_GITHUB_APP_ISSUER }}
@@ -100,7 +104,7 @@ jobs:
 
   publish:
     needs: [acceptance-host, jit-smoke]
-    runs-on: runnerhub-publisher
+    runs-on: ${{ (github.event_name == 'push' && contains(github.event.head_commit.message, '[runnerhub-recovery]')) && 'ubuntu-24.04' || 'runnerhub-publisher' }}
     strategy:
       fail-fast: false
       matrix:
@@ -173,7 +177,7 @@ jobs:
   verify-staged-images:
     name: Verify staged published artifacts
     needs: publish
-    runs-on: runnerhub-publisher
+    runs-on: ${{ (github.event_name == 'push' && contains(github.event.head_commit.message, '[runnerhub-recovery]')) && 'ubuntu-24.04' || 'runnerhub-publisher' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Log in to GHCR
@@ -200,7 +204,7 @@ jobs:
     # Registry-only publication does not need Docker. Run it on the explicitly
     # fast compute lane; the build matrix can move here too once runnerhub-fast
     # is configured as a Docker-capable custom profile.
-    runs-on: runnerhub-fast
+    runs-on: ${{ (github.event_name == 'push' && contains(github.event.head_commit.message, '[runnerhub-recovery]')) && 'ubuntu-24.04' || 'runnerhub-fast' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

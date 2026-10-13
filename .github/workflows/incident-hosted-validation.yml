@@ -7,12 +7,13 @@ on:
     paths:
       - 'internal/cireconcile/**'
       - 'scaleset/**'
+      - '.github/workflows/publish-images.yml'
       - '.github/workflows/incident-hosted-validation.yml'
 permissions:
   contents: read
 jobs:
   affected-go-packages:
-    if: github.head_ref == 'fix/github-api-backoff-listener-starts'
+    if: github.head_ref == 'fix/github-api-backoff-listener-starts' || github.head_ref == 'fix/emergency-hosted-release-20261013'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -21,6 +22,8 @@ jobs:
         with:
           go-version: '1.25.3'
           cache: true
+      - name: Validate GitHub Actions syntax
+        run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 -shellcheck= .github/workflows/publish-images.yml
       - name: Verify Go formatting
         shell: bash
         run: |
