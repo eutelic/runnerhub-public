@@ -29,6 +29,50 @@ function sortWorkers(workers){
   return [...workers].sort((a,b)=>String(b.updatedAt||b.createdAt||'').localeCompare(String(a.updatedAt||a.createdAt||''))).slice(0,100);
 }
 
+function showReadiness(pools, statuses, runtime) {
+  const container=document.getElementById('queue-readiness');
+  container.replaceChildren();
+  if(!pools.ok||!statuses.ok||!runtime.ok){
+    const note=document.createElement('p');
+    note.textContent='Runner readiness unavailable: check authentication and API connectivity.';
+    container.append(note);
+    return;
+  }
+  const report=window.RunnerHubQueueDiagnostics.summarize(pools.value,statuses.value,runtime.value);
+  if(!report.length){
+    const note=document.createElement('p');
+    note.textContent='No runner pools are currently configured.';
+    container.append(note);
+    return;
+  }
+  for(const item of report){
+    const section=document.createElement('article');
+    section.className='card';
+    section.style.marginBottom='12px';
+    const title=document.createElement('h3');
+    title.textContent=item.label;
+    const detail=document.createElement('p');
+    const hosts=item.onlineHosts===null?'unknown':String(item.onlineHosts);
+    detail.textContent='Listener: '+item.listener+
+      ' | Eligible hosts: '+hosts+
+      ' | Active workers: '+item.active+
+      ' | Busy workers: '+item.busy+
+      ' | Pool limit: '+item.capacity;
+    const reason=document.createElement('p');
+    reason.textContent=item.explanation;
+    if(item.severity==='attention')reason.className='error';
+    if(item.severity==='ready')reason.className='success';
+    section.append(title,detail,reason);
+    if(item.detail){
+      const provider=document.createElement('p');
+      provider.className='muted';
+      provider.textContent='Listener detail: '+item.detail;
+      section.append(provider);
+    }
+    container.append(section);
+  }
+}
+
 async function buildBundle(){
   refreshButton.disabled=true;
   copyButton.disabled=true;
@@ -47,6 +91,7 @@ async function buildBundle(){
       collect('metrics','/api/v1/metrics')
     ]);
     if(workers.ok)workers.value=sortWorkers(workers.value);
+    showReadiness(pools,scalesets,runtime);
     if(auth.ok&&auth.value&&typeof auth.value==='object'){
       delete auth.value.csrf;
     }

@@ -22,6 +22,13 @@
   </header>
   <main>
     <section class="card">
+      <h2>Why are jobs waiting?</h2>
+      <p class="muted">Read-only readiness hints from RunnerHub's listener and host status.
+      This is not a GitHub queue count or a guarantee that a runner can accept a particular job.
+      Refresh the support bundle to update these results.</p>
+      <div id="queue-readiness" aria-live="polite">Checking runner pools…</div>
+    </section>
+    <section class="card">
       <div class="section-head">
         <div>
           <h2>Support bundle</h2>
@@ -37,6 +44,7 @@
       <textarea id="support-bundle" class="support-bundle" spellcheck="false" aria-label="RunnerHub support bundle"></textarea>
     </section>
   </main>
+  <script src="/queue-diagnostics.js" defer></script>
   <script src="/diagnostics.js" defer></script>
 </body>
 </html>

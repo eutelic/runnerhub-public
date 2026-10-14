@@ -1,7 +1,8 @@
 package web
 
 import (
-	"regexp"
+	"os/exec"
+    "regexp"
 	"strings"
 	"testing"
 )
@@ -85,4 +86,35 @@ func TestDashboardIncludesRepositoryVisibilityFilters(t *testing.T) {
 			t.Fatalf("repository filter behavior missing %q", want)
 		}
 	}
+}
+
+func TestDiagnosticsReadinessScriptIsEmbedded(t *testing.T) {
+    page, err := content.ReadFile("diagnostics.html")
+    if err != nil { t.Fatal(err) }
+    logic, err := content.ReadFile("queue-diagnostics.js")
+    if err != nil { t.Fatal(err) }
+    glue, err := content.ReadFile("diagnostics.js")
+    if err != nil { t.Fatal(err) }
+    if !strings.Contains(string(page), "id=\"queue-readiness\"") {
+        t.Fatal("runner readiness section missing")
+    }
+    if !strings.Contains(string(page), "src=\"/queue-diagnostics.js\"") {
+        t.Fatal("runner readiness script not loaded")
+    }
+    if !strings.Contains(string(logic), "function summarize(") ||
+        !strings.Contains(string(glue), "showReadiness(pools,scalesets,runtime)") {
+        t.Fatal("queue readiness analysis not wired to authenticated endpoints")
+    }
+}
+
+func TestQueueReadinessJavaScript(t *testing.T) {
+    node, err := exec.LookPath("node")
+    if err != nil {
+        t.Skip("node is unavailable in this runner; browser integration is covered by embed checks")
+    }
+    command := exec.Command(node, "--test", "queue-diagnostics.test.cjs")
+    output, err := command.CombinedOutput()
+    if err != nil {
+        t.Fatalf("Queue diagnostic JavaScript checks failed: %s: %v", string(output), err)
+    }
 }
