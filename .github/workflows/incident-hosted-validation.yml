@@ -1,6 +1,6 @@
-# Temporary incident-only validation while RunnerHub self-hosted listeners
-# cannot accept jobs. Remove before merging once this fix is verified.
-name: Incident hosted validation
+# Target the RunnerHub pool for incident regression validation.
+# Recovery when RunnerHub itself is unavailable requires an out-of-band path.
+name: Incident RunnerHub validation
 on:
   pull_request:
     branches: [main]
@@ -14,7 +14,7 @@ permissions:
 jobs:
   affected-go-packages:
     if: github.head_ref == 'fix/github-api-backoff-listener-starts' || github.head_ref == 'fix/emergency-hosted-release-20261013' || github.head_ref == 'fix/scaleset-retry-http-transport-panic-20261013'
-    runs-on: ubuntu-24.04
+    runs-on: runnerhub
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
