@@ -145,7 +145,7 @@ jobs:
         run: bash scripts/test-ci-changes.sh
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
-          go-version: '1.26.9'
+          go-version: '1.26.10'
           cache: true
       - name: Lint GitHub Actions workflows
         run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
@@ -186,7 +186,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
-          go-version: '1.26.9'
+          go-version: '1.26.10'
           cache: true
       - name: Verify root JIT secret ownership normalization
         run: |
@@ -194,7 +194,7 @@ jobs:
           docker run --rm \
             -v "$GITHUB_WORKSPACE:$GITHUB_WORKSPACE" \
             -w "$GITHUB_WORKSPACE" \
-            golang:1.26.9 \
+            golang:1.26.10 \
             bash -lc '/usr/local/go/bin/go test ./internal/providers/docker ./internal/providers/truenas -run TestWriteJITSecretNormalizesPermissions -count=1'
 
   core-race:
@@ -206,7 +206,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
-          go-version: '1.26.9'
+          go-version: '1.26.10'
           cache: true
       - name: Run race detector in toolchain container
         run: |
@@ -214,7 +214,7 @@ jobs:
           docker run --rm \
             -v "$GITHUB_WORKSPACE:$GITHUB_WORKSPACE" \
             -w "$GITHUB_WORKSPACE" \
-            golang:1.26.9 \
+            golang:1.26.10 \
             bash -lc '/usr/local/go/bin/go test -race ./internal/...'
 
   scaleset:
@@ -228,7 +228,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
-          go-version: '1.26.9'
+          go-version: '1.26.10'
           cache-dependency-path: scaleset/go.sum
       - run: go test ./...
       - run: go vet ./...
@@ -245,7 +245,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
-          go-version: '1.26.9'
+          go-version: '1.26.10'
           cache: true
       - run: GOOS=${{ matrix.goos }} GOARCH=amd64 CGO_ENABLED=0 go build ./cmd/runnerhub-agent
 

@@ -22,12 +22,58 @@ const els={
   deployerStatus:document.getElementById('deployer-status'),
   deployerSetup:document.getElementById('deployer-setup'),
   deployerTokenResult:document.getElementById('deployer-token-result'),
-  deployerWorkflowToken:document.getElementById('deployer-workflow-token')
+  deployerWorkflowToken:document.getElementById('deployer-workflow-token'),
+  fleetOverview:document.getElementById('fleet-overview'),
+  fleetWarning:document.getElementById('fleet-data-warning'),
+  dataFreshness:document.getElementById('data-freshness'),
+  refreshNow:document.getElementById('refresh-now'),
+  autoRefresh:document.getElementById('auto-refresh'),
+  activeRunnerFilter:document.getElementById('active-runner-filter')
 };
 let csrf='';
 let auth={enabled:false,authenticated:false};
 let lastRepoRenderArgs=null;
 let hiddenRepoAccounts=loadHiddenRepoAccounts();
+const hostDrafts=new Map();
+const snapshot={};
+let refreshInFlight=false;
+let refreshPending=false;
+let refreshPendingForce=false;
+let historyOffset=0;
+let historyRequestSequence=0;
+let historyLastUpdated=0;
+let repositoryInventoryAt=0;
+let dashboardIdentity='';
+function clearDashboardSnapshot(){
+  for(const key of Object.keys(snapshot))delete snapshot[key];
+  repositoryInventoryAt=0;
+  recommendationCache={key:'',at:0,value:new Map(),errors:[]};
+  efficiencyCache={key:'',at:0,value:[],errors:[]};
+  hostDrafts.clear();
+  historyLastUpdated=0;
+  historyRequestSequence++;
+}
+const fleetAlertFirstSeen=loadFleetAlertFirstSeen();
+const fleetAlertSilences=loadFleetAlertSilences();
+const smokeWorkflow=[
+  'name: RunnerHub smoke',
+  'on:',
+  '  workflow_dispatch:',
+  'jobs:',
+  '  smoke:',
+  '    runs-on: runnerhub',
+  '    timeout-minutes: 10',
+  '    steps:',
+  '      - name: Verify RunnerHub worker',
+  '        shell: bash',
+  '        run: |',
+  '          set -euo pipefail',
+  '          echo "Runner: $RUNNER_NAME"',
+  '          echo "OS: $RUNNER_OS"',
+  '          uname -a'
+].join('\n');
+let recommendationCache={key:'',at:0,value:new Map(),errors:[]};
+let efficiencyCache={key:'',at:0,value:[],errors:[]};
 const VERCEL_PROFILE_NAME='runnerhub-vercel';
 const VERCEL_MACHINE_TAG='vercel';
 const VERCEL_CLI_VERSION='59.16.0';
@@ -84,6 +130,36 @@ bind('machine-scan-fingerprint','click',scanMachineHostKey);
 bind('add-machine','click',addMachine);
 bind('install-deployer','click',installDeployer);
 bind('copy-deployer-token','click',copyDeployerToken);
+bind('message-dismiss','click',()=>message(''));
+bind('history-filter-form','submit',event=>{event.preventDefault();historyOffset=0;loadHistory()});
+bind('history-reset','click',()=>{
+  ['history-repo','history-search'].forEach(id=>{document.getElementById(id).value=''});
+  document.getElementById('history-state').value='';
+  historyOffset=0;loadHistory();
+});
+bind('history-prev','click',()=>{historyOffset=Math.max(0,historyOffset-20);loadHistory()});
+bind('history-next','click',()=>{historyOffset+=20;loadHistory()});
+document.getElementById('smoke-workflow').value=smokeWorkflow;
+document.getElementById('fleet-alerts')?.addEventListener('click',event=>{
+  const button=event.target.closest('button[data-fleet-alert-silence]');
+  if(!button)return;
+  const key=button.dataset.fleetAlertSilence;
+  if(button.dataset.fleetAlertAction==='unmute')fleetAlertSilences.delete(key);
+  else fleetAlertSilences.set(key,Date.now()+60*60*1000);
+  try{localStorage.setItem('runnerhub-fleet-alert-silences',JSON.stringify([...fleetAlertSilences]))}catch{}
+  if(snapshot.hosts&&snapshot.pools&&snapshot.workers&&snapshot.scalesets&&snapshot.runtime)
+    renderFleetAlerts(snapshot.hosts,snapshot.pools,snapshot.workers,snapshot.scalesets,snapshot.runtime);
+});
+bind('copy-smoke-workflow','click',async()=>{
+  try{
+    await navigator.clipboard.writeText(smokeWorkflow);
+    message('Smoke workflow copied. Add it to a trusted private repo under .github/workflows/ and run it manually.','success');
+  }catch{
+    const textarea=document.getElementById('smoke-workflow');
+    textarea.focus();textarea.select();
+    message('Clipboard unavailable. The workflow is selected for manual copy.','error');
+  }
+});
 const deployerEndpoint=document.getElementById('deployer-endpoint');
 const deployerHealth=document.getElementById('deployer-health-url');
 if(!deployerEndpoint.value&&location.hostname)deployerEndpoint.value='wss://'+location.hostname+'/api/current';
@@ -99,6 +175,20 @@ if(els.repoShowPublic){
   });
 }
 els.hosts.addEventListener('click',e=>{const button=e.target.closest('button[data-host-tags]');if(button)saveHostTags(button)});
+els.hosts.addEventListener('input',e=>{
+  const field=e.target.closest('[data-host-priority-input],[data-host-tag-input]');
+  if(!field)return;
+  const id=field.dataset.hostPriorityInput||field.dataset.hostTagInput;
+  const priority=els.hosts.querySelector('[data-host-priority-input="'+CSS.escape(id)+'"]');
+  const tags=els.hosts.querySelector('[data-host-tag-input="'+CSS.escape(id)+'"]');
+  hostDrafts.set(id,{priority:priority?.value||'0',tags:tags?.value||''});
+  const save=els.hosts.querySelector('button[data-host-tags="'+CSS.escape(id)+'"]');
+  if(save)save.textContent='Save changes';
+});
+els.activeRunnerFilter?.addEventListener('change',()=>{if(snapshot.workers)renderActiveRunners(snapshot.workers,
+  new Map((snapshot.pools||[]).map(p=>[p.id,p])),new Map((snapshot.hosts||[]).map(h=>[h.id,h])),
+  new Map((snapshot.progress||[]).map(p=>[p.workerId,p])));});
+els.refreshNow?.addEventListener('click',()=>refresh(true));
 els.repos.addEventListener('click',e=>{
   const learning=e.target.closest('button[data-learning-reset]');
   if(learning){resetPoolLearning(learning);return}
@@ -161,16 +251,35 @@ function initPageNav(){
     if(location.hash!==href)history.pushState(null,'',href);
     activate(link.dataset.page);
     window.scrollTo(0,0);
+    if(link.dataset.page==='activity'&&(auth.authenticated||els.token.value))loadHistory();
   }));
   window.addEventListener('popstate',()=>activate(pageFromHash()));
   window.addEventListener('hashchange',()=>activate(pageFromHash()));
   activate(pageFromHash());
 }
-function message(text,kind=''){els.msg.className=kind;els.msg.textContent=text||''}
+function message(text,kind=''){
+  els.msg.className='status-message'+(kind?' '+kind:'');
+  els.msg.textContent=text||'';
+  show(document.getElementById('message-container'),Boolean(text));
+}
 function gib(bytes){return bytes?Number((bytes/1073741824).toFixed(2)):0}
 function cpuCores(millis){return millis?Number((millis/1000).toFixed(2)):0}
 function usageCPU(millis){return Number.isFinite(Number(millis))&&Number(millis)>=0?cpuCores(Number(millis))+' cores':'—'}
 function usageRAM(bytes){return Number.isFinite(Number(bytes))&&Number(bytes)>=0?gib(Number(bytes))+' GiB':'—'}
+function usageIsFresh(usage,now=Date.now()){
+  if(!Number(usage?.samples)||isZeroTime(usage?.updatedAt))return false;
+  const stamp=Date.parse(usage.updatedAt);
+  if(!Number.isFinite(stamp))return false;
+  const age=now-stamp;
+  // Do not label a last-known value "now" after an agent stalls. Allow
+  // small clock skew and the normal interval between heartbeat samples.
+  return age>=-30000&&age<=120000;
+}
+function currentUsage(usage,field){
+  if(!Number(usage?.samples))return '—';
+  if(!usageIsFresh(usage))return 'stale';
+  return field==='cpu'?usageCPU(usage.currentCpuMillis):usageRAM(usage.currentMemoryBytes);
+}
 function sizingText(rec){const s=rec?.resourceSizing;if(!s?.ready)return s?.jobs?('learning ('+s.jobs+' jobs)'):'learning';return cpuCores(s.recommended?.cpuMillis)+' cores / '+gib(s.recommended?.memoryBytes)+' GiB'}
 function observedText(rec){const s=rec?.resourceSizing;if(!s?.ready)return s?.jobs?('learning ('+s.jobs+' jobs)'):'—';return cpuCores(s.cpuPeakP95Millis)+' cores / '+gib(s.memoryPeakMaxBytes||s.memoryPeakP95Bytes)+' GiB'}
 function learningText(rec){
@@ -251,17 +360,28 @@ async function j(path,opts={}){
   return v;
 }
 
+function githubRunLink(worker,pool){
+  const name=worker.repository||repoName(pool);
+  const id=Number(worker.workflowRunId);
+  if(!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(String(name||''))||
+      !Number.isSafeInteger(id)||id<=0)return '—';
+  const [owner,repo]=name.split('/');
+  return '<a href="https://github.com/'+encodeURIComponent(owner)+'/'+encodeURIComponent(repo)+
+    '/actions/runs/'+id+'" target="_blank" rel="noopener noreferrer">View run</a>';
+}
 function tab(rows,cols){
   if(!Array.isArray(rows)||!rows.length)return '<span class="muted">None</span>';
   return '<div class="table-wrap"><table><tr>'+cols.map(c=>'<th>'+esc(c[0])+'</th>').join('')+'</tr>'+
-    rows.map(r=>'<tr>'+cols.map(c=>'<td>'+esc(c[1](r))+'</td>').join('')+'</tr>').join('')+'</table></div>';
+    rows.map(r=>'<tr>'+cols.map(c=>'<td>'+(c[2]===true?c[1](r):esc(c[1](r)))+'</td>').join('')+'</tr>').join('')+'</table></div>';
 }
 
 function renderPreservingTableScroll(container,html){
   if(!container)return;
   if(container.innerHTML===html)return;
   const scroll=[...container.querySelectorAll('.table-wrap')].map(w=>({left:w.scrollLeft,top:w.scrollTop}));
+  const openDetails=[...container.querySelectorAll('details')].map(d=>d.open);
   container.innerHTML=html;
+  container.querySelectorAll('details').forEach((d,i)=>{if(openDetails[i])d.open=true});
   container.querySelectorAll('.table-wrap').forEach((w,i)=>{
     const pos=scroll[i];
     if(!pos)return;
@@ -271,24 +391,43 @@ function renderPreservingTableScroll(container,html){
 }
 
 function hostTagText(host){return Object.keys(host?.userTags||{}).sort().join(', ')}
-function renderHosts(hosts){
+function renderHosts(hosts,workers=[],poolByID=new Map()){
+  const reservations=new Map();
+  for(const w of workers||[]){
+    if(['deleted','completed','failed'].includes(String(w.state||'').toLowerCase()))continue;
+    if(!w.hostId)continue;
+    const entry=reservations.get(w.hostId)||{cpu:0,ram:0,active:0,busy:0};
+    const factor=resourceEnvelopeFactor(poolByID.get(w.poolId),w);
+    entry.cpu+=Number(w.resources?.cpuMillis||0)*factor;
+    entry.ram+=Number(w.resources?.memoryBytes||0)*factor;
+    entry.active++;
+    if(String(w.state||'').toLowerCase()==='busy')entry.busy++;
+    reservations.set(w.hostId,entry);
+  }
+  // Do not replace a focused input: this loses focus/caret on each background poll.
+  if(els.hosts.contains(document.activeElement)&&
+      ['INPUT','TEXTAREA','SELECT'].includes(document.activeElement.tagName))return;
   if(!Array.isArray(hosts)||!hosts.length){els.hosts.innerHTML='<span class="muted">None</span>';return}
   const onlineVersions=[...new Set(hosts.filter(h=>String(h.state||'').toLowerCase()==='online').map(h=>String(h.agentVersion||'').trim()).filter(Boolean))];
   const warning=onlineVersions.length>1
     ? '<div class="resource-note warn"><strong>Agent version skew:</strong> online hosts are running '+onlineVersions.map(v=>esc(v.slice(0,8))).join(', ')+'. Review or update hosts so the fleet is on the intended agent revision.</div>'
     : '';
-  const html='<div class="table-wrap"><table><tr><th>Name</th><th>State</th><th>Agent</th><th>CPU</th><th>Memory</th><th>Priority</th><th>Tags</th><th></th></tr>'+
+  const html='<div class="table-wrap"><table><tr><th>Name</th><th>State</th><th>Last seen</th><th>Agent</th><th>Busy / active</th><th>CPU reserved / total</th><th>RAM reserved / total</th><th>Priority</th><th>Tags</th><th></th></tr>'+
     hosts.map(h=>{
       const version=String(h.agentVersion||'').trim();
+      const draft=hostDrafts.get(String(h.id));
+      const used=reservations.get(h.id)||{cpu:0,ram:0,active:0,busy:0};
       return '<tr>'+
         '<td>'+esc(h.name)+'</td>'+
         '<td>'+esc(h.state)+'</td>'+
+        '<td>'+esc(!isZeroTime(h.lastSeenAt)?fmtAge(h.lastSeenAt)+' ago':'unknown')+'</td>'+
         '<td><code title="'+esc(version)+'">'+esc(version?version.slice(0,8):'unknown')+'</code></td>'+
-        '<td>'+esc(h.capacity?.cpuMillis?cpuCores(h.capacity.cpuMillis)+' cores':'unknown')+'</td>'+
-        '<td>'+esc(h.capacity?.memoryBytes?gib(h.capacity.memoryBytes)+' GiB':'unknown')+'</td>'+
-        '<td><input class="inline-tags" data-host-priority-input="'+esc(h.id)+'" type="number" min="-1000" max="1000" step="1" value="'+esc(Number(h.priority||0))+'"></td>'+
-        '<td><input class="inline-tags" data-host-tag-input="'+esc(h.id)+'" value="'+esc(hostTagText(h))+'" placeholder="gpu, high-memory"></td>'+
-        '<td><button class="secondary compact" data-host-tags="'+esc(h.id)+'">Save</button></td>'+
+        '<td>'+used.busy+' / '+used.active+'</td>'+
+        '<td>'+esc(h.capacity?.cpuMillis?cpuCores(used.cpu)+' / '+cpuCores(h.capacity.cpuMillis)+' cores':'unknown')+'</td>'+
+        '<td>'+esc(h.capacity?.memoryBytes?gib(used.ram)+' / '+gib(h.capacity.memoryBytes)+' GiB':'unknown')+'</td>'+
+        '<td><input class="inline-tags" data-host-priority-input="'+esc(h.id)+'" type="number" min="-1000" max="1000" step="1" value="'+esc(draft?.priority??Number(h.priority||0))+'"></td>'+
+        '<td><input class="inline-tags" data-host-tag-input="'+esc(h.id)+'" value="'+esc(draft?.tags??hostTagText(h))+'" placeholder="gpu, high-memory"></td>'+
+        '<td><button class="secondary compact" data-host-tags="'+esc(h.id)+'">'+(draft?'Save changes':'Save')+'</button></td>'+
       '</tr>';
     }).join('')+'</table></div>'+warning;
   renderPreservingTableScroll(els.hosts,html);
@@ -304,22 +443,33 @@ function renderActiveRunners(workers,poolByID,hostByID,progressByWorker){
     if(ar!==br)return ar-br;
     return new Date(a.createdAt||0)-new Date(b.createdAt||0);
   });
+  const filter=els.activeRunnerFilter?.value||'all';
+  const visible=active.filter(w=>{
+    const state=String(w.state||'').toLowerCase();
+    return filter==='all'||(filter==='busy'&&state==='busy')||
+      (filter==='ready'&&state==='ready')||
+      (filter==='starting'&&state!=='ready'&&state!=='busy');
+  });
   const cpu=active.reduce((sum,w)=>{const pool=poolByID?.get(w.poolId);return sum+Number(w.resources?.cpuMillis||0)*resourceEnvelopeFactor(pool,w)},0);
   const memory=active.reduce((sum,w)=>{const pool=poolByID?.get(w.poolId);return sum+Number(w.resources?.memoryBytes||0)*resourceEnvelopeFactor(pool,w)},0);
   els.activeRunnerSummary.textContent=active.length+' active · '+cpuCores(cpu)+' cores · '+gib(memory)+' GiB host-reserved';
-  if(!active.length){
-    els.activeRunners.innerHTML='<div class="empty">No active runners.</div>';
+  if(!visible.length){
+    els.activeRunners.innerHTML='<div class="empty">'+(active.length?'No active runners match this filter.':'No active runners right now. Connect a repository or check the Compute page for pool readiness.')+'</div>';
     return;
   }
 
-  renderPreservingTableScroll(els.activeRunners,tab(active,[
+  renderPreservingTableScroll(els.activeRunners,tab(visible,[
     ['Repository',x=>x.repository||repoName(poolByID?.get(x.poolId))||'—'],
     ['Type',x=>runnerClass(poolByID?.get(x.poolId))],
     ['Job',x=>x.jobName||(String(x.state||'').toLowerCase()==='ready'?'idle / waiting':'startup')],
+    ['GitHub',x=>githubRunLink(x,poolByID?.get(x.poolId)),true],
     ['Status',x=>x.state||'unknown'],
-    ['Step progress',x=>{const p=progressByWorker?.get(x.id);return p?.available&&p.totalSteps>0?p.completedSteps+' / '+p.totalSteps+' · '+p.percent+'%':'—'}],
+    ['Steps completed',x=>{const p=progressByWorker?.get(x.id);return p?.available&&p.totalSteps>0?p.completedSteps+' / '+p.totalSteps+' ('+p.percent+'% steps)':'—'}],
     ['Current step',x=>progressByWorker?.get(x.id)?.currentStep||'—'],
     ['Host',x=>hostByID?.get(x.hostId)?.name||x.hostId||'pending'],
+    ['CPU now · observed',x=>currentUsage(x.usage,'cpu')],
+    ['RAM now · observed',x=>currentUsage(x.usage,'ram')],
+    ['Last usage sample',x=>x.usage?.samples&&!isZeroTime(x.usage.updatedAt)?fmtTime(x.usage.updatedAt):'—'],
     ['CPU limit / reserve',x=>allocatedCPUText(x,poolByID?.get(x.poolId))],
     ['RAM limit / reserve',x=>allocatedRAMText(x,poolByID?.get(x.poolId))],
     ['Disk',x=>x.resources?.diskBytes?gib(x.resources.diskBytes)+' GiB':'—'],
@@ -357,8 +507,9 @@ function renderWorkers(workers,poolByID){
     ['Repository',x=>x.repository||repoName(x)||'—'],
     ['Class',x=>runnerClass(poolByID?.get(x.poolId))],
     ['Job',x=>x.jobName||'startup'],
+    ['GitHub',x=>githubRunLink(x,poolByID?.get(x.poolId)),true],
     ['Result',x=>workerDisplayState(x)],
-    ['CPU now · total',x=>!terminal.has(String(x.state||'').toLowerCase())&&x.usage?.updatedAt?usageCPU(x.usage.currentCpuMillis):'—'],
+    ['CPU now · total',x=>!terminal.has(String(x.state||'').toLowerCase())?currentUsage(x.usage,'cpu'):'—'],
     ['CPU peak · total',x=>x.usage?.samples?usageCPU(x.usage.peakCpuMillis):'—'],
     ['CPU peak · / container',x=>{
       const pool=poolByID?.get(x.poolId);
@@ -377,6 +528,32 @@ function renderWorkers(workers,poolByID){
   ])+'<div class="muted small workers-note">CPU/RAM limits are per container. Publisher/DinD jobs use a runner plus a sidecar, so total observed usage and host reservation can be up to two envelopes. Implausible samples above configured envelopes are ignored for new telemetry and autosizing. Historical and deleted records remain available in Diagnostics.</div>');
 }
 
+function renderOnboardingChecklist(hosts,pools,statuses,installations,repos){
+  const container=document.getElementById('repository-onboarding-checks');
+  if(!container)return;
+  const allHosts=Array.isArray(hosts)?hosts:[];
+  const allPools=Array.isArray(pools)?pools:[];
+  const connected=allPools.filter(p=>Number(p.githubInstallationId)>0&&isStandardPool(p));
+  const readyIDs=new Set((statuses||[]).filter(x=>x.state==='ready').map(x=>x.poolId));
+  const online=allHosts.filter(h=>String(h.state||'').toLowerCase()==='online').length;
+  const installationsCount=(installations||[]).length;
+  const privateRepos=(repos||[]).filter(r=>r.private).length;
+  const checks=[
+    {ok:auth.authenticated,title:'Signed in with GitHub',help:auth.authenticated?'Authenticated session active':'Use Sign in with GitHub',href:'#repositories-section'},
+    {ok:installationsCount>0,title:'GitHub App installed',help:installationsCount+' account installation(s)',href:'/auth/github/install'},
+    {ok:online>0,title:'Compute host online',help:online+' of '+allHosts.length+' host(s)',href:'#compute-section'},
+    {ok:privateRepos>0,title:'Private repository available',help:privateRepos+' accessible trusted private repo(s)',href:'#repositories-section'},
+    {ok:connected.length>0,title:'Standard runner connected',help:connected.length+' connected runner pool(s)',href:'#repositories-section'},
+    {ok:connected.some(pool=>readyIDs.has(pool.id)),title:'Scale-set listener ready',help:connected.filter(pool=>readyIDs.has(pool.id)).length+' of '+connected.length+' ready',href:'/diagnostics.html'}
+  ];
+  const count=checks.filter(item=>item.ok).length;
+  container.innerHTML='<div class="quickstart-summary">'+count+' / '+checks.length+' preflight checks passed</div>'+
+    '<div class="quickstart-grid">'+checks.map(item=>
+      '<a class="quickstart-item" href="'+item.href+'"><span class="'+(item.ok?'state-good':'state-warn')+'">'+
+      (item.ok?'✓':'!')+'</span><span><strong>'+esc(item.title)+'</strong>'+
+      '<span class="muted small">'+esc(item.help)+'</span></span></a>'
+    ).join('')+'</div>';
+}
 function renderDeployerStatus(status){
   if(!status||status.available===false){
     els.deployerSummary.textContent='Unavailable';
@@ -463,81 +640,293 @@ async function loadAuth(){
   }catch(e){message(e.message,'error')}
 }
 
-async function refresh(){
-  await loadAuth();
-  const canAPI=auth.authenticated||Boolean(els.token.value);
-  if(!canAPI){
-    els.hosts.innerHTML=els.pools.innerHTML=els.activeRunners.innerHTML=els.workers.innerHTML=els.audit.innerHTML=els.ciEfficiency.innerHTML='<span class="muted">Sign in to view.</span>';
-    els.deployerSummary.textContent='';
-    els.deployerStatus.innerHTML='<span class="muted">Sign in to view.</span>';
-    els.activeRunnerSummary.textContent='';
-    els.workerSummary.textContent='';
-    els.repos.innerHTML='';
+function loadFleetAlertFirstSeen(){
+  const result=new Map();
+  const now=Date.now();
+  try{
+    const saved=JSON.parse(localStorage.getItem('runnerhub-fleet-alert-first-seen-v1')||'[]');
+    if(!Array.isArray(saved))return result;
+    // Only retain recent and well-formed incident timestamps. Never trust
+    // persisted data to claim an issue was observed indefinitely.
+    for(const item of saved.slice(0,500)){
+      if(!Array.isArray(item)||typeof item[0]!=='string'||
+          !/^(host|listener|runtime|startup):[\w.-]{1,150}$/.test(item[0]))continue;
+      const timestamp=item[1];
+      if(typeof timestamp!=='number'||!Number.isFinite(timestamp)||
+          timestamp>now||now-timestamp>24*60*60*1000)continue;
+      result.set(item[0],timestamp);
+    }
+  }catch{/* Storage may be disabled, corrupt or from an older version. */}
+  return result;
+}
+function persistFleetAlertFirstSeen(){
+  try{localStorage.setItem('runnerhub-fleet-alert-first-seen-v1',JSON.stringify([...fleetAlertFirstSeen]))}
+  catch{/* Work in memory when storage is unavailable. */}
+}
+function loadFleetAlertSilences(){
+  try{
+    const saved=JSON.parse(localStorage.getItem('runnerhub-fleet-alert-silences')||'[]');
+    return new Map((Array.isArray(saved)?saved:[]).filter(x=>
+      Array.isArray(x)&&typeof x[0]==='string'&&Number.isFinite(x[1])&&x[1]>Date.now()));
+  }catch{return new Map()}
+}
+function detectFleetAlertCandidates(hosts,pools,workers,statuses,runtimes,now=Date.now()){
+  const issues=[];
+  for(const host of hosts||[]){
+    if(!host.id)continue;
+    const state=String(host.state||'').toLowerCase();
+    if(state==='offline'||state==='unreachable')
+      issues.push({id:'host:'+host.id,title:'Host '+(host.name||host.id)+' offline',
+        detail:'Check agent connectivity and host reachability.',href:'/diagnostics.html'});
+  }
+  const listener=new Map((statuses||[]).map(x=>[x.poolId,x]));
+  const runtime=new Map((runtimes||[]).map(x=>[x.poolId,x]));
+  for(const pool of pools||[]){
+    if(!pool.id||Number(pool.githubInstallationId)<=0)continue;
+    const label=repoName(pool)+' / '+(pool.scaleSetName||'runnerhub');
+    const state=String(listener.get(pool.id)?.state||'').toLowerCase();
+    if(['error','backing_off'].includes(state))
+      issues.push({id:'listener:'+pool.id,title:'Listener '+label+' '+state,
+        detail:'Inspect GitHub API rate limits, listener authentication and startup evidence.',href:'/diagnostics.html'});
+    const health=runtime.get(pool.id);
+    if(health&&(health.state==='degraded'||health.healthy===false))
+      issues.push({id:'runtime:'+pool.id,title:'Runtime '+label+' degraded',
+        detail:'Host eligibility, worker provisioning, or registration may be blocking CI.',href:'/diagnostics.html'});
+  }
+  const recent=new Map();
+  const cutoff=now-30*60*1000;
+  for(const worker of workers||[]){
+    if(worker.jobName||worker.jobResult||worker.workflowRunId)continue;
+    if(!worker.failureReason||String(worker.state||'').toLowerCase()!=='failed')continue;
+    const at=Date.parse(worker.failedAt||worker.updatedAt||'');
+    if(!Number.isFinite(at)||at<cutoff||at>now)continue;
+    const key=String(worker.poolId||'unknown');
+    recent.set(key,(recent.get(key)||0)+1);
+  }
+  for(const [poolId,count] of recent){
+    if(count<3)continue;
+    issues.push({id:'startup:'+poolId,title:count+' recent runner startup failures',
+      detail:'Multiple runners failed before a job started in the last 30 minutes. Review startup diagnostics.',href:'/diagnostics.html'});
+  }
+  return issues;
+}
+function renderFleetAlerts(hosts,pools,workers,statuses,runtime,fresh=true){
+  const container=document.getElementById('fleet-alerts');
+  if(!container)return;
+  if(!fresh){
+    container.innerHTML='<div class="muted small">Alert watch paused: some fleet data is stale. Check the refresh warning above.</div>';
     return;
   }
+  const now=Date.now();
+  const issues=detectFleetAlertCandidates(hosts,pools,workers,statuses,runtime,now);
+  const ids=new Set(issues.map(x=>x.id));
+  let changed=false;
+  for(const key of fleetAlertFirstSeen.keys())if(!ids.has(key)){
+    fleetAlertFirstSeen.delete(key);
+    changed=true;
+  }
+  for(const issue of issues)if(!fleetAlertFirstSeen.has(issue.id)){
+    fleetAlertFirstSeen.set(issue.id,now);
+    changed=true;
+  }
+  if(changed)persistFleetAlertFirstSeen();
+  const sustained=issues.filter(x=>now-fleetAlertFirstSeen.get(x.id)>=5*60*1000);
+  const visible=sustained.filter(x=>(fleetAlertSilences.get(x.id)||0)<=now);
+  const muted=sustained.filter(x=>(fleetAlertSilences.get(x.id)||0)>now);
+  const alertRow=(issue,isMuted)=>'<div class="fleet-alert-item"><div><strong>'+esc(issue.title)+'</strong><div class="muted small">'+
+    esc(issue.detail)+(isMuted?' · Muted until '+esc(fmtTime(new Date(fleetAlertSilences.get(issue.id)).toISOString())):'')+
+    '</div></div><div class="actions"><a class="button secondary compact" href="'+issue.href+'">Investigate</a>'+
+    '<button type="button" class="secondary compact" data-fleet-alert-silence="'+esc(issue.id)+'" data-fleet-alert-action="'+(isMuted?'unmute':'mute')+'">'+(isMuted?'Unmute':'Mute 1h')+'</button></div></div>';
+  const html='<div class="fleet-alert-heading"><strong>Alert watch</strong><span class="muted small">'+
+    'Sustained conditions (5 min) · browser-only</span></div>'+
+    (sustained.length?'<div class="fleet-alert-list">'+visible.slice(0,8).map(issue=>alertRow(issue,false)).join('')+
+      muted.slice(0,8).map(issue=>alertRow(issue,true)).join('')+'</div>':
+    '<div class="muted small">'+(issues.length?
+      'Conditions are being observed; no sustained alerts yet.':'No sustained problems detected.')+'</div>');
+  // Preserve keyboard focus when a background refresh does not change the UI.
+  if(container.innerHTML!==html)container.innerHTML=html;
+}
+function renderFleetOverview(hosts,pools,workers,statuses,runtimeHealth){
+  const allHosts=Array.isArray(hosts)?hosts:[];
+  const allPools=Array.isArray(pools)?pools:[];
+  const allWorkers=Array.isArray(workers)?workers:[];
+  const listenerByPool=new Map((statuses||[]).map(s=>[s.poolId,s]));
+  const runtimeByPool=new Map((runtimeHealth||[]).map(s=>[s.poolId,s]));
+  const online=allHosts.filter(h=>String(h.state||'').toLowerCase()==='online').length;
+  const active=allWorkers.filter(w=>!['deleted','completed','failed'].includes(String(w.state||'').toLowerCase()));
+  const busy=active.filter(w=>String(w.state||'').toLowerCase()==='busy').length;
+  const connected=allPools.filter(p=>Number(p.githubInstallationId)>0);
+  const ready=connected.filter(p=>listenerByPool.get(p.id)?.state==='ready').length;
+  const cards=[
+    ['Hosts online',online+' / '+allHosts.length,'Online compute machines','#compute-section'],
+    ['Active runners',String(active.length),busy+' running jobs','#active-runners-section'],
+    ['Listeners ready',ready+' / '+connected.length,'Connected scale-set listeners','#compute-section'],
+    ['Runner capacity',String(connected.reduce((n,p)=>n+Math.max(0,Number(p.maxConcurrency)||0),0)),
+      'Combined configured concurrency limit','#compute-section']
+  ];
+  let html='<div class="fleet-stats">'+cards.map(([name,value,detail,href])=>
+    '<a class="fleet-stat" href="'+href+'"><span class="stat-label">'+esc(name)+'</span>'+
+    '<strong>'+esc(value)+'</strong><span class="stat-detail">'+esc(detail)+'</span></a>'
+  ).join('')+'</div>';
+  const notices=[];
+  if(!allHosts.length)notices.push('No machines registered. Add a machine under <a href="#compute-section">Compute</a>.');
+  else if(!online)notices.push('No machines online. Check agent connectivity and <a href="/diagnostics.html">diagnostics</a>.');
+  else if(online<allHosts.length)notices.push(esc(allHosts.length-online)+' machine(s) not online; check <a href="#compute-section">Compute</a>.');
+  if(!connected.length)notices.push('No connected runner pools. Connect a private repository under <a href="#repositories-section">Repositories</a>.');
+  for(const pool of connected){
+    const name=repoName(pool)+' / '+(pool.scaleSetName||'runnerhub');
+    const listener=listenerByPool.get(pool.id);
+    const runtime=runtimeByPool.get(pool.id);
+    if(listener?.state!=='ready')notices.push('<strong>'+esc(name)+'</strong>: listener '+esc(listener?.state||'unknown')+'. <a href="/diagnostics.html">Inspect readiness</a>.');
+    else if(runtime?.state==='degraded'||runtime?.healthy===false)
+      notices.push('<strong>'+esc(name)+'</strong>: runtime degraded. <a href="/diagnostics.html">Inspect failure</a>.');
+    else if(!runtime||!['healthy','active'].includes(runtime.state))
+      notices.push('<strong>'+esc(name)+'</strong>: runtime '+esc(runtime?.state||'unknown')+'. <a href="/diagnostics.html">Check health</a>.');
+  }
+  if(notices.length)html+='<div class="fleet-health-alert"><div class="fleet-health-header"><h3>Needs attention ('+notices.length+')</h3></div>'+
+    '<ul class="fleet-health-list">'+notices.slice(0,6).map(n=>'<li>'+n+'</li>').join('')+'</ul>'+
+    (notices.length>6?'<div class="resource-note muted">And '+(notices.length-6)+' more. Open Diagnostics for the full readiness report.</div>':'')+'</div>';
+  else html+='<div class="fleet-health-ok">No known fleet or listener blockers reported. This does not guarantee that a specific queued GitHub job can be scheduled.</div>';
+  els.fleetOverview.innerHTML=html;
+}
+
+function renderPools(pools,statuses,runtimeHealth,recommendationByPool){
+  const listeners=new Map((statuses||[]).map(s=>[s.poolId,s]));
+  const runtimes=new Map((runtimeHealth||[]).map(s=>[s.poolId,s]));
+  const rows=(pools||[]).map(p=>{
+    const r=recommendationByPool.get(p.id);
+    const listener=listeners.get(p.id)?.state||'unknown';
+    const runtime=runtimes.get(p.id)?.state||'unknown';
+    const label=p.scaleSetName||'runnerhub';
+    return '<tr><td>'+esc(repoName(p))+'</td><td><code>'+esc(label)+'</code></td>'+
+      '<td><span class="pool-status '+(listener==='ready'?'ok':listener==='unknown'?'unknown':'attention')+'">'+esc(listener)+'</span></td>'+
+      '<td><span class="pool-status '+(['healthy','active'].includes(runtime)?'ok':runtime==='unknown'?'unknown':'attention')+'">'+esc(runtime)+'</span></td>'+
+      '<td>'+esc(r?.capacity?String(r.capacity.activeWorkers??'—')+' / '+p.maxConcurrency:'—')+'</td>'+
+      '<td>'+esc(cpuCores(p.resources?.cpuMillis))+' CPU · '+esc(gib(p.resources?.memoryBytes))+' GiB</td>'+
+      '<td>'+esc(fmtDuration(r?.latencies?.queue))+'</td>'+
+      '<td>'+esc(bottleneckLabel(r?.capacity?.bottleneck))+'</td></tr>';
+  }).join('');
+  const summary=(pools||[]).length
+    ? '<div class="table-wrap pool-status-table"><table><thead><tr><th>Repository</th><th>Runner label</th><th>Listener</th><th>Runtime</th><th>Active / limit</th><th>Worker size</th><th>Queue</th><th>Bottleneck</th></tr></thead><tbody>'+rows+'</tbody></table></div>'
+    : '<div class="empty">No runner pools configured. Connect a repository to create one.</div>';
+  const advanced='<details class="pool-advanced"><summary>Advanced pool metrics and resource learning</summary>'+tab(pools,[
+    ['Repository',x=>repoName(x)],['Class',x=>runnerClass(x)],
+    ['CPU / container',x=>cpuCores(x.resources?.cpuMillis)+' cores'],
+    ['RAM / container',x=>gib(x.resources?.memoryBytes)+' GiB'],
+    ['Eligible hosts',x=>recommendationByPool.get(x.id)?.capacity?.compatibleHosts??'—'],
+    ['Provision',x=>fmtDuration(recommendationByPool.get(x.id)?.latencies?.provision)],
+    ['Register',x=>fmtDuration(recommendationByPool.get(x.id)?.latencies?.registration)],
+    ['Execute',x=>fmtDuration(recommendationByPool.get(x.id)?.latencies?.execution)],
+    ['Cleanup',x=>fmtDuration(recommendationByPool.get(x.id)?.latencies?.cleanup)],
+    ['CPU reserved',x=>reservedCPU(recommendationByPool.get(x.id)?.capacity)],
+    ['RAM reserved',x=>reservedRAM(recommendationByPool.get(x.id)?.capacity)],
+    ['Observed peak',x=>observedText(recommendationByPool.get(x.id))],
+    ['Suggested size',x=>sizingText(recommendationByPool.get(x.id))],
+    ['Learning',x=>learningText(recommendationByPool.get(x.id))],
+    ['Auto-size',x=>x.autoTuneResources?'on':'off'],
+    ['Can fit',x=>{const n=recommendationByPool.get(x.id)?.capacity?.additionalWorkers;return Number.isFinite(n)?'+'+n:'—'}],
+    ['Reason',x=>recommendationByPool.get(x.id)?.capacity?.reason||'—'],
+    ['Recommend',x=>recommendationByPool.get(x.id)?.recommended??'—']
+  ])+'</details>';
+  renderPreservingTableScroll(els.pools,summary+advanced);
+}
+
+async function refresh(force=false){
+  if(refreshInFlight){
+    refreshPending=true;
+    refreshPendingForce=refreshPendingForce||force;
+    return;
+  }
+  refreshInFlight=true;
+  if(els.refreshNow)els.refreshNow.disabled=true;
+  if(els.dataFreshness)els.dataFreshness.textContent='Refreshing…';
   try{
+    await loadAuth();
+    const canAPI=auth.authenticated||Boolean(els.token.value);
+    const identity=auth.authenticated?'github:'+String(auth.user||''):
+      (els.token.value?'token:'+els.token.value:'signed-out');
+    if(identity!==dashboardIdentity){
+      dashboardIdentity=identity;
+      clearDashboardSnapshot();
+    }
+    if(!canAPI){
+      els.hosts.innerHTML=els.pools.innerHTML=els.activeRunners.innerHTML=els.workers.innerHTML=els.audit.innerHTML=els.ciEfficiency.innerHTML='<span class="muted">Sign in to view.</span>';
+      els.fleetOverview.innerHTML='<div class="empty">Sign in to view your runner fleet.</div>';
+      show(els.fleetWarning,false);
+      els.deployerSummary.textContent='';
+      els.deployerStatus.innerHTML='<span class="muted">Sign in to view.</span>';
+      els.activeRunnerSummary.textContent='';
+      els.workerSummary.textContent='';
+      els.repos.innerHTML='';
+      els.dataFreshness.textContent='Sign in required';
+      clearDashboardSnapshot();
+      return;
+    }
+    const errors=[];
+    const collect=async(key,url,fallback)=>{
+      try{const data=await j(url);snapshot[key]=data;return data}
+      catch(e){errors.push(key+': '+String(e.message||e));return Object.hasOwn(snapshot,key)?snapshot[key]:fallback}
+    };
     const requests=[
-      j('/api/v1/hosts'),
-      j('/api/v1/pools'),
-      j('/api/v1/workers'),
-      j('/api/v1/workers/progress').catch(()=>[]),
-      j('/api/v1/audit?limit=12'),
-      j('/api/v1/scalesets/status'),
-      j('/api/v1/runtime-health'),
-      j('/api/v1/deployer/status').catch(e=>({available:false,configured:false,detail:e.message}))
+      collect('hosts','/api/v1/hosts',[]),
+      collect('pools','/api/v1/pools',[]),
+      collect('workers','/api/v1/workers',[]),
+      collect('progress','/api/v1/workers/progress',[]),
+      collect('audit','/api/v1/audit?limit=12',[]),
+      collect('scalesets','/api/v1/scalesets/status',[]),
+      collect('runtime','/api/v1/runtime-health',[]),
+      collect('deployer','/api/v1/deployer/status',{available:false,detail:'Not available'})
     ];
     if(auth.authenticated){
-      requests.push(j('/api/v1/github/connected-repositories'));
-      requests.push(j('/api/v1/github/installations'));
+      const inventoryDue=force||!snapshot.repos||!snapshot.installations||
+        Date.now()-repositoryInventoryAt>60000;
+      if(inventoryDue){
+        requests.push(collect('repos','/api/v1/github/connected-repositories',[]));
+        requests.push(collect('installations','/api/v1/github/installations',[]));
+        repositoryInventoryAt=Date.now();
+      }else{
+        requests.push(Promise.resolve(snapshot.repos));
+        requests.push(Promise.resolve(snapshot.installations));
+      }
     }
-    const results=await Promise.all(requests);
-    const [h,p,w,progress,a,statuses,runtimeHealth,deployer,repos,installations]=results;
-    const listenerByPool=new Map((statuses||[]).map(x=>[x.poolId,x]));
-    const runtimeByPool=new Map((runtimeHealth||[]).map(x=>[x.poolId,x]));
-    const poolByID=new Map((p||[]).map(x=>[x.id,x]));
-    const hostByID=new Map((h||[]).map(x=>[x.id,x]));
-    const progressByWorker=new Map((progress||[]).map(x=>[x.workerId,x]));
-    const recommendationPairs=await Promise.all((p||[]).map(async pool=>{
-      try{return [pool.id,await j('/api/v1/pools/'+encodeURIComponent(pool.id)+'/recommendation')]}
-      catch{return [pool.id,null]}
-    }));
-    const recommendationByPool=new Map(recommendationPairs);
+    const [h,p,w,progress,a,statuses,runtimeHealth,deployer,repos,installations]=await Promise.all(requests);
+    const now=Date.now();
+    const poolKey=(p||[]).map(pool=>String(pool.id)).sort().join(',');
+    if(force||poolKey!==recommendationCache.key||now-recommendationCache.at>30000){
+      const failures=[];
+      const pairs=await Promise.all((p||[]).map(async pool=>{
+        try{return [pool.id,await j('/api/v1/pools/'+encodeURIComponent(pool.id)+'/recommendation')]}
+        catch(e){failures.push('recommendation '+repoName(pool)+': '+String(e.message||e));return [pool.id,recommendationCache.value.get(pool.id)||null]}
+      }));
+      recommendationCache={key:poolKey,at:now,value:new Map(pairs),errors:failures};
+    }
+    errors.push(...recommendationCache.errors);
     const connectedRepoNames=[...new Set((p||[])
       .filter(pool=>pool.scope?.kind==='repository'&&pool.scope.owner&&pool.scope.repository)
       .map(pool=>pool.scope.owner+'/'+pool.scope.repository))];
-    const efficiencyPairs=await Promise.all(connectedRepoNames.map(async repository=>{
-      const [owner,name]=repository.split('/');
-      try{return {repository,data:await j('/api/v1/repositories/'+encodeURIComponent(owner)+'/'+encodeURIComponent(name)+'/ci-efficiency?window=30d')}}
-      catch(e){return {repository,error:e.message}}
-    }));
-
+    const efficiencyKey=[...connectedRepoNames].sort().join(',');
+    if(force||efficiencyKey!==efficiencyCache.key||now-efficiencyCache.at>60000){
+      const entries=await Promise.all(connectedRepoNames.map(async repository=>{
+        const [owner,name]=repository.split('/');
+        try{return {repository,data:await j('/api/v1/repositories/'+encodeURIComponent(owner)+'/'+encodeURIComponent(name)+'/ci-efficiency?window=30d')}}
+        catch(e){return {repository,error:String(e.message||e)}}
+      }));
+      const failures=entries.filter(item=>item.error);
+      efficiencyCache={key:efficiencyKey,at:now,value:entries,
+        errors:failures.length?[failures.length+' CI efficiency result(s) unavailable']:[]};
+    }
+    errors.push(...efficiencyCache.errors);
+    const poolByID=new Map((p||[]).map(x=>[x.id,x]));
+    const hostByID=new Map((h||[]).map(x=>[x.id,x]));
+    const progressByWorker=new Map((progress||[]).map(x=>[x.workerId,x]));
+    renderFleetOverview(h,p,w,statuses,runtimeHealth);
+    renderFleetAlerts(h,p,w,statuses,runtimeHealth,
+      !errors.some(error=>/^(hosts|pools|workers|scalesets|runtime):/.test(error)));
+    renderOnboardingChecklist(h,p,statuses,installations,repos);
     renderDeployerStatus(deployer);
-    renderCIEfficiency(efficiencyPairs);
-    renderHosts(h);
-    renderPreservingTableScroll(els.pools,tab(p,[
-      ['Repository',x=>repoName(x)],
-      ['Class',x=>runnerClass(x)],
-      ['Per-container limit',x=>cpuCores(x.resources?.cpuMillis)+' cores / '+gib(x.resources?.memoryBytes)+' GiB'],
-      ['Active',x=>{const r=recommendationByPool.get(x.id);return r?(r.capacity.activeWorkers+' / '+x.maxConcurrency):'—'}],
-      ['Hosts',x=>recommendationByPool.get(x.id)?.capacity?.compatibleHosts??'—'],
-      ['Queue',x=>fmtDuration(recommendationByPool.get(x.id)?.latencies?.queue)],
-      ['Provision',x=>fmtDuration(recommendationByPool.get(x.id)?.latencies?.provision)],
-      ['Register',x=>fmtDuration(recommendationByPool.get(x.id)?.latencies?.registration)],
-      ['Execute',x=>fmtDuration(recommendationByPool.get(x.id)?.latencies?.execution)],
-      ['Cleanup',x=>fmtDuration(recommendationByPool.get(x.id)?.latencies?.cleanup)],
-      ['CPU reserved',x=>reservedCPU(recommendationByPool.get(x.id)?.capacity)],
-      ['RAM reserved',x=>reservedRAM(recommendationByPool.get(x.id)?.capacity)],
-      ['Sizing CPU p95 / RAM max',x=>observedText(recommendationByPool.get(x.id))],
-      ['Suggested size',x=>sizingText(recommendationByPool.get(x.id))],
-      ['Learning',x=>learningText(recommendationByPool.get(x.id))],
-      ['Auto-size',x=>x.autoTuneResources?'on':'off'],
-      ['Can fit',x=>{const n=recommendationByPool.get(x.id)?.capacity?.additionalWorkers;return Number.isFinite(n)?'+'+n:'—'}],
-      ['Bottleneck',x=>bottleneckLabel(recommendationByPool.get(x.id)?.capacity?.bottleneck)],
-      ['Reason',x=>recommendationByPool.get(x.id)?.capacity?.reason||'—'],
-      ['Recommend',x=>recommendationByPool.get(x.id)?.recommended??'—'],
-      ['Listener',x=>listenerByPool.get(x.id)?.state||'pending'],
-      ['Runtime',x=>runtimeByPool.get(x.id)?.state||'unknown']
-    ]));
+    renderCIEfficiency(efficiencyCache.value);
+    renderHosts(h,w,poolByID);
+    renderPools(p,statuses,runtimeHealth,recommendationCache.value);
     renderActiveRunners(w,poolByID,hostByID,progressByWorker);
     renderWorkers(w,poolByID);
     renderPreservingTableScroll(els.audit,tab(a,[
@@ -546,8 +935,100 @@ async function refresh(){
       ['Result',x=>x.result],
       ['Detail',x=>x.safeDetail||'']
     ]));
-    if(auth.authenticated&&!els.repos.querySelector('.repo-config[open]'))renderRepos(repos||[],p||[],statuses||[],runtimeHealth||[],h||[],installations||[]);
-  }catch(e){message(e.message,'error')}
+    if(auth.authenticated&&!els.repos.querySelector('.repo-config[open]'))
+      renderRepos(repos||[],p||[],statuses||[],runtimeHealth||[],h||[],installations||[]);
+    if(errors.length){
+      els.fleetWarning.textContent='Some data could not be refreshed ('+errors.join(' · ')+'). Last successful values are shown where available; check Diagnostics if this continues.';
+      show(els.fleetWarning,true);
+    }else show(els.fleetWarning,false);
+    if(location.hash==='#activity-section'&&
+      (force||Date.now()-historyLastUpdated>30000))void loadHistory();
+    els.dataFreshness.textContent=(errors.length?'Partial update · ':'Updated · ')+
+      new Date().toLocaleTimeString([],{hour:'numeric',minute:'2-digit',second:'2-digit'});
+  }catch(e){
+    if(els.fleetWarning){
+      els.fleetWarning.textContent='Refresh failed: '+String(e.message||e)+'. Previously loaded data may be stale.';
+      show(els.fleetWarning,true);
+    }
+    if(els.dataFreshness)els.dataFreshness.textContent='Refresh failed';
+  }finally{
+    refreshInFlight=false;
+    if(els.refreshNow)els.refreshNow.disabled=false;
+    if(refreshPending){
+      const pendingForce=refreshPendingForce;
+      refreshPending=false;refreshPendingForce=false;
+      void refresh(pendingForce);
+    }
+  }
+}
+
+async function loadHistory(){
+  const button=document.getElementById('history-apply');
+  const previous=document.getElementById('history-prev');
+  const next=document.getElementById('history-next');
+  const count=document.getElementById('history-count');
+  const container=document.getElementById('history-results');
+  if(!container||!(auth.authenticated||els.token.value))return;
+  const sequence=++historyRequestSequence;
+  button.disabled=true;
+  previous.disabled=next.disabled=true;
+  count.textContent='Loading worker history…';
+  const params=new URLSearchParams({
+    limit:'20',offset:String(historyOffset),
+    repository:document.getElementById('history-repo').value.trim(),
+    state:document.getElementById('history-state').value,
+    search:document.getElementById('history-search').value.trim()
+  });
+  try{
+    const page=await j('/api/v1/workers/history?'+params);
+    if(sequence!==historyRequestSequence)return;
+    const workers=Array.isArray(page.items)?page.items:[];
+    const total=Number(page.total)||0;
+    if(historyOffset>=total&&historyOffset>0){
+      historyOffset=Math.max(0,Math.floor((total-1)/20)*20);
+      return void loadHistory();
+    }
+    const byPool=new Map((snapshot.pools||[]).map(pool=>[pool.id,pool]));
+    if(!workers.length){
+      container.innerHTML='<div class="empty">No workers matched these filters. Change the query or reset filters.</div>';
+    }else{
+      renderPreservingTableScroll(container,tab(workers,[
+        ['Updated',x=>fmtTime(workerTimestamp(x))],
+        ['Repository',x=>x.repository||repoName(byPool.get(x.poolId))||'—'],
+        ['Class',x=>runnerClass(byPool.get(x.poolId))],
+        ['Job',x=>x.jobName||'startup'],
+        ['State',x=>workerDisplayState(x)],
+        ['Duration',x=>x.startedAt&&x.completedAt?
+          fmtAgeBetween(x.startedAt,x.completedAt):'—'],
+        ['CPU peak',x=>x.usage?.samples?usageCPU(x.usage.peakCpuMillis):'—'],
+        ['RAM peak',x=>x.usage?.samples?usageRAM(x.usage.peakMemoryBytes):'—'],
+        ['GitHub',x=>githubRunLink(x,byPool.get(x.poolId)),true],
+        ['Failure',x=>x.failureReason||'—']
+      ]));
+    }
+    count.textContent=(total?String(historyOffset+1)+'–'+String(historyOffset+workers.length):'0')+
+      ' of '+total+' records';
+    previous.disabled=historyOffset===0;
+    next.disabled=!page.hasMore;
+    historyLastUpdated=Date.now();
+  }catch(error){
+    if(sequence!==historyRequestSequence)return;
+    container.innerHTML='<div class="empty">Worker history unavailable. Check the API connection and try again.</div>';
+    count.textContent=String(error?.message||error);
+  }finally{
+    if(sequence===historyRequestSequence)button.disabled=false;
+  }
+}
+function fmtAgeBetween(start,end){
+  if(isZeroTime(start)||isZeroTime(end))return '—';
+  const ms=Date.parse(end)-Date.parse(start);
+  if(!Number.isFinite(ms)||ms<0)return '—';
+  const secs=Math.floor(ms/1000);
+  if(secs<60)return secs+'s';
+  const minutes=Math.floor(secs/60);
+  if(minutes<60)return minutes+'m '+(secs%60)+'s';
+  const hours=Math.floor(minutes/60);
+  return hours+'h '+(minutes%60)+'m';
 }
 
 function efficiencyPercent(value){
@@ -556,6 +1037,15 @@ function efficiencyPercent(value){
   return Number.isFinite(n)?n.toFixed(1)+'%':'—';
 }
 
+function evidenceAwareWastePercent(value,coverage,analyzer,jobs){
+  const n=Number(value);
+  if(!Number.isFinite(n))return '—';
+  // A positive result is evidence of an analyzed finding; a zero is only
+  // meaningful when the analyzer covered the requested window.
+  if(Number(jobs||0)===0)return '—';
+  if(n===0&&(!coverage?.analysisWindowComplete||analyzer?.state!=='healthy'))return '—';
+  return efficiencyPercent(value);
+}
 function efficiencySeconds(value){
   if(value===null||value===undefined)return '—';
   const n=Number(value);
@@ -619,9 +1109,9 @@ function renderCIEfficiency(items){
       item.repository,
       String(jobs),
       validationCoverage,
-      efficiencyPercent(d.waste?.provablyAvoidablePercent),
-      efficiencyPercent(d.waste?.confirmedPercent),
-      efficiencyPercent(d.waste?.potentialSavingsPercent),
+      evidenceAwareWastePercent(d.waste?.provablyAvoidablePercent,coverage,d.analyzer,jobs),
+      evidenceAwareWastePercent(d.waste?.confirmedPercent,coverage,d.analyzer,jobs),
+      evidenceAwareWastePercent(d.waste?.potentialSavingsPercent,coverage,d.analyzer,jobs),
       queueText
     ];
   });
@@ -676,7 +1166,7 @@ function renderCIEfficiency(items){
     }
     html+='</div></details>';
   }
-  els.ciEfficiency.innerHTML=html;
+  renderPreservingTableScroll(els.ciEfficiency,html);
 }
 
 function resourceEditor(repo,pool){
@@ -988,8 +1478,9 @@ async function saveHostTags(button){
   button.disabled=true;
   try{
     await j('/api/v1/hosts/'+encodeURIComponent(id),{method:'PATCH',headers:{'content-type':'application/json'},body:JSON.stringify({tags,priority})});
+    hostDrafts.delete(id);
     message('Machine scheduling settings updated.','success');
-    await refresh();
+    await refresh(true);
   }catch(e){message(e.message,'error')}finally{button.disabled=false}
 }
 
@@ -1175,4 +1666,4 @@ async function createPool(){
 
 initPageNav();
 refresh();
-setInterval(refresh,10000);
+setInterval(()=>{if(!document.hidden&&els.autoRefresh?.checked&&!refreshInFlight)refresh()},10000);

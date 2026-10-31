@@ -16,17 +16,46 @@
         <div class="muted">GitHub Actions on compute you own</div>
       </div>
     </div>
-    <div id="account" class="account-pill"></div>
+    <div class="header-actions">
+      <div class="refresh-controls">
+        <span id="data-freshness" class="muted small" role="status">Waiting for data</span>
+        <label class="check-row"><input id="auto-refresh" type="checkbox" checked> Auto-refresh</label>
+        <button id="refresh-now" class="secondary compact" type="button">Refresh now</button>
+      </div>
+      <div id="account" class="account-pill"></div>
+    </div>
   </header>
 
   <main class="dashboard-shell">
     <nav class="page-nav" aria-label="Dashboard sections">
+      <a href="#overview-section" data-page="overview">Overview</a>
       <a href="#active-runners-section" data-page="active">Active runners</a>
       <a href="#compute-section" data-page="compute">Compute</a>
       <a href="#deployments-section" data-page="deployments">Deployments</a>
       <a href="#repositories-section" data-page="repositories">Repositories</a>
       <a href="#activity-section" data-page="activity">Activity</a>
     </nav>
+
+    <div id="message-container" class="global-feedback hidden">
+      <div id="msg" class="status-message" role="status" aria-live="polite"></div>
+      <button id="message-dismiss" class="secondary compact" type="button" aria-label="Dismiss notification">Dismiss</button>
+    </div>
+    <div id="fleet-data-warning" class="data-warning hidden" role="status"></div>
+
+    <section id="overview-section" class="card fleet-overview-card priority-card" data-page-view="overview">
+      <div class="card-head">
+        <div>
+          <div class="section-kicker">Operational snapshot</div>
+          <h2>Fleet overview</h2>
+          <div class="muted small">Capacity, runner availability, and the next thing that needs attention.</div>
+        </div>
+        <a href="/diagnostics.html" class="button secondary compact">Open diagnostics</a>
+      </div>
+      <div id="fleet-overview" aria-live="off">
+        <div class="empty">Loading fleet health…</div>
+      </div>
+      <div id="fleet-alerts" class="fleet-alerts" aria-live="off"></div>
+    </section>
 
     <section id="active-runners-section" class="card active-runners-card priority-card" data-page-view="active">
       <div class="card-head">
@@ -35,9 +64,19 @@
           <h2>Active runners</h2>
           <div class="muted small">Only runners that currently exist. Finished and historical jobs are not shown here.</div>
         </div>
-        <div id="active-runner-summary" class="summary-pill"></div>
+        <div class="runner-filters">
+          <label class="muted small" for="active-runner-filter">Show</label>
+          <select id="active-runner-filter" aria-label="Filter active runners">
+            <option value="all">All active</option>
+            <option value="busy">Running jobs</option>
+            <option value="starting">Starting or stopping</option>
+            <option value="ready">Idle / ready</option>
+          </select>
+          <div id="active-runner-summary" class="summary-pill"></div>
+        </div>
       </div>
       <div id="active-runners"></div>
+      <div class="muted small workers-note">Step progress counts completed workflow steps, not elapsed time or an estimated percent of total job duration.</div>
     </section>
 
     <div id="compute-section" class="overview-grid" data-page-view="compute">
@@ -146,6 +185,17 @@
           <button id="logout" class="secondary hidden">Sign out</button>
         </div>
       </div>
+      <details class="quickstart" id="repository-quickstart">
+        <summary>First runner checklist and smoke workflow</summary>
+        <div class="advanced-body">
+          <div class="muted small">Check prerequisites before changing GitHub workflow labels. Readiness does not guarantee that a particular queued job can run.</div>
+          <div id="repository-onboarding-checks" class="quickstart-checks" aria-live="off">Checking prerequisites…</div>
+          <div class="resource-note muted">Use this in a trusted <strong>private</strong> GitHub repository after its standard runner shows a ready listener. Docker, public PRs, KVM, Windows, and GUI workloads require separately supported worker capabilities.</div>
+          <label class="muted small" for="smoke-workflow">Copy a minimal GitHub Actions smoke workflow to <code>.github/workflows/runnerhub-smoke.yml</code></label>
+          <textarea id="smoke-workflow" class="smoke-workflow" rows="15" spellcheck="false" readonly></textarea>
+          <button id="copy-smoke-workflow" class="secondary compact" type="button">Copy smoke workflow</button>
+        </div>
+      </details>
       <div class="repo-toolbar" role="search">
         <label class="repo-search-label">
           <span class="muted small">Find repositories</span>
@@ -158,7 +208,6 @@
         <summary>Advanced: API token</summary>
         <input id="apitoken" type="password" autocomplete="off" placeholder="API token">
       </details>
-      <pre id="msg" class="status-message" aria-live="polite"></pre>
     </section>
 
     <section id="ci-efficiency-section" class="card" data-page-view="activity">
@@ -182,6 +231,42 @@
         <div id="worker-summary" class="summary-pill subtle"></div>
       </div>
       <div id="workers"></div>
+    </section>
+
+    <section id="worker-history-section" class="card" data-page-view="activity">
+      <div class="card-head">
+        <div>
+          <div class="section-kicker">Investigations</div>
+          <h2>Worker history</h2>
+          <div class="muted small">Find recent and historical jobs by repository, status, run ID or error. Paged server-side; this is not the GitHub job queue.</div>
+        </div>
+        <a href="/diagnostics.html" class="button secondary compact">Investigate run</a>
+      </div>
+      <form id="history-filter-form" class="history-filters">
+        <label>Repository <input id="history-repo" placeholder="owner/repository" autocomplete="off"></label>
+        <label>Status <select id="history-state">
+          <option value="">Any status</option>
+          <option value="failed">Failed</option>
+          <option value="succeeded">Succeeded</option>
+          <option value="canceled">Canceled</option>
+          <option value="completed">Completed (lifecycle)</option>
+          <option value="deleted">Cleaned up</option>
+          <option value="busy">Running</option>
+          <option value="ready">Ready</option>
+          <option value="cleanup_pending">Cleanup pending</option>
+        </select></label>
+        <label>Run / job / error <input id="history-search" type="search" autocomplete="off" placeholder="run ID, job, failure"></label>
+        <button type="submit" id="history-apply">Find workers</button>
+        <button type="button" id="history-reset" class="secondary">Reset</button>
+      </form>
+      <div id="history-results" aria-live="polite"><div class="empty">Open Activity to load worker history.</div></div>
+      <div class="history-pager">
+        <span id="history-count" class="muted small"></span>
+        <div class="actions">
+          <button type="button" id="history-prev" class="secondary compact" disabled>Previous</button>
+          <button type="button" id="history-next" class="secondary compact" disabled>Next</button>
+        </div>
+      </div>
     </section>
 
     <section class="card advanced-card" data-page-view="compute">

@@ -118,3 +118,23 @@ func TestQueueReadinessJavaScript(t *testing.T) {
         t.Fatalf("Queue diagnostic JavaScript checks failed: %s: %v", string(output), err)
     }
 }
+
+func TestDashboardUXJavaScript(t *testing.T) {
+    node, err := exec.LookPath("node")
+    if err != nil {
+        t.Skip("node is unavailable; dashboard UX checks run where Node is installed")
+    }
+    command := exec.Command(node, "--test", "dashboard-ux.test.cjs")
+    output, err := command.CombinedOutput()
+    if err != nil {
+        t.Fatalf("Dashboard UX JavaScript checks failed: %s: %v", string(output), err)
+    }
+}
+
+func TestIncidentWorkbenchJavaScript(t *testing.T) {
+    node, err := exec.LookPath("node")
+    if err != nil { t.Skip("node is unavailable") }
+    command := exec.Command(node, "--test", "incident-workbench.test.cjs")
+    output, err := command.CombinedOutput()
+    if err != nil { t.Fatalf("incident workbench tests failed: %s: %v", string(output), err) }
+}

@@ -31,6 +31,21 @@
     <section class="card">
       <div class="section-head">
         <div>
+          <h2>Investigate a workflow run</h2>
+          <div class="muted">Search recorded workers by repository, GitHub run ID, runner, or failure reason. Queued GitHub jobs without a created RunnerHub worker may not appear.</div>
+        </div>
+      </div>
+      <div class="repo-toolbar">
+        <label class="repo-search-label"><span class="muted small">Repository, run ID, or error</span>
+          <input type="search" id="incident-search" autocomplete="off" placeholder="eutelic/runnerhub or 41159246771">
+        </label>
+        <button type="button" id="incident-clear" class="secondary compact">Clear</button>
+      </div>
+      <div id="incident-results" aria-live="polite" class="incident-results"><div class="empty">Collecting worker evidence…</div></div>
+    </section>
+    <section class="card">
+      <div class="section-head">
+        <div>
           <h2>Support bundle</h2>
           <div class="muted">Collects RunnerHub API state, recent audit events, runtime/listener status, and retained startup diagnostics. Secrets and job output are not intentionally included.</div>
         </div>
@@ -45,6 +60,7 @@
     </section>
   </main>
   <script src="/queue-diagnostics.js" defer></script>
+  <script src="/incident-workbench.js" defer></script>
   <script src="/diagnostics.js" defer></script>
 </body>
 </html>

@@ -10,6 +10,7 @@ func(s *SQLite)migrate(ctx context.Context)error{_,err:=s.db.ExecContext(ctx,`PR
 CREATE TABLE IF NOT EXISTS hosts(id TEXT PRIMARY KEY, data BLOB NOT NULL, updated_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS pools(id TEXT PRIMARY KEY, data BLOB NOT NULL, updated_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS workers(id TEXT PRIMARY KEY, data BLOB NOT NULL, updated_at TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS idx_workers_updated_history ON workers(updated_at DESC,id DESC);
 CREATE TABLE IF NOT EXISTS audit_events(id INTEGER PRIMARY KEY AUTOINCREMENT, actor TEXT NOT NULL, action TEXT NOT NULL, resource_type TEXT NOT NULL, resource_id TEXT NOT NULL, result TEXT NOT NULL, safe_detail TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS idx_audit_created_at ON audit_events(created_at DESC);
 CREATE TABLE IF NOT EXISTS agent_commands(id TEXT PRIMARY KEY, host_id TEXT NOT NULL, worker_id TEXT NOT NULL, command_type TEXT NOT NULL, payload BLOB NOT NULL, created_at TEXT NOT NULL, lease_until TEXT, attempts INTEGER NOT NULL DEFAULT 0, acked_at TEXT);

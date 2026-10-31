@@ -1,6 +1,6 @@
 ARG VERSION=dev
 
-FROM golang:1.26.9-bookworm AS root-deps
+FROM golang:1.26.10-bookworm AS root-deps
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
@@ -27,7 +27,7 @@ COPY internal/ ./internal/
 COPY cmd/runnerhub-deployer/ ./cmd/runnerhub-deployer/
 RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" -o /out/runnerhub-deployer ./cmd/runnerhub-deployer
 
-FROM golang:1.26.9-bookworm AS scaleset-build
+FROM golang:1.26.10-bookworm AS scaleset-build
 WORKDIR /src
 COPY scaleset/go.mod scaleset/go.sum ./
 RUN go mod download
