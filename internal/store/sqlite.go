@@ -4,7 +4,7 @@ package store
 
 import("context";"database/sql";"encoding/json";"errors";"fmt";"time";"github.com/eutelic/runnerhub/internal/agent";"github.com/eutelic/runnerhub/internal/core";_ "modernc.org/sqlite")
 type SQLite struct{db *sql.DB}
-func OpenSQLite(path string)(*SQLite,error){db,err:=sql.Open("sqlite",path);if err!=nil{return nil,err};db.SetMaxOpenConns(1);s:=&SQLite{db:db};if err:=s.migrate(context.Background());err!=nil{_=db.Close();return nil,err};return s,nil}
+func OpenSQLite(path string)(*SQLite,error){db,err:=sql.Open("sqlite",path);if err!=nil{return nil,err};db.SetMaxOpenConns(1);s:=&SQLite{db:db};if err:=s.migrate(context.Background());err!=nil{_=db.Close();return nil,err};if err:=s.migrateOperations(context.Background());err!=nil{_=db.Close();return nil,err};return s,nil}
 func(s *SQLite)Close()error{return s.db.Close()}
 func(s *SQLite)migrate(ctx context.Context)error{_,err:=s.db.ExecContext(ctx,`PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000; PRAGMA synchronous=NORMAL;
 CREATE TABLE IF NOT EXISTS hosts(id TEXT PRIMARY KEY, data BLOB NOT NULL, updated_at TEXT NOT NULL);

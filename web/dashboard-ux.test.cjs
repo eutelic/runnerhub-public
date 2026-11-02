@@ -4,10 +4,10 @@ const fs = require('node:fs');
 const vm = require('node:vm');
 
 const source = fs.readFileSync(require('node:path').join(__dirname,'app.js'),'utf8');
-assert.match(source,/initPageNav\(\);\s*refresh\(\);/);
-const testSource = source.replace(/initPageNav\(\);\s*refresh\(\);\s*setInterval\([^\n]+\);/, 'initPageNav();');
+assert.match(source,/initPageNav\(\);\s*renderMachineBootstrap\(\);\s*refresh\(\);\s*refreshMachineOperation\(\);/);
+const testSource = source.replace(/initPageNav\(\);[\s\S]*$/, 'initPageNav();renderMachineBootstrap();');
 
-function createDashboard(endpoints = {}, storage = new Map()) {
+function createDashboard(endpoints = {}, storage = new Map(), session = new Map()) {
   const elements = new Map();
   const element = id => {
     if (!elements.has(id)) {
@@ -19,27 +19,31 @@ function createDashboard(endpoints = {}, storage = new Map()) {
           contains(name){return classes.has(name)}
         },
         addEventListener(name,handler){this.handlers[name]=handler},
+        focus(){},
         querySelector(){return null}, querySelectorAll(){return []}, contains(){return false}
       });
     }
     return elements.get(id);
   };
   const calls = [];
+  const requestOptions = new Map();
   const document = {
     activeElement:{tagName:'BODY'},
     hidden:false,
-    getElementById:element, querySelectorAll(){return []},
+    getElementById:element, querySelector(){return null}, querySelectorAll(){return []},
     body:{classList:{add(){}}}
   };
   const ctx = vm.createContext({
-    document,window:{addEventListener(){}},location:{
+    document,window:{addEventListener(){},confirm(){return true},prompt(){return 'https://github.com/eutelic/runnerhub/actions/runs/41211256199/job/124571922351'}},location:{
       hostname:'localhost',origin:'http://localhost:8788',hash:''
     },history:{pushState(){}},sessionStorage:{
-      getItem(key){return key==='runnerhub-token'?'test-token':null},setItem(){}
+      getItem(key){return key==='runnerhub-token'?'test-token':(session.get(key)||null)},
+      setItem(key,value){session.set(key,value)},removeItem(key){session.delete(key)}
     },localStorage:{getItem(key){return storage.get(key)||null},setItem(key,value){storage.set(key,value)}},
     CSS:{escape(text){return text}},
-    fetch:async path=>{
+    fetch:async (path,options={})=>{
       calls.push(path);
+      requestOptions.set(path,options);
       if(path==='/auth/github/status')return {json:async()=>({enabled:true,authenticated:true,csrf:'csrf',user:'tester'})};
       let value=endpoints[path]??[];
       if(value instanceof Error)throw value;
@@ -48,7 +52,7 @@ function createDashboard(endpoints = {}, storage = new Map()) {
     console,Date,Number,Map,Set,URLSearchParams
   });
   vm.runInContext(testSource,ctx,{filename:'app.js'});
-  return {ctx,elements,element,document,calls,endpoints,storage};
+  return {ctx,elements,element,document,calls,requestOptions,endpoints,storage,session};
 }
 
 test('fleet overview identifies bad listener and zero online hosts with actionable links',()=>{
@@ -65,6 +69,111 @@ test('fleet overview identifies bad listener and zero online hosts with actionab
   assert.match(html,/No machines online/);
   assert.match(html,/listener backing_off/);
   assert.match(html,/Open diagnostics|Inspect readiness/);
+});
+
+test('publisher eligibility explains missing DinD host instead of reporting generic healthy fleet',()=>{
+  const {ctx,element}=createDashboard();
+  const pool={id:'publisher',scope:{owner:'eutelic',repository:'runnerhub'},
+    githubInstallationId:42,scaleSetName:'runnerhub-publisher',maxConcurrency:2,
+    isolation:'container-dind'};
+  ctx.testPool=pool;
+  vm.runInContext("renderFleetOverview([{id:'h1',name:'compute',state:'online',tags:{'isolation.container-trusted':'true'}}],[testPool],[],[{poolId:'publisher',state:'ready'}],[{poolId:'publisher',state:'healthy',healthy:true}])",ctx);
+  const html=element('fleet-overview').innerHTML;
+  assert.match(html,/No online host advertises isolated Docker-in-Docker support/);
+  assert.match(html,/Review hosts/);
+  const noMatch=vm.runInContext("publisherHostBlocker(testPool,[{id:'h1',state:'online',tags:{'isolation.container-dind':'true'}}])",ctx);
+  assert.equal(noMatch,'');
+});
+
+test('publisher-specific required tags are diagnosed without assuming a GitHub queue',()=>{
+  const {ctx,element}=createDashboard();
+  ctx.testPool={id:'pub',scaleSetName:'runnerhub-publisher',maxConcurrency:2,
+    scope:{owner:'acme',repository:'app'},hostSelector:{gpu:'true'}};
+  const message=vm.runInContext("publisherHostBlocker(testPool,[{state:'online',tags:{'isolation.container-dind':'true'}}])",ctx);
+  assert.match(message,/none match this pool's required host tags/);
+  vm.runInContext("renderPools([testPool],[],[],new Map(),[{state:'online',tags:{'isolation.container-dind':'true'}}])",ctx);
+  assert.match(element('pools').innerHTML,/Host diagnosis/);
+  assert.match(element('pools').innerHTML,/none match this pool&#39;s required host tags|none match this pool's required host tags/);
+});
+
+test('finished GitHub job conflicting with busy RunnerHub worker has clear recovery guidance',()=>{
+  const {ctx,element}=createDashboard();
+  ctx.testPool={id:'pub',maxConcurrency:1,githubInstallationId:42,
+    scaleSetName:'runnerhub-publisher',scope:{owner:'eutelic',repository:'runnerhub'}};
+  ctx.testWorker={id:'worker-stale',poolId:'pub',state:'busy',jobName:'publish agent',
+    repository:'eutelic/runnerhub',workflowRunId:41211256199,startedAt:'2026-10-31T17:40:09Z'};
+  ctx.testProgress={workerId:'worker-stale',workflowRunId:41211256199,
+    githubJobId:124571922351,available:true,status:'completed',conclusion:'failure',
+    currentStep:'complete'};
+  assert.equal(vm.runInContext('githubCompletedWorkerMismatch(testWorker,testProgress)',ctx),true);
+  const link=vm.runInContext('githubRunLink(testWorker,testPool,testProgress)',ctx);
+  assert.match(link,/actions\/runs\/41211256199\/job\/124571922351/);
+  vm.runInContext("renderFleetOverview([{id:'h1',name:'compute',state:'online',tags:{'isolation.container-dind':'true'}}],[testPool],[testWorker],[{poolId:'pub',state:'ready'}],[{poolId:'pub',state:'active'}],[testProgress])",ctx);
+  assert.match(element('fleet-overview').innerHTML,/GitHub\/RunnerHub state mismatch/);
+  assert.match(element('fleet-overview').innerHTML,/GitHub \(failure\)/);
+  vm.runInContext("renderActiveRunners([testWorker],new Map([['pub',testPool]]),new Map(),new Map([['worker-stale',testProgress]]))",ctx);
+  assert.match(element('active-runners').innerHTML,/GitHub finished \(failure\); RunnerHub still busy/);
+  assert.match(element('active-runners').innerHTML,/data-worker-reconcile="worker-stale"/);
+  vm.runInContext("renderPools([testPool],[],[],new Map(),[{id:'h1',state:'online',tags:{'isolation.container-dind':'true'}}],[testWorker],[testProgress])",ctx);
+  assert.match(element('pools').innerHTML,/finished on GitHub/);
+  assert.equal(vm.runInContext("githubCompletedWorkerMismatch(testWorker,{available:true,status:'in_progress'})",ctx),false);
+});
+
+test('manual reconciliation requires terminal evidence and sends only the selected worker id',async()=>{
+  const {ctx,element,calls}=createDashboard({
+    '/api/v1/workers/worker-stale/reconcile-github':{
+      detail:'GitHub completion confirmed and worker state reconciled.'
+    }
+  });
+  ctx.testWorker={id:'worker-stale',poolId:'pub',state:'busy',jobName:'publish agent'};
+  ctx.testProgress={workerId:'worker-stale',available:true,status:'completed',conclusion:'failure'};
+  ctx.testButton={disabled:false,dataset:{workerReconcile:'worker-stale'}};
+  vm.runInContext('snapshot.workers=[testWorker];snapshot.progress=[testProgress]',ctx);
+  await vm.runInContext('reconcileFinishedGitHubWorker(testButton)',ctx);
+  assert.ok(calls.includes('/api/v1/workers/worker-stale/reconcile-github'));
+  assert.equal(ctx.testButton.disabled,false);
+  assert.match(element('msg').textContent||element('msg').innerHTML,/reconciled/i);
+});
+test('legacy busy worker can supply a verified GitHub job URL without guessing the outcome',async()=>{
+  const {ctx,element,calls,requestOptions}=createDashboard({
+    '/api/v1/workers/old-worker/reconcile-github':{
+      detail:'GitHub completion confirmed and worker state reconciled.'
+    }
+  });
+  ctx.oldWorker={id:'old-worker',poolId:'pub',state:'busy',
+    runnerName:'runnerhub-old',jobName:'publish (agent, runnerhub-agent)',
+    startedAt:'2026-10-31T17:40:09Z',workflowRunId:0};
+  ctx.oldPool={id:'pub',maxConcurrency:3,scope:{owner:'eutelic',repository:'runnerhub'}};
+  vm.runInContext('snapshot.workers=[oldWorker];snapshot.progress=[]',ctx);
+  vm.runInContext("renderActiveRunners([oldWorker],new Map([['pub',oldPool]]),new Map(),new Map())",ctx);
+  assert.match(element('active-runners').innerHTML,/GitHub run ID missing/);
+  assert.match(element('active-runners').innerHTML,/Verify completed GitHub job URL/);
+  ctx.oldButton={dataset:{workerReconcile:'old-worker',workerNeedsUrl:'true'},disabled:false};
+  await vm.runInContext('reconcileFinishedGitHubWorker(oldButton)',ctx);
+  const endpoint='/api/v1/workers/old-worker/reconcile-github';
+  assert.ok(calls.includes(endpoint));
+  const posted=JSON.parse(requestOptions.get(endpoint)?.body||'{}');
+  assert.equal(posted.githubJobUrl,
+    'https://github.com/eutelic/runnerhub/actions/runs/41211256199/job/124571922351');
+  assert.equal(ctx.oldButton.disabled,false);
+});
+test('publisher at capacity identifies long-running worker without claiming a confirmed hang',()=>{
+  const {ctx,element}=createDashboard();
+  const started=new Date(Date.now()-2*24*60*60*1000).toISOString();
+  ctx.testPool={id:'pub',maxConcurrency:1,scaleSetName:'runnerhub-publisher',
+    githubInstallationId:42,scope:{kind:'repository',owner:'eutelic',repository:'runnerhub'}};
+  ctx.testBusy=[{id:'worker-old',poolId:'pub',state:'busy',jobName:'publish agent',
+    startedAt:started,createdAt:started}];
+  const diag=vm.runInContext('poolConcurrencyBlocker(testPool,testBusy)',ctx);
+  assert.match(diag,/1\/1/);
+  assert.match(diag,/Long-running publish agent/);
+  assert.match(diag,/Verify its GitHub run/);
+  assert.doesNotMatch(diag,/is hung|has stalled/);
+  vm.runInContext("renderFleetOverview([{id:'h1',state:'online',tags:{'isolation.container-dind':'true'}}],[testPool],testBusy,[{poolId:'pub',state:'ready'}],[{poolId:'pub',state:'active'}])",ctx);
+  assert.match(element('fleet-overview').innerHTML,/Long-running publish agent/);
+  assert.match(element('fleet-overview').innerHTML,/Review runners/);
+  vm.runInContext("renderPools([testPool],[],[],new Map(),[{id:'h1',state:'online',tags:{'isolation.container-dind':'true'}}],testBusy)",ctx);
+  assert.match(element('pools').innerHTML,/Long-running publish agent/);
 });
 
 test('host edits survive subsequent renders and focused inputs are not replaced',()=>{
@@ -85,6 +194,77 @@ test('host edits survive subsequent renders and focused inputs are not replaced'
   assert.match(element('hosts').innerHTML,/Save changes/);
 });
 
+test('hosts show online first, preserve separate IDs, and filter offline records',()=>{
+  const {ctx,element}=createDashboard();
+  const hosts=[
+    {id:'old-identity',name:'compute',state:'offline',lastSeenAt:'2026-10-01T00:00:00Z',priority:1},
+    {id:'live-identity',name:'compute',state:'online',lastSeenAt:'2026-11-02T15:00:00Z',priority:1},
+    {id:'second-live',name:'compute',state:'online',lastSeenAt:'2026-11-02T14:00:00Z'}
+  ];
+  ctx.hostSamples=hosts;
+  vm.runInContext('renderHosts(hostSamples)',ctx);
+  const all=element('hosts').innerHTML;
+  assert.ok(all.indexOf('data-host-id="live-identity"')<all.indexOf('data-host-id="old-identity"'));
+  assert.match(all,/Other host IDs share this name/);
+  assert.match(all,/3 total/);
+  element('host-filter').value='offline';
+  vm.runInContext('renderHosts(hostSamples)',ctx);
+  const filtered=element('hosts').innerHTML;
+  assert.match(filtered,/data-host-id="old-identity"/);
+  assert.doesNotMatch(filtered,/data-host-id="live-identity"/);
+});
+
+test('repair action prefills scheduling metadata but discards old trust and credentials',()=>{
+  const {ctx,element}=createDashboard();
+  ctx.hostSamples=[{id:'old-host',name:'compute',state:'offline',priority:4,userTags:{kvm:'true'}}];
+  vm.runInContext('snapshot.hosts=hostSamples',ctx);
+  element('machine-host-fingerprint').value='SHA256:old-key';
+  element('machine-password').value='old-password';
+  element('machine-allow-privileged').checked=false;
+  vm.runInContext("recoverHost({dataset:{hostRecover:'old-host'}})",ctx);
+  assert.equal(element('machine-name').value,'compute');
+  assert.equal(element('machine-tags').value,'kvm');
+  assert.equal(element('machine-priority').value,'4');
+  assert.equal(element('machine-host-fingerprint').value,'');
+  assert.equal(element('machine-password').value,'');
+  assert.equal(element('machine-allow-privileged').checked,false);
+  assert.match(element('machine-duplicate-warning').innerHTML,/Existing host name/);
+});
+
+test('bootstrap feedback remains visible and reports unknown outcome after reload',()=>{
+  const session=new Map();
+  const first=createDashboard({},new Map(),session);
+  vm.runInContext("setMachineBootstrap('working',{name:'compute',startedAt:'2026-11-02T18:00:00Z',privateKey:'topsecret',password:'topsecret'})",first.ctx);
+  assert.match(first.element('machine-bootstrap-status').innerHTML,/Enrollment in progress/);
+  assert.doesNotMatch(session.get('runnerhub-machine-bootstrap-v1'),/password|privateKey|enrollmentToken|topsecret/);
+  const second=createDashboard({},new Map(),session);
+  assert.match(second.element('machine-bootstrap-status').innerHTML,/Enrollment status unconfirmed/);
+  assert.match(second.element('machine-bootstrap-status').innerHTML,/inspect the host before retrying/i);
+});
+test('tracked bootstrap renders observed stages and persisted progress events',()=>{
+  const {ctx,element}=createDashboard();
+  vm.runInContext("machineOperation={id:'op-123',target:'compute',state:'waiting',step:'waiting-for-agent',detail:'Waiting for a new agent heartbeat.',lastProgressAt:'2026-11-02T19:00:00Z',events:[{state:'queued',step:'request-accepted',at:'2026-11-02T18:58:00Z'},{state:'working',step:'verifying-host-key',at:'2026-11-02T18:59:00Z'},{state:'waiting',step:'waiting-for-agent',at:'2026-11-02T19:00:00Z'}]};setMachineBootstrap('working',{operationId:'op-123',name:'compute',startedAt:'2026-11-02T18:58:00Z'})",ctx);
+  const html=element('machine-bootstrap-status').innerHTML;
+  assert.match(html,/Current stage:.*Waiting for agent heartbeat/);
+  assert.match(html,/Verifying SSH host key/);
+  assert.match(html,/Waiting for a new agent heartbeat/);
+});
+
+test('reload reconnects tracked operations without inventing a success outcome',async()=>{
+  const session=new Map();
+  session.set('runnerhub-machine-bootstrap-v1',JSON.stringify({
+    state:'working',name:'compute',startedAt:'2026-11-02T18:00:00Z',operationId:'op-42'
+  }));
+  const op={id:'op-42',target:'compute',state:'waiting',step:'waiting-for-agent',
+    detail:'Waiting for heartbeat.',startedAt:'2026-11-02T18:00:00Z',
+    lastProgressAt:'2026-11-02T18:01:00Z',events:[]};
+  const {ctx,element,calls}=createDashboard({'/api/v1/operations/op-42':op},new Map(),session);
+  assert.match(element('machine-bootstrap-status').innerHTML,/Enrollment status unconfirmed/);
+  await vm.runInContext('refreshMachineOperation()',ctx);
+  assert.ok(calls.includes('/api/v1/operations/op-42'));
+  assert.match(element('machine-bootstrap-status').innerHTML,/Enrollment in progress/);
+  assert.match(element('machine-bootstrap-status').innerHTML,/Waiting for heartbeat/);
+});
 test('GitHub job links are only emitted for valid repository and run identifiers',()=>{
   const {ctx}=createDashboard();
   assert.match(vm.runInContext(`githubRunLink({repository:'acme/repo',workflowRunId:1234})`,ctx),/github.com\/acme\/repo\/actions\/runs\/1234/);

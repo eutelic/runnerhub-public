@@ -7,14 +7,18 @@ import (
 	"github.com/eutelic/runnerhub/internal/githubrunner"
 )
 
-func TestMatchWorkflowJobPrefersRunnerName(t *testing.T) {
+func TestMatchWorkflowJobRequiresConsistentAssignedRunnerAndName(t *testing.T) {
 	wk := core.Worker{RunnerName:"runnerhub-abc", JobName:"test"}
 	jobs := []githubrunner.WorkflowJob{
 		{ID:1,Name:"test",RunnerName:"runnerhub-other"},
 		{ID:2,Name:"different display name",RunnerName:"runnerhub-abc"},
 	}
-	got, ok := matchWorkflowJob(wk,jobs)
-	if !ok || got.ID != 2 { t.Fatalf("unexpected match: ok=%v job=%+v",ok,got) }
+	if got,ok:=matchWorkflowJob(wk,jobs);ok{
+		t.Fatalf("mismatched runner/name was accepted: %+v",got)
+	}
+	jobs[1].Name="test"
+	got,ok:=matchWorkflowJob(wk,jobs)
+	if !ok||got.ID!=2{t.Fatalf("exact assigned runner not matched: %+v ok=%v",got,ok)}
 }
 
 func TestSummarizeWorkflowJobStepProgress(t *testing.T) {

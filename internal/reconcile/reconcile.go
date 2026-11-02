@@ -63,6 +63,7 @@ func (r *Reconciler) githubRunnerPollDue(w core.Worker, now time.Time) bool {
 func (r *Reconciler) clearGitHubPoll(workerID string) {
 	r.githubPollMu.Lock()
 	delete(r.githubLastPoll, workerID)
+	delete(r.githubLastPoll, "job:"+workerID)
 	r.githubPollMu.Unlock()
 }
 
@@ -109,8 +110,11 @@ func (r *Reconciler) Once(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	// Bound the initial catch-up burst after a restart. Per-worker polling is
+	// independently rate-limited, even when a server has many stale records.
+	jobChecksRemaining := 4
 	for i := range workers {
-		if err := r.reconcileWorker(ctx, &workers[i]); err != nil {
+		if err := r.reconcileWorker(ctx, &workers[i], &jobChecksRemaining); err != nil {
 			_ = r.Store.AppendAudit(ctx, core.AuditEvent{
 				Actor:        "reconciler",
 				Action:       "reconcile",
@@ -124,7 +128,7 @@ func (r *Reconciler) Once(ctx context.Context) error {
 	return nil
 }
 
-func (r *Reconciler) reconcileWorker(ctx context.Context, w *core.Worker) error {
+func (r *Reconciler) reconcileWorker(ctx context.Context, w *core.Worker, jobChecksRemaining *int) error {
 	if w.State == core.WorkerDeleted {
 		r.clearGitHubPoll(w.ID)
 		return nil
@@ -149,6 +153,15 @@ func (r *Reconciler) reconcileWorker(ctx context.Context, w *core.Worker) error 
 		w.FailedAt = now.UTC()
 		w.UpdatedAt = now.UTC()
 		return r.Store.UpsertWorker(ctx, *w)
+	}
+
+	// When GitHub conclusively finished an assigned job but RunnerHub missed
+	// the terminal callback, reconcile it before any further runner inspection.
+	// Elapsed time alone must never turn a job terminal.
+	if w.State == core.WorkerBusy && jobChecksRemaining != nil && *jobChecksRemaining > 0 &&
+		r.githubJobCompletionPollDue(*w,now) {
+		*jobChecksRemaining--
+		if err:=r.tryReconcileCompletedGitHubJob(ctx,w,now);err!=nil{return err}
 	}
 
 	if w.ProviderHandle != "" && r.Hub != nil && (w.State == core.WorkerRegistering || w.State == core.WorkerReady || w.State == core.WorkerBusy) {

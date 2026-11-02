@@ -36,6 +36,10 @@ let lastRepoRenderArgs=null;
 let hiddenRepoAccounts=loadHiddenRepoAccounts();
 const hostDrafts=new Map();
 const snapshot={};
+const MACHINE_BOOTSTRAP_KEY='runnerhub-machine-bootstrap-v1';
+let machineBootstrap=loadMachineBootstrap();
+let machineOperation=null;
+let machineOperationPolling=false;
 let refreshInFlight=false;
 let refreshPending=false;
 let refreshPendingForce=false;
@@ -128,6 +132,24 @@ els.token.addEventListener('input',()=>{sessionStorage.setItem('runnerhub-token'
 bind('create','click',createPool);
 bind('machine-scan-fingerprint','click',scanMachineHostKey);
 bind('add-machine','click',addMachine);
+bind('machine-name','input',()=>renderMachineDuplicateWarning());
+document.getElementById('machine-operations')?.addEventListener('click',event=>{
+  const button=event.target.closest('button[data-operation-view]');
+  if(!button)return;
+  setMachineBootstrap('unknown',{operationId:button.dataset.operationView,
+    name:button.dataset.operationName||'unknown',startedAt:new Date().toISOString()});
+  refreshMachineOperation();
+});
+bind('host-filter','change',()=>{
+  if(snapshot.hosts)renderHosts(snapshot.hosts,snapshot.workers||[],
+    new Map((snapshot.pools||[]).map(p=>[p.id,p])));
+});
+document.getElementById('machine-bootstrap-status')?.addEventListener('click',event=>{
+  if(!event.target.closest('[data-machine-bootstrap-dismiss]'))return;
+  machineBootstrap=null;
+  try{sessionStorage.removeItem(MACHINE_BOOTSTRAP_KEY)}catch{}
+  renderMachineBootstrap();
+});
 bind('install-deployer','click',installDeployer);
 bind('copy-deployer-token','click',copyDeployerToken);
 bind('message-dismiss','click',()=>message(''));
@@ -174,7 +196,16 @@ if(els.repoShowPublic){
     rerenderRepositories();
   });
 }
-els.hosts.addEventListener('click',e=>{const button=e.target.closest('button[data-host-tags]');if(button)saveHostTags(button)});
+els.activeRunners.addEventListener('click',event=>{
+  const button=event.target.closest('button[data-worker-reconcile]');
+  if(button)reconcileFinishedGitHubWorker(button);
+});
+els.hosts.addEventListener('click',e=>{
+  const recover=e.target.closest('button[data-host-recover]');
+  if(recover){recoverHost(recover);return}
+  const save=e.target.closest('button[data-host-tags]');
+  if(save)saveHostTags(save);
+});
 els.hosts.addEventListener('input',e=>{
   const field=e.target.closest('[data-host-priority-input],[data-host-tag-input]');
   if(!field)return;
@@ -297,6 +328,71 @@ function reservedCPU(capacity){const used=cpuCores(capacity?.reserved?.cpuMillis
 function reservedRAM(capacity){const used=gib(capacity?.reserved?.memoryBytes);const total=gib(capacity?.capacity?.memoryBytes);return total?used+' / '+total+' GiB':'—'}
 function repoName(pool){return pool?.scope?.repository?pool.scope.owner+'/'+pool.scope.repository:pool?.scope?.owner||''}
 function isPublisherPool(pool){return Boolean(pool)&&(String(pool.scaleSetName||'').toLowerCase()==='runnerhub-publisher'||(pool.labels||[]).some(x=>String(x).toLowerCase()==='runnerhub-publisher'))}
+// Explain only eligibility blockers confirmed by the current host snapshot.
+// Scheduling evidence from RunnerHub's own worker records. A long busy
+// duration is a verification prompt, not proof that the worker is hung.
+// This mismatch is confirmed by GitHub rather than inferred from elapsed time.
+function githubCompletedWorkerMismatch(worker,progress){
+  return String(worker?.state||'').toLowerCase()==='busy' &&
+    progress?.available===true &&
+    String(progress.status||'').toLowerCase()==='completed';
+}
+function legacyBusyWorkerNeedsJobURL(worker){
+  if(String(worker?.state||'').toLowerCase()!=='busy'||Number(worker.workflowRunId)>0||
+    !String(worker.runnerName||'').trim())return false;
+  const at=Date.parse(worker.startedAt||'');
+  return Number.isFinite(at)&&Date.now()-at>6*60*60*1000;
+}
+function staleGitHubWorkerDetail(worker,progress){
+  if(!githubCompletedWorkerMismatch(worker,progress))return '';
+  return (worker.jobName||'Job')+' has finished on GitHub ('+
+    (progress.conclusion||'outcome unreported')+
+    '), but RunnerHub still marks worker '+(worker.id||'unknown')+
+    ' busy and reserves capacity. Inspect the worker and reconcile safely before retrying.';
+}
+function poolConcurrencyBlocker(pool,workers){
+  const limit=Number(pool?.maxConcurrency||0);
+  if(!Number.isFinite(limit)||limit<=0)return '';
+  const active=(Array.isArray(workers)?workers:[]).filter(w=>
+    w.poolId===pool.id&&!['deleted','completed','failed'].includes(String(w.state||'').toLowerCase()));
+  if(active.length<limit)return '';
+  const busy=active.filter(w=>String(w.state||'').toLowerCase()==='busy').sort((a,b)=>
+    new Date(a.startedAt||a.createdAt||0)-new Date(b.startedAt||b.createdAt||0));
+  const oldest=busy[0];
+  let detail='Pool is at its configured runner limit ('+active.length+'/'+limit+').';
+  if(oldest){
+    const started=Date.parse(oldest.startedAt||oldest.createdAt||'');
+    const age=Number.isFinite(started)?Math.max(0,Date.now()-started):0;
+    if(age>6*60*60*1000){
+      detail+=' Long-running '+(oldest.jobName||'job')+' on worker '+(oldest.id||'unknown')+
+        ' has been busy '+fmtAge(oldest.startedAt||oldest.createdAt)+
+        '. Verify its GitHub run and host diagnostics before manual cleanup.';
+      if(legacyBusyWorkerNeedsJobURL(oldest))
+        detail+=' The worker has no recorded GitHub run ID; an admin can supply a completed GitHub job URL from Active runners.';
+    }else{
+      detail+=' '+(oldest.jobName||'A job')+' is running; wait for capacity or inspect the GitHub run.';
+    }
+  }else{
+    detail+=' Active workers may be provisioning or cleaning up. Inspect their state before retrying.';
+  }
+  return detail;
+}
+function publisherHostBlocker(pool,hosts){
+  if(!isPublisherPool(pool))return '';
+  const fleet=Array.isArray(hosts)?hosts:[];
+  const qualified=fleet.filter(h=>String(h.state||'').toLowerCase()==='online'&&
+    String(h.tags?.['isolation.container-dind']||'').toLowerCase()==='true');
+  if(!qualified.length){
+    return 'No online host advertises isolated Docker-in-Docker support. Check Hosts and the machine publisher capability; do not enable privileged workers without verifying its trust level.';
+  }
+  const selector=pool?.hostSelector||{};
+  const matching=qualified.filter(h=>Object.entries(selector).every(([key,value])=>
+    String(h.tags?.[key]||'')===String(value)));
+  if(!matching.length){
+    return 'Online Docker-in-Docker hosts exist, but none match this pool\'s required host tags. Check the pool selector and Host tags.';
+  }
+  return '';
+}
 function isVercelProfile(pool){return Boolean(pool)&&String(pool.scaleSetName||'').toLowerCase()===VERCEL_PROFILE_NAME}
 function isStandardPool(pool){const name=String(pool?.scaleSetName||'').toLowerCase();return Boolean(pool)&&(name===''||name==='runnerhub')}
 function runnerClass(pool){if(!pool)return 'standard';if(isPublisherPool(pool))return 'publisher';if(isStandardPool(pool))return 'standard';return pool.scaleSetName||'custom'}
@@ -360,14 +456,17 @@ async function j(path,opts={}){
   return v;
 }
 
-function githubRunLink(worker,pool){
+function githubRunLink(worker,pool,progress){
   const name=worker.repository||repoName(pool);
   const id=Number(worker.workflowRunId);
   if(!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(String(name||''))||
       !Number.isSafeInteger(id)||id<=0)return '—';
   const [owner,repo]=name.split('/');
+  const jobID=Number(progress?.githubJobId);
+  const specific=Number.isSafeInteger(jobID)&&jobID>0;
   return '<a href="https://github.com/'+encodeURIComponent(owner)+'/'+encodeURIComponent(repo)+
-    '/actions/runs/'+id+'" target="_blank" rel="noopener noreferrer">View run</a>';
+    '/actions/runs/'+id+(specific?'/job/'+jobID:'')+
+    '" target="_blank" rel="noopener noreferrer">'+(specific?'View job':'View run')+'</a>';
 }
 function tab(rows,cols){
   if(!Array.isArray(rows)||!rows.length)return '<span class="muted">None</span>';
@@ -391,6 +490,9 @@ function renderPreservingTableScroll(container,html){
 }
 
 function hostTagText(host){return Object.keys(host?.userTags||{}).sort().join(', ')}
+function hostStateRank(host){
+  return ({online:0,draining:1,offline:2})[String(host?.state||'').toLowerCase()]??3;
+}
 function renderHosts(hosts,workers=[],poolByID=new Map()){
   const reservations=new Map();
   for(const w of workers||[]){
@@ -404,35 +506,71 @@ function renderHosts(hosts,workers=[],poolByID=new Map()){
     if(String(w.state||'').toLowerCase()==='busy')entry.busy++;
     reservations.set(w.hostId,entry);
   }
-  // Do not replace a focused input: this loses focus/caret on each background poll.
+  renderMachineDuplicateWarning(hosts);
+  // Leave edits and the caret alone during background refresh.
   if(els.hosts.contains(document.activeElement)&&
       ['INPUT','TEXTAREA','SELECT'].includes(document.activeElement.tagName))return;
-  if(!Array.isArray(hosts)||!hosts.length){els.hosts.innerHTML='<span class="muted">None</span>';return}
-  const onlineVersions=[...new Set(hosts.filter(h=>String(h.state||'').toLowerCase()==='online').map(h=>String(h.agentVersion||'').trim()).filter(Boolean))];
-  const warning=onlineVersions.length>1
-    ? '<div class="resource-note warn"><strong>Agent version skew:</strong> online hosts are running '+onlineVersions.map(v=>esc(v.slice(0,8))).join(', ')+'. Review or update hosts so the fleet is on the intended agent revision.</div>'
+  if(!Array.isArray(hosts)||!hosts.length){els.hosts.innerHTML='<span class="muted">No hosts enrolled.</span>';return}
+  const previousOpen=new Set([...els.hosts.querySelectorAll('details[data-host-settings]')]
+    .filter(el=>el.open).map(el=>el.dataset.hostSettings));
+  const online=hosts.filter(h=>String(h.state||'').toLowerCase()==='online');
+  const offline=hosts.filter(h=>String(h.state||'').toLowerCase()==='offline');
+  const filter=document.getElementById('host-filter')?.value||'all';
+  const visible=hosts.filter(h=>filter==='all'||String(h.state||'').toLowerCase()===filter)
+    .slice().sort((a,b)=>hostStateRank(a)-hostStateRank(b)||
+      new Date(b.lastSeenAt||0)-new Date(a.lastSeenAt||0)||
+      String(a.name||'').localeCompare(String(b.name||'')));
+  const nameCounts=new Map();
+  for(const h of hosts){
+    const name=String(h.name||'').trim().toLowerCase();
+    if(name)nameCounts.set(name,(nameCounts.get(name)||0)+1);
+  }
+  const versions=[...new Set(online.map(h=>String(h.agentVersion||'').trim()).filter(Boolean))];
+  const warning=versions.length>1
+    ? '<div class="resource-note warn"><strong>Different agent revisions on online hosts:</strong> '+
+      online.map(h=>esc(h.name)+' ('+esc(String(h.agentVersion||'unknown').slice(0,8))+')').join(', ')+
+      '. Revision hashes alone cannot establish which agent is newer; verify the intended deployment version before updating.</div>'
     : '';
-  const html='<div class="table-wrap"><table><tr><th>Name</th><th>State</th><th>Last seen</th><th>Agent</th><th>Busy / active</th><th>CPU reserved / total</th><th>RAM reserved / total</th><th>Priority</th><th>Tags</th><th></th></tr>'+
-    hosts.map(h=>{
-      const version=String(h.agentVersion||'').trim();
-      const draft=hostDrafts.get(String(h.id));
-      const used=reservations.get(h.id)||{cpu:0,ram:0,active:0,busy:0};
-      return '<tr>'+
-        '<td>'+esc(h.name)+'</td>'+
-        '<td>'+esc(h.state)+'</td>'+
-        '<td>'+esc(!isZeroTime(h.lastSeenAt)?fmtAge(h.lastSeenAt)+' ago':'unknown')+'</td>'+
-        '<td><code title="'+esc(version)+'">'+esc(version?version.slice(0,8):'unknown')+'</code></td>'+
-        '<td>'+used.busy+' / '+used.active+'</td>'+
-        '<td>'+esc(h.capacity?.cpuMillis?cpuCores(used.cpu)+' / '+cpuCores(h.capacity.cpuMillis)+' cores':'unknown')+'</td>'+
-        '<td>'+esc(h.capacity?.memoryBytes?gib(used.ram)+' / '+gib(h.capacity.memoryBytes)+' GiB':'unknown')+'</td>'+
-        '<td><input class="inline-tags" data-host-priority-input="'+esc(h.id)+'" type="number" min="-1000" max="1000" step="1" value="'+esc(draft?.priority??Number(h.priority||0))+'"></td>'+
-        '<td><input class="inline-tags" data-host-tag-input="'+esc(h.id)+'" value="'+esc(draft?.tags??hostTagText(h))+'" placeholder="gpu, high-memory"></td>'+
-        '<td><button class="secondary compact" data-host-tags="'+esc(h.id)+'">'+(draft?'Save changes':'Save')+'</button></td>'+
-      '</tr>';
-    }).join('')+'</table></div>'+warning;
+  const summary='<div class="host-counts">'+online.length+' online · '+offline.length+
+    ' offline · '+hosts.length+' total</div>';
+  const cards=visible.map(h=>{
+    const state=String(h.state||'unknown').toLowerCase();
+    const version=String(h.agentVersion||'').trim();
+    const draft=hostDrafts.get(String(h.id));
+    const used=reservations.get(h.id)||{cpu:0,ram:0,active:0,busy:0};
+    const sameName=nameCounts.get(String(h.name||'').trim().toLowerCase())>1;
+    const sameNameNote=sameName
+      ? '<div class="host-identity-note">Other host IDs share this name. They may be previous enrollments or separate machines; verify identity before cleanup.</div>'
+      : '';
+    const offlineNote=state==='offline'
+      ? '<div class="host-identity-note">Offline cause is not confirmed by heartbeat data. Check agent logs or use Repair / re-enroll.</div>'
+      : '';
+    const badgeClass=state==='online'?'badge':state==='offline'?'badge warn':'badge neutral';
+    return '<article class="host-card" data-host-id="'+esc(h.id)+'">'+
+      '<div class="host-card-top"><div class="host-heading"><strong>'+esc(h.name)+'</strong> '+
+      '<span class="'+badgeClass+'">'+esc(h.state||'unknown')+'</span></div>'+
+      '<button type="button" class="secondary compact" data-host-recover="'+esc(h.id)+'">Repair / re-enroll</button></div>'+
+      '<div class="host-meta">Last seen: '+esc(!isZeroTime(h.lastSeenAt)?fmtAge(h.lastSeenAt)+' ago':'unknown')+
+      ' · ID <code title="'+esc(h.id)+'">'+esc(h.id)+'</code></div>'+
+      '<div class="host-meta">Workers: '+used.busy+' busy / '+used.active+' active · Agent revision: '+
+      '<code title="'+esc(version)+'">'+esc(version?version.slice(0,8):'unknown')+'</code></div>'+
+      sameNameNote+offlineNote+
+      '<details class="host-settings" data-host-settings="'+esc(h.id)+'"><summary>Capacity and scheduling settings</summary>'+
+      '<div class="host-resources">CPU: '+esc(h.capacity?.cpuMillis?cpuCores(used.cpu)+' / '+cpuCores(h.capacity.cpuMillis)+' cores':'unknown')+
+      ' · RAM: '+esc(h.capacity?.memoryBytes?gib(used.ram)+' / '+gib(h.capacity.memoryBytes)+' GiB':'unknown')+'</div>'+
+      '<div class="resource-grid"><label>Priority<input class="inline-tags" data-host-priority-input="'+esc(h.id)+
+      '" type="number" min="-1000" max="1000" step="1" value="'+esc(draft?.priority??Number(h.priority||0))+'"></label>'+
+      '<label>Tags<input class="inline-tags" data-host-tag-input="'+esc(h.id)+'" value="'+
+      esc(draft?.tags??hostTagText(h))+'" placeholder="gpu, high-memory"></label></div>'+
+      '<button type="button" class="secondary compact" data-host-tags="'+esc(h.id)+'">'+
+      (draft?'Save changes':'Save')+'</button></details></article>';
+  }).join('');
+  const html=summary+warning+'<div class="host-list">'+(cards||'<div class="empty">No hosts match this filter.</div>')+'</div>';
   renderPreservingTableScroll(els.hosts,html);
+  els.hosts.querySelectorAll('details[data-host-settings]').forEach(el=>{
+    el.open=previousOpen.has(el.dataset.hostSettings);
+  });
 }
-
 function renderActiveRunners(workers,poolByID,hostByID,progressByWorker){
   const all=Array.isArray(workers)?workers:[];
   const terminal=new Set(['deleted','completed','failed']);
@@ -462,8 +600,21 @@ function renderActiveRunners(workers,poolByID,hostByID,progressByWorker){
     ['Repository',x=>x.repository||repoName(poolByID?.get(x.poolId))||'—'],
     ['Type',x=>runnerClass(poolByID?.get(x.poolId))],
     ['Job',x=>x.jobName||(String(x.state||'').toLowerCase()==='ready'?'idle / waiting':'startup')],
-    ['GitHub',x=>githubRunLink(x,poolByID?.get(x.poolId)),true],
-    ['Status',x=>x.state||'unknown'],
+    ['GitHub',x=>githubRunLink(x,poolByID?.get(x.poolId),progressByWorker?.get(x.id)),true],
+    ['Status',x=>{
+      const p=progressByWorker?.get(x.id);
+      if(githubCompletedWorkerMismatch(x,p)){
+        return '<div class="runner-conflict"><strong>GitHub finished ('+esc(p.conclusion||'unknown')+
+          '); RunnerHub still busy</strong><button type="button" class="secondary compact" '+
+          'data-worker-reconcile="'+esc(x.id)+'">Reconcile / release slot</button></div>';
+      }
+      if(legacyBusyWorkerNeedsJobURL(x)){
+        return '<div class="runner-conflict"><strong>GitHub run ID missing; unable to verify status automatically</strong>'+
+          '<button type="button" class="secondary compact" data-worker-reconcile="'+esc(x.id)+
+          '" data-worker-needs-url="true">Verify completed GitHub job URL</button></div>';
+      }
+      return esc(x.state||'unknown');
+    },true],
     ['Steps completed',x=>{const p=progressByWorker?.get(x.id);return p?.available&&p.totalSteps>0?p.completedSteps+' / '+p.totalSteps+' ('+p.percent+'% steps)':'—'}],
     ['Current step',x=>progressByWorker?.get(x.id)?.currentStep||'—'],
     ['Host',x=>hostByID?.get(x.hostId)?.name||x.hostId||'pending'],
@@ -746,10 +897,11 @@ function renderFleetAlerts(hosts,pools,workers,statuses,runtime,fresh=true){
   // Preserve keyboard focus when a background refresh does not change the UI.
   if(container.innerHTML!==html)container.innerHTML=html;
 }
-function renderFleetOverview(hosts,pools,workers,statuses,runtimeHealth){
+function renderFleetOverview(hosts,pools,workers,statuses,runtimeHealth,progress=[]){
   const allHosts=Array.isArray(hosts)?hosts:[];
   const allPools=Array.isArray(pools)?pools:[];
   const allWorkers=Array.isArray(workers)?workers:[];
+  const progressByWorker=new Map((Array.isArray(progress)?progress:[]).map(p=>[p.workerId,p]));
   const listenerByPool=new Map((statuses||[]).map(s=>[s.poolId,s]));
   const runtimeByPool=new Map((runtimeHealth||[]).map(s=>[s.poolId,s]));
   const online=allHosts.filter(h=>String(h.state||'').toLowerCase()==='online').length;
@@ -769,6 +921,11 @@ function renderFleetOverview(hosts,pools,workers,statuses,runtimeHealth){
     '<strong>'+esc(value)+'</strong><span class="stat-detail">'+esc(detail)+'</span></a>'
   ).join('')+'</div>';
   const notices=[];
+  for(const worker of allWorkers){
+    const conflict=staleGitHubWorkerDetail(worker,progressByWorker.get(worker.id));
+    if(conflict)notices.push('<strong>GitHub/RunnerHub state mismatch:</strong> '+esc(conflict)+
+      ' <a href="#active-runners-section">Review runner</a>.');
+  }
   if(!allHosts.length)notices.push('No machines registered. Add a machine under <a href="#compute-section">Compute</a>.');
   else if(!online)notices.push('No machines online. Check agent connectivity and <a href="/diagnostics.html">diagnostics</a>.');
   else if(online<allHosts.length)notices.push(esc(allHosts.length-online)+' machine(s) not online; check <a href="#compute-section">Compute</a>.');
@@ -777,6 +934,10 @@ function renderFleetOverview(hosts,pools,workers,statuses,runtimeHealth){
     const name=repoName(pool)+' / '+(pool.scaleSetName||'runnerhub');
     const listener=listenerByPool.get(pool.id);
     const runtime=runtimeByPool.get(pool.id);
+    const publisherBlocker=publisherHostBlocker(pool,allHosts);
+    const concurrencyBlocker=poolConcurrencyBlocker(pool,allWorkers);
+    if(concurrencyBlocker)notices.push('<strong>'+esc(name)+'</strong>: '+esc(concurrencyBlocker)+' <a href="#active-runners-section">Review runners</a>.');
+    if(publisherBlocker)notices.push('<strong>'+esc(name)+'</strong>: '+esc(publisherBlocker)+' <a href="#compute-section">Review hosts</a>.');
     if(listener?.state!=='ready')notices.push('<strong>'+esc(name)+'</strong>: listener '+esc(listener?.state||'unknown')+'. <a href="/diagnostics.html">Inspect readiness</a>.');
     else if(runtime?.state==='degraded'||runtime?.healthy===false)
       notices.push('<strong>'+esc(name)+'</strong>: runtime degraded. <a href="/diagnostics.html">Inspect failure</a>.');
@@ -790,24 +951,35 @@ function renderFleetOverview(hosts,pools,workers,statuses,runtimeHealth){
   els.fleetOverview.innerHTML=html;
 }
 
-function renderPools(pools,statuses,runtimeHealth,recommendationByPool){
+function renderPools(pools,statuses,runtimeHealth,recommendationByPool,hosts=[],workers=[],progress=[]){
   const listeners=new Map((statuses||[]).map(s=>[s.poolId,s]));
   const runtimes=new Map((runtimeHealth||[]).map(s=>[s.poolId,s]));
+  const progressByWorker=new Map((progress||[]).map(p=>[p.workerId,p]));
   const rows=(pools||[]).map(p=>{
     const r=recommendationByPool.get(p.id);
     const listener=listeners.get(p.id)?.state||'unknown';
     const runtime=runtimes.get(p.id)?.state||'unknown';
     const label=p.scaleSetName||'runnerhub';
+    const confirmed=publisherHostBlocker(p,hosts);
+    const mismatch=(workers||[]).filter(w=>w.poolId===p.id)
+      .map(w=>staleGitHubWorkerDetail(w,progressByWorker.get(w.id))).find(Boolean);
+    const poolBusy=poolConcurrencyBlocker(p,workers);
+    const capacity=r?.capacity;
+    const capacityReason=capacity&&Number(capacity.additionalWorkers)===0&&
+      Number(capacity.activeWorkers)<Number(p.maxConcurrency)?
+      (capacity.reason||'No free capacity confirmed by the last pool summary.'):'';
+    const diagnosis=mismatch||poolBusy||confirmed||capacityReason||'No known host eligibility blocker';
     return '<tr><td>'+esc(repoName(p))+'</td><td><code>'+esc(label)+'</code></td>'+
       '<td><span class="pool-status '+(listener==='ready'?'ok':listener==='unknown'?'unknown':'attention')+'">'+esc(listener)+'</span></td>'+
       '<td><span class="pool-status '+(['healthy','active'].includes(runtime)?'ok':runtime==='unknown'?'unknown':'attention')+'">'+esc(runtime)+'</span></td>'+
       '<td>'+esc(r?.capacity?String(r.capacity.activeWorkers??'—')+' / '+p.maxConcurrency:'—')+'</td>'+
       '<td>'+esc(cpuCores(p.resources?.cpuMillis))+' CPU · '+esc(gib(p.resources?.memoryBytes))+' GiB</td>'+
       '<td>'+esc(fmtDuration(r?.latencies?.queue))+'</td>'+
-      '<td>'+esc(bottleneckLabel(r?.capacity?.bottleneck))+'</td></tr>';
+      '<td>'+esc(bottleneckLabel(r?.capacity?.bottleneck))+'</td>'+
+      '<td class="pool-diagnosis">'+esc(diagnosis)+'</td></tr>';
   }).join('');
   const summary=(pools||[]).length
-    ? '<div class="table-wrap pool-status-table"><table><thead><tr><th>Repository</th><th>Runner label</th><th>Listener</th><th>Runtime</th><th>Active / limit</th><th>Worker size</th><th>Queue</th><th>Bottleneck</th></tr></thead><tbody>'+rows+'</tbody></table></div>'
+    ? '<div class="table-wrap pool-status-table"><table><thead><tr><th>Repository</th><th>Runner label</th><th>Listener</th><th>Runtime</th><th>Active / limit</th><th>Worker size</th><th>Queue</th><th>Bottleneck</th><th>Host diagnosis</th></tr></thead><tbody>'+rows+'</tbody></table></div>'
     : '<div class="empty">No runner pools configured. Connect a repository to create one.</div>';
   const advanced='<details class="pool-advanced"><summary>Advanced pool metrics and resource learning</summary>'+tab(pools,[
     ['Repository',x=>repoName(x)],['Class',x=>runnerClass(x)],
@@ -919,14 +1091,14 @@ async function refresh(force=false){
     const poolByID=new Map((p||[]).map(x=>[x.id,x]));
     const hostByID=new Map((h||[]).map(x=>[x.id,x]));
     const progressByWorker=new Map((progress||[]).map(x=>[x.workerId,x]));
-    renderFleetOverview(h,p,w,statuses,runtimeHealth);
+    renderFleetOverview(h,p,w,statuses,runtimeHealth,progress);
     renderFleetAlerts(h,p,w,statuses,runtimeHealth,
       !errors.some(error=>/^(hosts|pools|workers|scalesets|runtime):/.test(error)));
     renderOnboardingChecklist(h,p,statuses,installations,repos);
     renderDeployerStatus(deployer);
     renderCIEfficiency(efficiencyCache.value);
     renderHosts(h,w,poolByID);
-    renderPools(p,statuses,runtimeHealth,recommendationCache.value);
+    renderPools(p,statuses,runtimeHealth,recommendationCache.value,h,w,progress);
     renderActiveRunners(w,poolByID,hostByID,progressByWorker);
     renderWorkers(w,poolByID);
     renderPreservingTableScroll(els.audit,tab(a,[
@@ -1419,6 +1591,136 @@ function renderRepos(repos,pools,statuses,runtimeHealth,hosts,installations){
   const empty=visibleRepos.length?'':'<div class="empty">No repositories match the current search and visibility filters.</div>';
   els.repos.innerHTML=accountHint+count+groups+empty;
 }
+function loadMachineBootstrap(){
+  try{
+    const value=JSON.parse(sessionStorage.getItem(MACHINE_BOOTSTRAP_KEY)||'null');
+    if(!value||typeof value!=='object'||!['working','unknown','failed','blocked','succeeded'].includes(value.state))return null;
+    // A reload never proves a request completed. Reconnect by operation ID.
+    return {...value,state:value.state==='working'?'unknown':value.state};
+  }catch{return null}
+}
+function setMachineBootstrap(state,fields={}){
+  // Explicit allowlist prevents callers from persisting SSH credentials.
+  machineBootstrap={
+    state,name:String(fields.name||''),startedAt:fields.startedAt||new Date().toISOString(),
+    hostId:fields.hostId||'',operationId:fields.operationId||''
+  };
+  try{sessionStorage.setItem(MACHINE_BOOTSTRAP_KEY,JSON.stringify(machineBootstrap))}catch{}
+  renderMachineBootstrap();
+}
+function machineStepLabel(step){
+  return ({
+    'request-accepted':'Request accepted',
+    'preparing-enrollment':'Preparing enrollment',
+    'verifying-host-key':'Verifying SSH host key',
+    'configuring-remote-host':'Configuring Docker and agent',
+    'waiting-for-agent':'Waiting for agent heartbeat',
+    'cleaning-enrollment-secret':'Removing temporary enrollment secret',
+    'agent-ready':'Agent confirmed online',
+    'bootstrap-failed':'Remote setup failed',
+    'bootstrap-timed-out':'Setup timed out',
+    'enrollment-cleanup-failed':'Enrollment needs cleanup',
+    'server-restarted':'Control plane restarted',
+    'outcome-unknown':'Outcome unknown'
+  })[step]||'Checking operation';
+}
+function renderMachineBootstrap(){
+  const panel=document.getElementById('machine-bootstrap-status');
+  if(!panel)return;
+  if(!machineBootstrap){panel.innerHTML='';return}
+  const status=machineBootstrap;
+  const op=machineOperation?.id===status.operationId?machineOperation:null;
+  const labels={
+    working:'Enrollment in progress',unknown:'Enrollment status unconfirmed',
+    succeeded:'Enrollment confirmed',failed:'Bootstrap failed',blocked:'Enrollment needs action'
+  };
+  const summary=op?.detail||({
+    working:'Waiting for RunnerHub to acknowledge the operation; do not resubmit.',
+    unknown:'Refreshing operation status. If no server record is available, inspect the host before retrying.',
+    succeeded:'The agent heartbeat was confirmed.',
+    failed:'The remote setup failed. Check the agent logs before retrying.',
+    blocked:'An agent was observed, but a post-enrollment step failed. Inspect the remote machine before retrying.'
+  })[status.state];
+  const stage=op?'<div class="host-meta"><strong>Current stage:</strong> '+esc(machineStepLabel(op.step))+
+    ' · Last confirmed progress '+esc(fmtAge(op.lastProgressAt))+' ago</div>':'';
+  const timeline=Array.isArray(op?.events)&&op.events.length
+    ? '<ol class="machine-timeline">'+op.events.slice(-10).map(e=>'<li>'+esc(machineStepLabel(e.step))+
+      ' <span class="muted">'+esc(fmtTime(e.at))+'</span></li>').join('')+'</ol>'
+    : '';
+  panel.innerHTML='<div class="machine-progress-head"><strong>'+esc(labels[status.state])+
+    '</strong><button type="button" class="secondary compact" data-machine-bootstrap-dismiss>Dismiss</button></div>'+
+    '<div class="host-meta">Machine: '+esc(status.name||'unknown')+
+    ' · Started '+esc(fmtAge(status.startedAt))+' ago'+
+    (status.hostId?' · Host ID <code>'+esc(status.hostId)+'</code>':'')+'</div>'+
+    stage+'<div class="resource-note">'+esc(summary)+'</div>'+timeline;
+}
+async function refreshMachineOperation(){
+  const id=machineBootstrap?.operationId;
+  if(!id||machineOperationPolling)return;
+  machineOperationPolling=true;
+  try{
+    const op=await j('/api/v1/operations/'+encodeURIComponent(id));
+    if(machineBootstrap?.operationId!==id)return;
+    machineOperation=op;
+    const state=['queued','working','waiting'].includes(op.state)?'working':
+      ['succeeded','failed','blocked'].includes(op.state)?op.state:'unknown';
+    const previous=machineBootstrap.state;
+    setMachineBootstrap(state,{operationId:op.id,name:op.target,
+      startedAt:op.startedAt,hostId:op.hostId});
+    if(previous!=='succeeded'&&state==='succeeded')await refresh(true);
+  }catch{
+    // A network error says nothing about the remote machine's actual state.
+    if(machineBootstrap?.operationId===id){
+      machineOperation=null;
+      setMachineBootstrap('unknown',{...machineBootstrap});
+    }
+  }finally{machineOperationPolling=false}
+}
+async function refreshRecentOperations(){
+  const panel=document.getElementById('machine-operations');
+  if(!panel)return;
+  try{
+    const ops=await j('/api/v1/operations?limit=10');
+    if(!Array.isArray(ops))throw new Error('Invalid operations response');
+    const cards=ops.map(op=>'<div class="machine-operation-row"><div><strong>'+esc(op.target)+
+      '</strong> · '+esc(op.state)+' · '+esc(machineStepLabel(op.step))+
+      '<div class="host-meta">Updated '+esc(fmtAge(op.updatedAt))+' ago'+
+      (op.hostId?' · Host '+esc(op.hostId):'')+'</div></div>'+
+      '<button type="button" class="secondary compact" data-operation-view="'+esc(op.id)+
+      '" data-operation-name="'+esc(op.target)+'">Details</button></div>').join('');
+    if(panel.innerHTML!==cards)panel.innerHTML=cards||'<div class="muted small">No tracked enrollments yet.</div>';
+  }catch{
+    panel.innerHTML='<div class="muted small">Operation history unavailable. Check your admin session or server connection.</div>';
+  }
+}
+function renderMachineDuplicateWarning(hosts=snapshot.hosts){
+  const panel=document.getElementById('machine-duplicate-warning');
+  if(!panel)return;
+  const name=document.getElementById('machine-name').value.trim().toLowerCase();
+  const matches=(Array.isArray(hosts)?hosts:[]).filter(h=>
+    name&&String(h.name||'').trim().toLowerCase()===name);
+  panel.innerHTML=matches.length
+    ? '<strong>Existing host name:</strong> '+matches.map(h=>esc(h.name)+' ('+esc(h.state)+
+      ', ID <code>'+esc(h.id)+'</code>)').join(', ')+
+      '. This may be a previous enrollment or a distinct machine. Check IDs before creating another record.'
+    : '';
+}
+function recoverHost(button){
+  const host=(snapshot.hosts||[]).find(h=>String(h.id)===button.dataset.hostRecover);
+  if(!host)return message('Host is no longer in the current fleet snapshot. Refresh and try again.','error');
+  document.getElementById('machine-name').value=host.name||'';
+  document.getElementById('machine-tags').value=hostTagText(host);
+  document.getElementById('machine-priority').value=String(host.priority||0);
+  // Credentials and fingerprints are not transferable between host identities.
+  for(const id of ['machine-host-fingerprint','machine-password','machine-sudo-password',
+    'machine-private-key','machine-registry-password'])document.getElementById(id).value='';
+  const panel=document.querySelector('.machine-add');
+  if(panel){panel.open=true;panel.scrollIntoView?.({behavior:'smooth',block:'start'})}
+  renderMachineDuplicateWarning();
+  message('Recovery settings copied from '+host.name+' ('+host.id+'). Supply the SSH address and user, verify its host key again, then enroll. Old records will not be deleted.','success');
+  document.getElementById('machine-address').focus?.();
+}
+
 async function scanMachineHostKey(){
   const button=document.getElementById('machine-scan-fingerprint');
   const address=document.getElementById('machine-address').value.trim();
@@ -1453,18 +1755,63 @@ async function addMachine(){
   };
   if(!body.address||!body.user||!body.name)return message('Machine address, SSH user, and RunnerHub name are required.','error');
   if(!body.hostKeyFingerprint)return message('Verify and enter the SSH host key fingerprint before adding the machine.','error');
+  if(machineBootstrap?.state==='working')return message('A machine enrollment is already underway. Check its status before retrying.','error');
+  button.disabled=true;
+  const startedAt=new Date().toISOString();
+  setMachineBootstrap('working',{name:body.name,startedAt});
+  try{
+    const op=await j('/api/v1/hosts/bootstrap-operations',{method:'POST',
+      headers:{'content-type':'application/json'},body:JSON.stringify(body)});
+    if(!op.id)throw new Error('No enrollment operation ID returned by RunnerHub.');
+    // Credentials should not remain in the form after the server has accepted them.
+    for(const id of ['machine-password','machine-sudo-password','machine-private-key',
+      'machine-registry-password'])document.getElementById(id).value='';
+    machineOperation=op;
+    setMachineBootstrap('working',{name:op.target||body.name,operationId:op.id,startedAt:op.startedAt});
+    message(op.reused?'An enrollment for this machine name is already in progress. Showing the existing operation.':
+      'Enrollment accepted; see the stage timeline in Hosts.','success');
+    await refreshMachineOperation();
+    await refreshRecentOperations();
+  }catch(e){
+    machineOperation=null;
+    setMachineBootstrap('unknown',{name:body.name,startedAt});
+    message('Enrollment request not confirmed: '+e.message+'. Verify the host and recent operations before retrying.','error');
+  }finally{button.disabled=false}
+}
+// This action is offered only when GitHub reports completion while the
+// RunnerHub worker still says busy. The server independently verifies both.
+async function reconcileFinishedGitHubWorker(button){
+  const workerID=button.dataset.workerReconcile;
+  if(!workerID)return;
+  const worker=(snapshot.workers||[]).find(w=>w.id===workerID);
+  const progress=(snapshot.progress||[]).find(p=>p.workerId===workerID);
+  const confirmed=githubCompletedWorkerMismatch(worker,progress);
+  const needsURL=legacyBusyWorkerNeedsJobURL(worker);
+  if(!confirmed&&!needsURL){
+    return message('GitHub completion is not confirmed for this worker. Refresh before recovery.','error');
+  }
+  let githubJobUrl='';
+  if(needsURL&&!confirmed){
+    const entered=window.prompt('Paste the full completed GitHub job URL (https://github.com/owner/repo/actions/runs/123/job/456). RunnerHub will independently verify the assigned runner and terminal result.','');
+    if(entered===null)return;
+    githubJobUrl=entered.trim();
+    if(!/^https:\/\/github\.com\/[^/]+\/[^/]+\/actions\/runs\/[0-9]+\/job\/[0-9]+$/.test(githubJobUrl))
+      return message('A full canonical GitHub job URL is required.','error');
+  }
+  const consequence=(confirmed?'GitHub reports '+(progress.conclusion||'completion')+' for '+(worker.jobName||workerID)+'.':
+    'RunnerHub will verify the supplied GitHub job and runner identity before changing any worker state.')+
+    ' If completed, reconcile RunnerHub as terminal and queue provider cleanup? This may stop an orphaned container.';
+  if(!window.confirm(consequence))return;
   button.disabled=true;
   try{
-    message('Connecting to '+body.address+' and enrolling '+body.name+'…');
-    const host=await j('/api/v1/hosts/bootstrap',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});
-    document.getElementById('machine-host-fingerprint').value='';
-    document.getElementById('machine-password').value='';
-    document.getElementById('machine-sudo-password').value='';
-    document.getElementById('machine-private-key').value='';
-    document.getElementById('machine-registry-password').value='';
-    message(host.name+' is online and available for RunnerHub CI.','success');
-    await refresh();
-  }catch(e){message(e.message,'error')}finally{button.disabled=false}
+    const opts=githubJobUrl?{method:'POST',headers:{'content-type':'application/json'},
+      body:JSON.stringify({githubJobUrl})}:{method:'POST'};
+    const result=await j('/api/v1/workers/'+encodeURIComponent(workerID)+'/reconcile-github',opts);
+    message(result.detail||'GitHub completion verified; worker reconciled.','success');
+    await refresh(true);
+  }catch(e){
+    message('Reconciliation refused: '+e.message,'error');
+  }finally{button.disabled=false}
 }
 
 async function saveHostTags(button){
@@ -1665,5 +2012,13 @@ async function createPool(){
 }
 
 initPageNav();
+renderMachineBootstrap();
 refresh();
-setInterval(()=>{if(!document.hidden&&els.autoRefresh?.checked&&!refreshInFlight)refresh()},10000);
+refreshMachineOperation();
+refreshRecentOperations();
+setInterval(()=>{
+  if(document.hidden)return;
+  renderMachineBootstrap();
+  refreshMachineOperation();
+  if(els.autoRefresh?.checked){refreshRecentOperations();if(!refreshInFlight)refresh()}
+},10000);

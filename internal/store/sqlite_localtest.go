@@ -3,8 +3,8 @@
 package store
 
 import("context";"sync";"time";"github.com/eutelic/runnerhub/internal/agent";"github.com/eutelic/runnerhub/internal/core")
-type SQLite struct{mu sync.Mutex;hosts map[string]core.Host;pools map[string]core.RunnerPool;workers map[string]core.Worker;audit []core.AuditEvent;commands map[string]CommandRecord}
-func OpenSQLite(string)(*SQLite,error){return &SQLite{hosts:map[string]core.Host{},pools:map[string]core.RunnerPool{},workers:map[string]core.Worker{},commands:map[string]CommandRecord{}},nil}
+type SQLite struct{mu sync.Mutex;hosts map[string]core.Host;pools map[string]core.RunnerPool;workers map[string]core.Worker;audit []core.AuditEvent;commands map[string]CommandRecord;operations map[string]Operation}
+func OpenSQLite(string)(*SQLite,error){return &SQLite{hosts:map[string]core.Host{},pools:map[string]core.RunnerPool{},workers:map[string]core.Worker{},commands:map[string]CommandRecord{},operations:map[string]Operation{}},nil}
 func(s *SQLite)Close()error{return nil}
 func(s *SQLite)UpsertHost(_ context.Context,v core.Host)error{s.mu.Lock();defer s.mu.Unlock();s.hosts[v.ID]=v;return nil}
 func(s *SQLite)GetHost(_ context.Context,id string)(core.Host,error){s.mu.Lock();defer s.mu.Unlock();v,ok:=s.hosts[id];if !ok{return core.Host{},ErrNotFound};return v,nil}

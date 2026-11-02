@@ -94,6 +94,7 @@ func (s SSH) Bootstrap(ctx context.Context, req Request, enrollmentToken string,
 
 	knownHosts := filepath.Join(tmp, "known_hosts")
 	if strings.TrimSpace(req.HostKeyFingerprint) != "" {
+		reportProgress(ctx, "verifying-host-key")
 		if err := pinHostKey(ctx, req.Address, req.HostKeyFingerprint, knownHosts); err != nil {
 			return core.Host{}, err
 		}
@@ -133,9 +134,11 @@ func (s SSH) Bootstrap(ctx context.Context, req Request, enrollmentToken string,
 	}
 
 	tokenPath := "/tmp/runnerhub-enrollment-" + safeName(req.HostName) + ".token"
+	reportProgress(ctx, "configuring-remote-host")
 	if err := run(startScript(req, enrollmentToken, tokenPath)); err != nil {
 		return core.Host{}, err
 	}
+	reportProgress(ctx, "waiting-for-agent")
 	host, err := wait(ctx, req.HostName)
 	if err != nil {
 		diagnostics, _ := runOutput(diagnosticsScript(req))
@@ -145,6 +148,7 @@ func (s SSH) Bootstrap(ctx context.Context, req Request, enrollmentToken string,
 		}
 		return core.Host{}, err
 	}
+	reportProgress(ctx, "cleaning-enrollment-secret")
 	if err := run(finalizeScript(req, tokenPath)); err != nil {
 		return host, fmt.Errorf("host enrolled but enrollment-secret cleanup failed: %w", err)
 	}

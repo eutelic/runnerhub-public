@@ -5,7 +5,7 @@ import(
 "github.com/eutelic/runnerhub/internal/agent";"github.com/eutelic/runnerhub/internal/agenthub";"github.com/eutelic/runnerhub/internal/auth";cachepkg "github.com/eutelic/runnerhub/internal/cache";"github.com/eutelic/runnerhub/internal/cireconcile";"github.com/eutelic/runnerhub/internal/core";"github.com/eutelic/runnerhub/internal/deployer";"github.com/eutelic/runnerhub/internal/fleet";"github.com/eutelic/runnerhub/internal/githubauth";"github.com/eutelic/runnerhub/internal/githubrunner";"github.com/eutelic/runnerhub/internal/images";"github.com/eutelic/runnerhub/internal/machinebootstrap";"github.com/eutelic/runnerhub/internal/policy";"github.com/eutelic/runnerhub/internal/provider";"github.com/eutelic/runnerhub/internal/scheduler";"github.com/eutelic/runnerhub/internal/store";"github.com/eutelic/runnerhub/internal/telemetry")
 
 type Service struct{Store store.Store;GitHub githubrunner.Backend;Catalog githubrunner.Catalog;GitHubAuth *githubauth.Manager;Hub *agenthub.Hub;Scheduler scheduler.Scheduler;Policy policy.Engine;Metrics *telemetry.Metrics;EnrollmentToken string;Auth *auth.Manager;Cache *cachepkg.Store;Static http.Handler;MachineBootstrap machinebootstrap.Bootstrapper;MachineBootstrapURL string;MachineAgentImage string;DeployerBootstrap *deployer.BootstrapManager;CIReconcilerStatus *cireconcile.Status;workerScheduleMu sync.Mutex;poolMutationMu sync.Mutex;workflowJobsMu sync.Mutex;workflowJobsCache map[string]workflowJobsCacheEntry;workflowJobsPending map[string]*workflowJobsFlight;scaleSetStatusMu sync.RWMutex;scaleSetStatuses map[string]scaleSetStatusResponse}
-func(s *Service)Handler()http.Handler{m:=http.NewServeMux();m.HandleFunc("GET /healthz",func(w http.ResponseWriter,_ *http.Request){writeJSON(w,200,map[string]string{"status":"ok"})});m.HandleFunc("GET /auth/github/status",s.githubAuthStatus);m.HandleFunc("GET /auth/github/login",s.githubLogin);m.HandleFunc("GET /auth/github/callback",s.githubCallback);m.HandleFunc("GET /auth/github/install",s.githubInstall);m.HandleFunc("GET /auth/github/setup",s.githubSetup);m.HandleFunc("POST /auth/logout",s.githubLogout);m.HandleFunc("POST /api/v1/agent/enroll",s.enroll);m.HandleFunc("POST /api/v1/agent/heartbeat",s.heartbeat);m.HandleFunc("GET /api/v1/agent/commands",s.commands);m.HandleFunc("POST /api/v1/agent/results",s.results);m.HandleFunc("GET /api/v1/hosts",s.hosts);m.HandleFunc("POST /api/v1/hosts/ssh-fingerprints",s.scanSSHHostKey);m.HandleFunc("POST /api/v1/hosts/bootstrap",s.bootstrapHost);m.HandleFunc("POST /api/v1/hosts/{id}/drain",s.drain);m.HandleFunc("PATCH /api/v1/hosts/{id}",s.updateHost);m.HandleFunc("POST /api/v1/hosts/drain",s.bulkDrain);m.HandleFunc("GET /api/v1/pools",s.pools);m.HandleFunc("POST /api/v1/pools",s.createPool);m.HandleFunc("PATCH /api/v1/pools/{id}/resources",s.updatePoolResources);m.HandleFunc("PUT /api/v1/pools/{id}/image",s.updatePoolImage);m.HandleFunc("GET /api/v1/pools/{id}/health",s.poolHealth);m.HandleFunc("GET /api/v1/runtime-health",s.runtimeHealth);m.HandleFunc("GET /api/v1/pools/{id}/recommendation",s.poolRecommendation);m.HandleFunc("POST /api/v1/pools/{id}/learning/reset",s.resetPoolLearning);m.HandleFunc("GET /api/v1/pools/{id}/security",s.poolSecurity);m.HandleFunc("GET /api/v1/workers",s.workers);m.HandleFunc("GET /api/v1/workers/history",s.workerHistory);m.HandleFunc("GET /api/v1/repositories/{owner}/{repo}/ci-efficiency",s.ciEfficiency);m.HandleFunc("GET /api/v1/workers/progress",s.workerProgress);m.HandleFunc("POST /api/v1/pools/{id}/workers",s.createWorker);m.HandleFunc("POST /api/v1/pools/{id}/scale-workers",s.createScaleWorker);m.HandleFunc("POST /api/v1/scale-events",s.scaleEvent);m.HandleFunc("GET /api/v1/audit",s.audit);m.HandleFunc("GET /api/v1/metrics",s.metrics);m.HandleFunc("GET /api/v1/fleet/versions",s.versions);m.HandleFunc("POST /api/v1/cost/estimate",s.costEstimate);m.HandleFunc("PUT /api/v1/cache",s.cachePut);m.HandleFunc("GET /api/v1/cache/{key}",s.cacheGet);m.HandleFunc("DELETE /api/v1/cache/{key}",s.cacheDelete);m.HandleFunc("GET /api/v1/github/repositories",s.repositories);m.HandleFunc("GET /api/v1/github/installations",s.githubInstallations);m.HandleFunc("GET /api/v1/github/connected-repositories",s.connectedRepositories);m.HandleFunc("POST /api/v1/github/connect",s.connectRepository);m.HandleFunc("POST /api/v1/github/profile",s.configureRunnerProfile);m.HandleFunc("POST /api/v1/github/publisher",s.configurePublisherRepository);m.HandleFunc("GET /api/v1/github/runner-groups",s.runnerGroups);m.HandleFunc("GET /api/v1/scalesets/configs",s.scaleSetConfigs);m.HandleFunc("GET /api/v1/scalesets/status",s.scaleSetStatus);m.HandleFunc("POST /api/v1/scalesets/status",s.scaleSetStatus);m.HandleFunc("GET /api/v1/deployer/status",s.deployerStatus);m.HandleFunc("POST /api/v1/deployer/install",s.installDeployer);if s.Static!=nil{m.Handle("/",s.Static)};h:=securityHeaders(m);if s.Auth!=nil{h=s.Auth.Middleware(h)};return h}
+func(s *Service)Handler()http.Handler{m:=http.NewServeMux();m.HandleFunc("GET /healthz",func(w http.ResponseWriter,_ *http.Request){writeJSON(w,200,map[string]string{"status":"ok"})});m.HandleFunc("GET /auth/github/status",s.githubAuthStatus);m.HandleFunc("GET /auth/github/login",s.githubLogin);m.HandleFunc("GET /auth/github/callback",s.githubCallback);m.HandleFunc("GET /auth/github/install",s.githubInstall);m.HandleFunc("GET /auth/github/setup",s.githubSetup);m.HandleFunc("POST /auth/logout",s.githubLogout);m.HandleFunc("POST /api/v1/agent/enroll",s.enroll);m.HandleFunc("POST /api/v1/agent/heartbeat",s.heartbeat);m.HandleFunc("GET /api/v1/agent/commands",s.commands);m.HandleFunc("POST /api/v1/agent/results",s.results);m.HandleFunc("GET /api/v1/hosts",s.hosts);m.HandleFunc("POST /api/v1/hosts/ssh-fingerprints",s.scanSSHHostKey);m.HandleFunc("POST /api/v1/hosts/bootstrap",s.bootstrapHost);m.HandleFunc("POST /api/v1/hosts/bootstrap-operations",s.startHostBootstrapOperation);m.HandleFunc("GET /api/v1/operations",s.listHostOperations);m.HandleFunc("GET /api/v1/operations/{id}",s.getHostOperation);m.HandleFunc("POST /api/v1/hosts/{id}/drain",s.drain);m.HandleFunc("PATCH /api/v1/hosts/{id}",s.updateHost);m.HandleFunc("POST /api/v1/hosts/drain",s.bulkDrain);m.HandleFunc("GET /api/v1/pools",s.pools);m.HandleFunc("POST /api/v1/pools",s.createPool);m.HandleFunc("PATCH /api/v1/pools/{id}/resources",s.updatePoolResources);m.HandleFunc("PUT /api/v1/pools/{id}/image",s.updatePoolImage);m.HandleFunc("GET /api/v1/pools/{id}/health",s.poolHealth);m.HandleFunc("GET /api/v1/runtime-health",s.runtimeHealth);m.HandleFunc("GET /api/v1/pools/{id}/recommendation",s.poolRecommendation);m.HandleFunc("POST /api/v1/pools/{id}/learning/reset",s.resetPoolLearning);m.HandleFunc("GET /api/v1/pools/{id}/security",s.poolSecurity);m.HandleFunc("GET /api/v1/workers",s.workers);m.HandleFunc("GET /api/v1/workers/history",s.workerHistory);m.HandleFunc("GET /api/v1/repositories/{owner}/{repo}/ci-efficiency",s.ciEfficiency);m.HandleFunc("GET /api/v1/workers/progress",s.workerProgress);m.HandleFunc("POST /api/v1/workers/{id}/reconcile-github",s.reconcileGitHubCompletedWorker);m.HandleFunc("POST /api/v1/pools/{id}/workers",s.createWorker);m.HandleFunc("POST /api/v1/pools/{id}/scale-workers",s.createScaleWorker);m.HandleFunc("POST /api/v1/scale-events",s.scaleEvent);m.HandleFunc("GET /api/v1/audit",s.audit);m.HandleFunc("GET /api/v1/metrics",s.metrics);m.HandleFunc("GET /api/v1/fleet/versions",s.versions);m.HandleFunc("POST /api/v1/cost/estimate",s.costEstimate);m.HandleFunc("PUT /api/v1/cache",s.cachePut);m.HandleFunc("GET /api/v1/cache/{key}",s.cacheGet);m.HandleFunc("DELETE /api/v1/cache/{key}",s.cacheDelete);m.HandleFunc("GET /api/v1/github/repositories",s.repositories);m.HandleFunc("GET /api/v1/github/installations",s.githubInstallations);m.HandleFunc("GET /api/v1/github/connected-repositories",s.connectedRepositories);m.HandleFunc("POST /api/v1/github/connect",s.connectRepository);m.HandleFunc("POST /api/v1/github/profile",s.configureRunnerProfile);m.HandleFunc("POST /api/v1/github/publisher",s.configurePublisherRepository);m.HandleFunc("GET /api/v1/github/runner-groups",s.runnerGroups);m.HandleFunc("GET /api/v1/scalesets/configs",s.scaleSetConfigs);m.HandleFunc("GET /api/v1/scalesets/status",s.scaleSetStatus);m.HandleFunc("POST /api/v1/scalesets/status",s.scaleSetStatus);m.HandleFunc("GET /api/v1/deployer/status",s.deployerStatus);m.HandleFunc("POST /api/v1/deployer/install",s.installDeployer);if s.Static!=nil{m.Handle("/",s.Static)};h:=securityHeaders(m);if s.Auth!=nil{h=s.Auth.Middleware(h)};return h}
 func(s *Service)deployerStatus(w http.ResponseWriter,r *http.Request){
 	if auth.PrincipalFrom(r.Context()).Role<auth.RoleAdmin{problem(w,403,errors.New("deployer configuration requires admin access"));return}
 	if s.DeployerBootstrap==nil{writeJSON(w,200,deployer.BootstrapStatus{Available:false,Detail:"deployer bootstrap is not configured"});return}
@@ -35,8 +35,87 @@ func(s *Service)scanSSHHostKey(w http.ResponseWriter,r *http.Request){if auth.Pr
 type bootstrapHostRequest struct{Address string `json:"address"`;User string `json:"user"`;Password string `json:"password,omitempty"`;SudoPassword string `json:"sudoPassword,omitempty"`;PrivateKey string `json:"privateKey,omitempty"`;HostKeyFingerprint string `json:"hostKeyFingerprint,omitempty"`;RegistryUsername string `json:"registryUsername,omitempty"`;RegistryPassword string `json:"registryPassword,omitempty"`;Name string `json:"name"`;Tags []string `json:"tags,omitempty"`;Priority int `json:"priority,omitempty"`;InstallDocker *bool `json:"installDocker,omitempty"`;AllowPrivilegedWorkers bool `json:"allowPrivilegedWorkers,omitempty"`}
 func validTagName(v string)bool{v=strings.TrimSpace(v);if v==""||len(v)>64{return false};for _,r:=range v{if (r>='a'&&r<='z')||(r>='A'&&r<='Z')||(r>='0'&&r<='9')||r=='.'||r=='_'||r=='-'{continue};return false};return true}
 func tagMap(values []string)(map[string]string,error){out:=map[string]string{};for _,raw:=range values{v:=strings.TrimSpace(raw);if !validTagName(v){return nil,fmt.Errorf("invalid machine tag %q",raw)};if strings.HasPrefix(strings.ToLower(v),"isolation."){return nil,fmt.Errorf("machine tag %q is reserved",v)};out[v]="true"};return out,nil}
-func(s *Service)bootstrapHost(w http.ResponseWriter,r *http.Request){if auth.PrincipalFrom(r.Context()).Role<auth.RoleAdmin{problem(w,403,errors.New("machine bootstrap requires admin access"));return};if s.MachineBootstrap==nil||strings.TrimSpace(s.MachineBootstrapURL)==""{problem(w,503,errors.New("machine bootstrap is not configured"));return};if s.Hub==nil{problem(w,503,errors.New("agent hub is unavailable"));return};var in bootstrapHostRequest;if !decode(w,r,&in){return};in.Name=strings.TrimSpace(in.Name);in.HostKeyFingerprint=strings.TrimSpace(in.HostKeyFingerprint);if !validTagName(in.Name){problem(w,400,errors.New("machine name must contain only letters, numbers, dot, underscore, or dash"));return};if in.HostKeyFingerprint==""{problem(w,400,errors.New("SSH host key fingerprint is required; scan and verify it before bootstrap"));return};if in.Priority < -1000 || in.Priority > 1000{problem(w,400,errors.New("host priority must be between -1000 and 1000"));return};tags,err:=tagMap(in.Tags);if err!=nil{problem(w,400,err);return};installDocker:=true;if in.InstallDocker!=nil{installDocker=*in.InstallDocker};before,err:=s.Store.ListHosts(r.Context());if err!=nil{problem(w,500,err);return};existing:=map[string]struct{}{};for _,h:=range before{existing[h.ID]=struct{}{}};token,err:=s.Hub.IssueEnrollmentToken(in.Name,tags,5*time.Minute);if err!=nil{problem(w,500,err);return};started:=time.Now().UTC();image:=strings.TrimSpace(s.MachineAgentImage);if image==""{image="ghcr.io/eutelic/runnerhub-agent:latest"};sudoPassword:=in.SudoPassword;if sudoPassword==""{sudoPassword=in.Password};req:=machinebootstrap.Request{Address:in.Address,User:in.User,Password:in.Password,SudoPassword:sudoPassword,PrivateKey:in.PrivateKey,HostKeyFingerprint:in.HostKeyFingerprint,RegistryUsername:in.RegistryUsername,RegistryPassword:in.RegistryPassword,HostName:in.Name,ControlPlaneURL:s.MachineBootstrapURL,AgentImage:image,InstallDocker:installDocker,AllowInsecureHTTP:strings.HasPrefix(strings.ToLower(s.MachineBootstrapURL),"http://"),AllowPrivilegedWorkers:in.AllowPrivilegedWorkers};host,err:=s.MachineBootstrap.Bootstrap(r.Context(),req,token,func(ctx context.Context,name string)(core.Host,error){return machinebootstrap.WaitTimeout(ctx,45*time.Second,func()(core.Host,bool,error){hosts,err:=s.Store.ListHosts(ctx);if err!=nil{return core.Host{},false,err};for _,h:=range hosts{if _,ok:=existing[h.ID];ok{continue};if h.Name==name&&!h.LastSeenAt.Before(started){return h,true,nil}};return core.Host{},false,nil})});if err!=nil{_=s.Store.AppendAudit(r.Context(),core.AuditEvent{Actor:actor(r.Context()),Action:"bootstrap_host",ResourceType:"host",Result:"error",SafeDetail:truncate(in.Name+": "+err.Error())});problem(w,502,err);return};if host.Priority!=in.Priority{host.Priority=in.Priority;if err:=s.Store.UpsertHost(r.Context(),host);err!=nil{problem(w,500,err);return}};_=s.Store.AppendAudit(r.Context(),core.AuditEvent{Actor:actor(r.Context()),Action:"bootstrap_host",ResourceType:"host",ResourceID:host.ID,Result:"ok",SafeDetail:in.Name});writeJSON(w,201,host)}
-
+func (s *Service) bootstrapHost(w http.ResponseWriter, r *http.Request) {
+	if auth.PrincipalFrom(r.Context()).Role < auth.RoleAdmin {
+		problem(w, http.StatusForbidden, errors.New("machine bootstrap requires admin access"))
+		return
+	}
+	if s.MachineBootstrap == nil || strings.TrimSpace(s.MachineBootstrapURL) == "" || s.Hub == nil {
+		problem(w, http.StatusServiceUnavailable, errors.New("machine bootstrap is not configured"))
+		return
+	}
+	var in bootstrapHostRequest
+	if !decode(w,r,&in) {return}
+	if err := validateBootstrapInput(&in); err != nil {
+		problem(w, http.StatusBadRequest, err)
+		return
+	}
+	// The old synchronous route must participate in deduplication too, so a
+	// client using it cannot race the newer tracked operation endpoint.
+	opID:=""
+	if st,ok:=s.operationStore();ok{
+		op,reused,err:=st.StartOperation(r.Context(),newHostOperation(in.Name,actor(r.Context())))
+		if err!=nil{
+			problem(w,http.StatusInternalServerError,errors.New("could not record machine enrollment"))
+			return
+		}
+		if reused{
+			problem(w,http.StatusConflict,fmt.Errorf("enrollment already in progress; inspect operation %s",op.ID))
+			return
+		}
+		opID=op.ID
+	}
+	ctx:=r.Context()
+	if opID!=""{
+		s.transitionHostOperation(ctx,opID,"working","preparing-enrollment",
+			"Preparing an enrollment token and checking existing host identities.","")
+		ctx=machinebootstrap.WithProgress(ctx,func(step string){
+			switch step{
+			case "verifying-host-key","configuring-remote-host","waiting-for-agent","cleaning-enrollment-secret":
+				state:="working"
+				if step=="waiting-for-agent"{state="waiting"}
+				writeCtx,cancel:=context.WithTimeout(context.Background(),5*time.Second)
+				defer cancel()
+				s.transitionHostOperation(writeCtx,opID,state,step,"Remote bootstrap is in progress.","")
+			}
+		})
+	}
+	host,err := s.runHostBootstrap(ctx,in)
+	// Request contexts are cancelled when the client disconnects. A fresh,
+	// bounded context ensures the final status is still recorded.
+	finalCtx,cancel:=context.WithTimeout(context.Background(),5*time.Second)
+	defer cancel()
+	if err != nil {
+		state:="failed"
+		stage:="bootstrap-failed"
+		detail:="Remote setup did not complete. Inspect host diagnostics before retrying."
+		if host.ID!=""{
+			state="blocked"
+			stage="enrollment-cleanup-failed"
+			detail="New agent was observed but final credential cleanup failed; inspect remote agent before retrying."
+		}else if ctx.Err()!=nil{
+			state="unknown"
+			stage="bootstrap-timed-out"
+			detail="Client disconnected or timed out; the remote outcome is unknown."
+		}
+		if opID!=""{s.transitionHostOperation(finalCtx,opID,state,stage,detail,host.ID)}
+		_=s.Store.AppendAudit(finalCtx,core.AuditEvent{
+			Actor:actor(r.Context()),Action:"bootstrap_host",ResourceType:"host",ResourceID:host.ID,
+			Result:state,SafeDetail:"Host bootstrap did not confirm safe readiness; inspect remote agent logs.",
+		})
+		problem(w,http.StatusBadGateway,errors.New("host bootstrap did not confirm readiness; check SSH, Docker and agent logs"))
+		return
+	}
+	if opID!=""{
+		s.transitionHostOperation(finalCtx,opID,"succeeded","agent-ready",
+			"New agent identity confirmed. Review previous identities separately.",host.ID)
+	}
+	_=s.Store.AppendAudit(finalCtx,core.AuditEvent{
+		Actor:actor(r.Context()),Action:"bootstrap_host",ResourceType:"host",
+		ResourceID:host.ID,Result:"ok",SafeDetail:in.Name,
+	})
+	writeJSON(w,http.StatusCreated,host)
+}
 func(s *Service)drain(w http.ResponseWriter,r *http.Request){h,err:=s.Store.GetHost(r.Context(),r.PathValue("id"));if err!=nil{problem(w,404,err);return};if h.State==core.HostOnline{h.State=core.HostDraining};if err:=s.Store.UpsertHost(r.Context(),h);err!=nil{problem(w,500,err);return};_=s.Store.AppendAudit(r.Context(),core.AuditEvent{Actor:actor(r.Context()),Action:"drain_host",ResourceType:"host",ResourceID:h.ID,Result:"ok"});writeJSON(w,200,h)}
 type updateHostRequest struct{Name *string `json:"name,omitempty"`;Tags map[string]string `json:"tags,omitempty"`;Priority *int `json:"priority,omitempty"`;State *core.HostState `json:"state,omitempty"`}
 func(s *Service)updateHost(w http.ResponseWriter,r *http.Request){h,err:=s.Store.GetHost(r.Context(),r.PathValue("id"));if err!=nil{problem(w,404,err);return};var in updateHostRequest;if !decode(w,r,&in){return};if in.Name!=nil&&strings.TrimSpace(*in.Name)!=""{h.Name=strings.TrimSpace(*in.Name)};if in.Tags!=nil{for k:=range in.Tags{if !validTagName(k)||strings.HasPrefix(strings.ToLower(k),"isolation."){problem(w,400,fmt.Errorf("invalid or reserved machine tag %q",k));return}};h.UserTags=map[string]string{};for k,v:=range in.Tags{h.UserTags[k]=strings.TrimSpace(v);if h.UserTags[k]==""{h.UserTags[k]="true"}};if h.SystemTags==nil{h.SystemTags=map[string]string{};for k,v:=range h.Tags{if strings.HasPrefix(strings.ToLower(k),"isolation."){h.SystemTags[k]=v}}};h.Tags=core.MergeHostTags(h.SystemTags,h.UserTags)};if in.Priority!=nil{if *in.Priority < -1000 || *in.Priority > 1000{problem(w,400,errors.New("host priority must be between -1000 and 1000"));return};h.Priority=*in.Priority};if in.State!=nil{if !core.CanTransitionHost(h.State,*in.State){problem(w,409,fmt.Errorf("invalid host transition %s -> %s",h.State,*in.State));return};h.State=*in.State};if err:=s.Store.UpsertHost(r.Context(),h);err!=nil{problem(w,500,err);return};_=s.Store.AppendAudit(r.Context(),core.AuditEvent{Actor:actor(r.Context()),Action:"update_host",ResourceType:"host",ResourceID:h.ID,Result:"ok"});writeJSON(w,200,h)}
@@ -115,7 +194,7 @@ func(s *Service)createPool(w http.ResponseWriter,r *http.Request){var p core.Run
 func(s *Service)workers(w http.ResponseWriter,r *http.Request){v,err:=s.Store.ListWorkers(r.Context());if err!=nil{problem(w,500,err);return};if auth.PrincipalFrom(r.Context()).Role==auth.RoleScaler{for i:=range v{v[i].ProviderDiagnostics=""}};writeJSON(w,200,v)}
 type workflowJobsCacheEntry struct{Jobs []githubrunner.WorkflowJob;ExpiresAt time.Time}
 type workflowJobsFlight struct{done chan struct{};Jobs []githubrunner.WorkflowJob;Err error}
-type workerProgressResponse struct{WorkerID string `json:"workerId"`;WorkflowRunID int64 `json:"workflowRunId"`;GitHubJobID int64 `json:"githubJobId,omitempty"`;Status string `json:"status,omitempty"`;CompletedSteps int `json:"completedSteps"`;TotalSteps int `json:"totalSteps"`;Percent int `json:"percent"`;CurrentStep string `json:"currentStep,omitempty"`;Available bool `json:"available"`}
+type workerProgressResponse struct{WorkerID string `json:"workerId"`;WorkflowRunID int64 `json:"workflowRunId"`;GitHubJobID int64 `json:"githubJobId,omitempty"`;Status string `json:"status,omitempty"`;Conclusion string `json:"conclusion,omitempty"`;CompletedSteps int `json:"completedSteps"`;TotalSteps int `json:"totalSteps"`;Percent int `json:"percent"`;CurrentStep string `json:"currentStep,omitempty"`;Available bool `json:"available"`}
 func workflowJobsCacheKey(scope core.GitHubScope,runID int64)string{return strings.ToLower(scope.Owner+"/"+scope.Repository)+":"+strconv.FormatInt(runID,10)}
 func workflowJobsCacheTTL(jobs []githubrunner.WorkflowJob)time.Duration{
 	allTerminal:=len(jobs)>0
@@ -146,14 +225,10 @@ func(s *Service)cachedWorkflowJobs(ctx context.Context,scope core.GitHubScope,ru
 	return append([]githubrunner.WorkflowJob(nil),jobs...),err
 }
 func matchWorkflowJob(wk core.Worker,jobs []githubrunner.WorkflowJob)(githubrunner.WorkflowJob,bool){
-	for _,job:=range jobs{if wk.RunnerName!=""&&job.RunnerName==wk.RunnerName{return job,true}}
-	if strings.TrimSpace(wk.JobName)==""{return githubrunner.WorkflowJob{},false}
-	var matched githubrunner.WorkflowJob;count:=0
-	for _,job:=range jobs{if job.Name==wk.JobName{matched=job;count++}}
-	return matched,count==1
+	return githubrunner.MatchAssignedWorkflowJob(wk.RunnerName,wk.JobName,wk.JobID,jobs)
 }
 func summarizeWorkflowJob(wk core.Worker,job githubrunner.WorkflowJob)workerProgressResponse{
-	out:=workerProgressResponse{WorkerID:wk.ID,WorkflowRunID:wk.WorkflowRunID,GitHubJobID:job.ID,Status:job.Status,TotalSteps:len(job.Steps),Available:true}
+	out:=workerProgressResponse{WorkerID:wk.ID,WorkflowRunID:wk.WorkflowRunID,GitHubJobID:job.ID,Status:job.Status,Conclusion:job.Conclusion,TotalSteps:len(job.Steps),Available:true}
 	for _,step:=range job.Steps{
 		status:=strings.ToLower(strings.TrimSpace(step.Status))
 		if status=="completed"||strings.TrimSpace(step.Conclusion)!=""{out.CompletedSteps++}
@@ -171,10 +246,22 @@ func(s *Service)workerProgress(w http.ResponseWriter,r *http.Request){
 	runs:=map[string][]core.Worker{};scopes:=map[string]core.GitHubScope{};runIDs:=map[string]int64{}
 	for _,wk:=range workers{
 		if terminal[wk.State]||wk.WorkflowRunID<=0||wk.Scope.Kind!=core.ScopeRepository{continue}
-		key:=workflowJobsCacheKey(wk.Scope,wk.WorkflowRunID);runs[key]=append(runs[key],wk);scopes[key]=wk.Scope;runIDs[key]=wk.WorkflowRunID
+		key:=workflowJobsCacheKey(wk.Scope,wk.WorkflowRunID)
+		if wk.WorkflowRunAttempt>0{key+=":attempt:"+strconv.Itoa(wk.WorkflowRunAttempt)}
+		runs[key]=append(runs[key],wk);scopes[key]=wk.Scope;runIDs[key]=wk.WorkflowRunID
 	}
 	for key,group:=range runs{
-		jobs,err:=s.cachedWorkflowJobs(r.Context(),scopes[key],runIDs[key]);if err!=nil{continue}
+		if len(group)==0{continue}
+		var jobs []githubrunner.WorkflowJob
+		var err error
+		if group[0].WorkflowRunAttempt>0{
+			ctx,cancel:=context.WithTimeout(r.Context(),8*time.Second)
+			jobs,err=githubrunner.AssignedWorkflowJobs(ctx,s.GitHub,group[0])
+			cancel()
+		}else{
+			jobs,err=s.cachedWorkflowJobs(r.Context(),scopes[key],runIDs[key])
+		}
+		if err!=nil{continue}
 		for _,wk:=range group{if job,ok:=matchWorkflowJob(wk,jobs);ok{out=append(out,summarizeWorkflowJob(wk,job))}}
 	}
 	writeJSON(w,200,out)
