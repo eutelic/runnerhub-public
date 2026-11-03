@@ -433,6 +433,20 @@ The `data/` directory contains the persisted GitHub owner claim and `github-sess
 
 The template defaults to `:latest` with `pull_policy: always`.
 
+The control service passes the selected RunnerHub agent image to native SSH
+onboarding as `RUNNERHUB_MACHINE_AGENT_IMAGE`. A KVM agent installed through
+**Hosts → Set up KVM** therefore uses the same release tag as the TrueNAS
+agent rather than an unrelated moving `:latest` tag. This setting is generated
+by the template and should not be replaced with a different image revision.
+
+**Existing Custom App upgrades:** merely pulling a newer control image will not add
+new Compose environment variables. Regenerate the Custom App YAML with the
+matching `prepare-compose.sh` release before updating, or add
+`RUNNERHUB_MACHINE_AGENT_IMAGE` explicitly to the existing control service
+with the *same immutable agent image reference* already used by the agent
+service. Preserve the current state volumes and secrets; never reinstall
+from scratch just to introduce this variable.
+
 For a deterministic deployment:
 
 ```bash

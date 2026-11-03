@@ -75,6 +75,9 @@ services:
       RUNNERHUB_GITHUB_API_URL: https://api.github.com
       RUNNERHUB_ALLOWED_IMAGES: *runner-image
       RUNNERHUB_REQUIRE_PINNED_IMAGES: "true"
+      # Match SSH-provisioned native agents to this exact TrueNAS release.
+      # Do not implicitly install :latest when the control plane is pinned.
+      RUNNERHUB_MACHINE_AGENT_IMAGE: *agent-image
     secrets:
       - runnerhub-github-app
       - runnerhub-github-client-secret

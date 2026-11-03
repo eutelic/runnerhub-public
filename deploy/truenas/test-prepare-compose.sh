@@ -52,6 +52,9 @@ bash "$prepare" \
 grep -Fq 'pool-isolation: &pool-isolation container-trusted' "$publisher"
 grep -Fq 'allow-privileged-workers: &allow-privileged-workers "true"' "$publisher"
 grep -Fq 'ghcr.io/eutelic/runnerhub-control:latest' "$trusted"
+# Native SSH enrollment must use the same image alias as the deployed agent.
+# This is especially important when an operator selects an immutable SHA tag.
+grep -Fq 'RUNNERHUB_MACHINE_AGENT_IMAGE: *agent-image' "$trusted"
 grep -Fq 'io.runnerhub.component: scaleset' "$trusted"
 grep -Fq 'RUNNERHUB_DYNAMIC_CONFIG: "true"' "$trusted"
 grep -Fq 'test -s /run/runnerhub/scaleset-ready' "$trusted"
@@ -79,6 +82,10 @@ grep -Fq 'public-url: &public-url https://runnerhub.example.com' "$dind"
 for image in control agent bootstrap scaleset; do
   grep -Fq "ghcr.io/eutelic/runnerhub-${image}:sha-deadbeef" "$dind"
 done
+# A SHA-pinned deployment must keep the native SSH bootstrap agent tied
+# to the same immutable agent image, not the moving default :latest.
+grep -Fq 'RUNNERHUB_MACHINE_AGENT_IMAGE: *agent-image' "$dind"
+grep -Fq 'agent: &agent-image ghcr.io/eutelic/runnerhub-agent:sha-deadbeef' "$dind"
 
 managed_key='/mnt/Databases/apps_n_stuff/scale-secrets/secrets/runnerhub_github_app'
 managed_client_secret='/mnt/Databases/apps_n_stuff/scale-secrets/secrets/runnerhub_github_client_secret'
