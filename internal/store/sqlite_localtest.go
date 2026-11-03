@@ -6,7 +6,7 @@ import("context";"sync";"time";"github.com/eutelic/runnerhub/internal/agent";"gi
 type SQLite struct{mu sync.Mutex;hosts map[string]core.Host;pools map[string]core.RunnerPool;workers map[string]core.Worker;audit []core.AuditEvent;commands map[string]CommandRecord;operations map[string]Operation}
 func OpenSQLite(string)(*SQLite,error){return &SQLite{hosts:map[string]core.Host{},pools:map[string]core.RunnerPool{},workers:map[string]core.Worker{},commands:map[string]CommandRecord{},operations:map[string]Operation{}},nil}
 func(s *SQLite)Close()error{return nil}
-func(s *SQLite)UpsertHost(_ context.Context,v core.Host)error{s.mu.Lock();defer s.mu.Unlock();s.hosts[v.ID]=v;return nil}
+func(s *SQLite)UpsertHost(_ context.Context,v core.Host)error{s.mu.Lock();defer s.mu.Unlock();if old,ok:=s.hosts[v.ID];ok&&old.State==core.HostArchived{return ErrHostArchived};s.hosts[v.ID]=v;return nil}
 func(s *SQLite)GetHost(_ context.Context,id string)(core.Host,error){s.mu.Lock();defer s.mu.Unlock();v,ok:=s.hosts[id];if !ok{return core.Host{},ErrNotFound};return v,nil}
 func(s *SQLite)ListHosts(context.Context)([]core.Host,error){s.mu.Lock();defer s.mu.Unlock();out:=make([]core.Host,0,len(s.hosts));for _,v:=range s.hosts{out=append(out,v)};return out,nil}
 func(s *SQLite)UpsertPool(_ context.Context,v core.RunnerPool)error{s.mu.Lock();defer s.mu.Unlock();s.pools[v.ID]=v;return nil}

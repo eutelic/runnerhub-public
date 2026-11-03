@@ -205,6 +205,8 @@ els.hosts.addEventListener('click',e=>{
   if(android){setupHostAndroid(android);return}
   const recover=e.target.closest('button[data-host-recover]');
   if(recover){recoverHost(recover);return}
+  const archive=e.target.closest('button[data-host-archive]');
+  if(archive){archiveOldHost(archive);return}
   const save=e.target.closest('button[data-host-tags]');
   if(save)saveHostTags(save);
 });
@@ -495,7 +497,7 @@ function renderPreservingTableScroll(container,html){
 
 function hostTagText(host){return Object.keys(host?.userTags||{}).sort().join(', ')}
 function hostStateRank(host){
-  return ({online:0,draining:1,offline:2})[String(host?.state||'').toLowerCase()]??3;
+  return ({online:0,draining:1,offline:2,archived:3})[String(host?.state||'').toLowerCase()]??3;
 }
 function renderHosts(hosts,workers=[],poolByID=new Map()){
   const reservations=new Map();
@@ -517,15 +519,19 @@ function renderHosts(hosts,workers=[],poolByID=new Map()){
   if(!Array.isArray(hosts)||!hosts.length){els.hosts.innerHTML='<span class="muted">No hosts enrolled.</span>';return}
   const previousOpen=new Set([...els.hosts.querySelectorAll('details[data-host-settings]')]
     .filter(el=>el.open).map(el=>el.dataset.hostSettings));
+  const previousHistoryOpen=new Set([...els.hosts.querySelectorAll('details[data-host-previous]')]
+    .filter(el=>el.open).map(el=>el.dataset.hostPrevious));
   const online=hosts.filter(h=>String(h.state||'').toLowerCase()==='online');
   const offline=hosts.filter(h=>String(h.state||'').toLowerCase()==='offline');
+  const archived=hosts.filter(h=>String(h.state||'').toLowerCase()==='archived');
   const filter=document.getElementById('host-filter')?.value||'all';
-  const visible=hosts.filter(h=>filter==='all'||String(h.state||'').toLowerCase()===filter)
+  const visible=hosts.filter(h=>filter==='all'?String(h.state||'').toLowerCase()!=='archived':String(h.state||'').toLowerCase()===filter)
     .slice().sort((a,b)=>hostStateRank(a)-hostStateRank(b)||
       new Date(b.lastSeenAt||0)-new Date(a.lastSeenAt||0)||
       String(a.name||'').localeCompare(String(b.name||'')));
   const nameCounts=new Map();
   for(const h of hosts){
+    if(String(h.state||'').toLowerCase()==='archived')continue;
     const name=String(h.name||'').trim().toLowerCase();
     if(name)nameCounts.set(name,(nameCounts.get(name)||0)+1);
   }
@@ -536,9 +542,37 @@ function renderHosts(hosts,workers=[],poolByID=new Map()){
       '. Revision hashes alone cannot establish which agent is newer; verify the intended deployment version before updating.</div>'
     : '';
   const summary='<div class="host-counts">'+online.length+' online · '+offline.length+
-    ' offline · '+hosts.length+' total</div>';
+    ' offline · '+archived.length+' archived · '+(hosts.length-archived.length)+' active records</div>';
+  const previousByHost=new Map();
+  const hostByID=new Map(hosts.map(h=>[h.id,h]));
+  const currentHostID=id=>{
+    const visited=new Set();
+    while(id&&!visited.has(id)){
+      visited.add(id);
+      const h=hostByID.get(id);
+      if(!h)return '';
+      if(String(h.state).toLowerCase()!=='archived')return id;
+      id=h.mergedIntoHostId;
+    }
+    return '';
+  };
+  for(const retired of archived){
+    const id=currentHostID(retired.mergedIntoHostId);
+    if(!id)continue;
+    const group=previousByHost.get(id)||[];
+    group.push(retired);
+    previousByHost.set(id,group);
+  }
   const cards=visible.map(h=>{
     const state=String(h.state||'unknown').toLowerCase();
+    const mergeTargets=hosts.filter(t=>String(t.state).toLowerCase()==='online'&&t.id!==h.id&&
+      String(t.name||'').trim().toLowerCase()===String(h.name||'').trim().toLowerCase()&&t.provider===h.provider);
+    const previous=previousByHost.get(h.id)||[];
+    const previousNote=previous.length?'<details class="host-settings" data-host-previous="'+esc(h.id)+'"><summary>Previous enrollments ('+previous.length+')</summary>'+
+      previous.map(old=>'<div class="host-meta">Archived '+esc(fmtTime(old.archivedAt))+
+        ' · '+esc(old.name)+' · <code>'+esc(old.id)+'</code></div>').join('')+'</details>':'';
+    const mergedNote=h.mergedIntoHostId?'<div class="host-identity-note">Merged history into host ID <code>'+
+      esc(h.mergedIntoHostId)+'</code>. Historical workers retain this enrollment ID.</div>':'';
     const version=String(h.agentVersion||'').trim();
     const draft=hostDrafts.get(String(h.id));
     const used=reservations.get(h.id)||{cpu:0,ram:0,active:0,busy:0};
@@ -553,15 +587,17 @@ function renderHosts(hosts,workers=[],poolByID=new Map()){
     return '<article class="host-card" data-host-id="'+esc(h.id)+'">'+
       '<div class="host-card-top"><div class="host-heading"><strong>'+esc(h.name)+'</strong> '+
       '<span class="'+badgeClass+'">'+esc(h.state||'unknown')+'</span></div>'+
-      '<button type="button" class="secondary compact" data-host-recover="'+esc(h.id)+'">Repair / re-enroll</button>'+
+      (state==='archived'?'':'<button type="button" class="secondary compact" data-host-recover="'+esc(h.id)+'">Repair / re-enroll</button>')+
+      (state==='offline'?'<button type="button" class="secondary compact" data-host-archive="'+esc(h.id)+'">Archive old host</button>':'')+
+      (state==='offline'&&mergeTargets.length?'<button type="button" class="secondary compact" data-host-archive="'+esc(h.id)+'" data-host-merge="true">Merge into active host</button>':'')+
       (state==='online'&&String(h.provider||'').toLowerCase()==='docker'
        ? '<button type="button" class="secondary compact" data-host-android="'+esc(h.id)+'">Set up KVM</button>' : '')+'</div>'+
       '<div class="host-meta">Last seen: '+esc(!isZeroTime(h.lastSeenAt)?fmtAge(h.lastSeenAt)+' ago':'unknown')+
       ' · ID <code title="'+esc(h.id)+'">'+esc(h.id)+'</code></div>'+
       '<div class="host-meta">Workers: '+used.busy+' busy / '+used.active+' active · Agent revision: '+
       '<code title="'+esc(version)+'">'+esc(version?version.slice(0,8):'unknown')+'</code></div>'+
-      sameNameNote+offlineNote+
-      '<details class="host-settings" data-host-settings="'+esc(h.id)+'"><summary>Capacity and scheduling settings</summary>'+
+      sameNameNote+offlineNote+mergedNote+previousNote+
+      (state==='archived'?'':'<details class="host-settings" data-host-settings="'+esc(h.id)+'"><summary>Capacity and scheduling settings</summary>'+
       '<div class="host-resources">CPU: '+esc(h.capacity?.cpuMillis?cpuCores(used.cpu)+' / '+cpuCores(h.capacity.cpuMillis)+' cores':'unknown')+
       ' · RAM: '+esc(h.capacity?.memoryBytes?gib(used.ram)+' / '+gib(h.capacity.memoryBytes)+' GiB':'unknown')+'</div>'+
       '<div class="resource-grid"><label>Priority<input class="inline-tags" data-host-priority-input="'+esc(h.id)+
@@ -569,12 +605,15 @@ function renderHosts(hosts,workers=[],poolByID=new Map()){
       '<label>Tags<input class="inline-tags" data-host-tag-input="'+esc(h.id)+'" value="'+
       esc(draft?.tags??hostTagText(h))+'" placeholder="gpu, high-memory"></label></div>'+
       '<button type="button" class="secondary compact" data-host-tags="'+esc(h.id)+'">'+
-      (draft?'Save changes':'Save')+'</button></details></article>';
+      (draft?'Save changes':'Save')+'</button></details>')+'</article>';
   }).join('');
   const html=summary+warning+'<div class="host-list">'+(cards||'<div class="empty">No hosts match this filter.</div>')+'</div>';
   renderPreservingTableScroll(els.hosts,html);
   els.hosts.querySelectorAll('details[data-host-settings]').forEach(el=>{
     el.open=previousOpen.has(el.dataset.hostSettings);
+  });
+  els.hosts.querySelectorAll('details[data-host-previous]').forEach(el=>{
+    el.open=previousHistoryOpen.has(el.dataset.hostPrevious);
   });
 }
 function renderActiveRunners(workers,poolByID,hostByID,progressByWorker){
@@ -688,7 +727,7 @@ function renderWorkers(workers,poolByID){
 function renderOnboardingChecklist(hosts,pools,statuses,installations,repos){
   const container=document.getElementById('repository-onboarding-checks');
   if(!container)return;
-  const allHosts=Array.isArray(hosts)?hosts:[];
+  const allHosts=(Array.isArray(hosts)?hosts:[]).filter(h=>String(h.state||'').toLowerCase()!=='archived');
   const allPools=Array.isArray(pools)?pools:[];
   const connected=allPools.filter(p=>Number(p.githubInstallationId)>0&&isStandardPool(p));
   const readyIDs=new Set((statuses||[]).filter(x=>x.state==='ready').map(x=>x.poolId));
@@ -1706,7 +1745,7 @@ function renderMachineDuplicateWarning(hosts=snapshot.hosts){
   if(!panel)return;
   const name=document.getElementById('machine-name').value.trim().toLowerCase();
   const matches=(Array.isArray(hosts)?hosts:[]).filter(h=>
-    name&&String(h.name||'').trim().toLowerCase()===name);
+    name&&String(h.state||'').toLowerCase()!=='archived'&&String(h.name||'').trim().toLowerCase()===name);
   panel.innerHTML=matches.length
     ? '<strong>Existing host name:</strong> '+matches.map(h=>esc(h.name)+' ('+esc(h.state)+
       ', ID <code>'+esc(h.id)+'</code>)').join(', ')+
@@ -1866,6 +1905,42 @@ async function reconcileFinishedGitHubWorker(button){
   }catch(e){
     message('Reconciliation refused: '+e.message,'error');
   }finally{button.disabled=false}
+}
+
+async function archiveOldHost(button){
+  const id=button.dataset.hostArchive;
+  const host=(snapshot.hosts||[]).find(h=>String(h.id)===id);
+  if(!host||String(host.state).toLowerCase()!=='offline'){
+    return message('Only offline hosts can be archived. Refresh and retry.','error');
+  }
+  const merging=button.dataset.hostMerge==='true';
+  const candidates=(snapshot.hosts||[]).filter(t=>t.id!==id&&String(t.state).toLowerCase()==='online'&&
+    String(t.name||'').trim().toLowerCase()===String(host.name||'').trim().toLowerCase()&&t.provider===host.provider);
+  let targetHostId='';
+  if(merging){
+    if(!candidates.length)return message('No matching online host. Refresh the list or archive without merging.','error');
+    if(candidates.length===1)targetHostId=candidates[0].id;
+    else{
+      const choice=window.prompt('Enter the full ID of the destination machine ('+
+        candidates.map(h=>h.name+': '+h.id).join(', ')+'). Only matching online hosts are allowed:','');
+      if(!choice)return;
+      targetHostId=choice.trim();
+      if(!candidates.some(c=>c.id===targetHostId))return message('Destination host ID did not match an online candidate.','error');
+    }
+  }
+  const explanation=merging?'Link its previous enrollment history to '+targetHostId+'. ':
+    'Archive this old host identity. ';
+  const answer=window.prompt(explanation+'The original agent identity will be retired and its historical job records preserved. Confirm you have verified the machines are the same (when merging). Type OLD host ID '+id+' to proceed:','');
+  if(answer!==id)return;
+  button.disabled=true;
+  try{
+    await j('/api/v1/hosts/'+encodeURIComponent(id)+'/archive',{
+      method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({targetHostId})
+    });
+    message(merging?'Merged previous enrollment into '+targetHostId+'.':'Archived old host '+id+'.','success');
+    await refresh(true);
+  }catch(e){message('Host archival refused: '+e.message,'error')}
+  finally{button.disabled=false}
 }
 
 async function saveHostTags(button){

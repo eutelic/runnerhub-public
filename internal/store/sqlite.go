@@ -21,7 +21,16 @@ func decode[T any](b []byte)(T,error){var v T;err:=json.Unmarshal(b,&v);return v
 func upsert(ctx context.Context,db *sql.DB,table,id string,v any)error{b,err:=marshal(v);if err!=nil{return err};q:=fmt.Sprintf("INSERT INTO %s(id,data,updated_at) VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data,updated_at=excluded.updated_at",table);_,err=db.ExecContext(ctx,q,id,b,time.Now().UTC().Format(time.RFC3339Nano));return err}
 func get[T any](ctx context.Context,db *sql.DB,table,id string)(T,error){var b []byte;q:=fmt.Sprintf("SELECT data FROM %s WHERE id=?",table);err:=db.QueryRowContext(ctx,q,id).Scan(&b);if errors.Is(err,sql.ErrNoRows){var z T;return z,ErrNotFound};if err!=nil{var z T;return z,err};return decode[T](b)}
 func list[T any](ctx context.Context,db *sql.DB,table string)([]T,error){q:=fmt.Sprintf("SELECT data FROM %s ORDER BY updated_at DESC",table);rows,err:=db.QueryContext(ctx,q);if err!=nil{return nil,err};defer rows.Close();out:=[]T{};for rows.Next(){var b []byte;if err:=rows.Scan(&b);err!=nil{return nil,err};v,err:=decode[T](b);if err!=nil{return nil,err};out=append(out,v)};return out,rows.Err()}
-func(s *SQLite)UpsertHost(ctx context.Context,v core.Host)error{return upsert(ctx,s.db,"hosts",v.ID,v)}
+func(s *SQLite)UpsertHost(ctx context.Context,v core.Host)error{
+ b,err:=marshal(v);if err!=nil{return err}
+ res,err:=s.db.ExecContext(ctx,`INSERT INTO hosts(id,data,updated_at) VALUES(?,?,?)
+ ON CONFLICT(id) DO UPDATE SET data=excluded.data,updated_at=excluded.updated_at
+ WHERE json_extract(hosts.data,'$.state') != 'archived'`,v.ID,b,time.Now().UTC().Format(time.RFC3339Nano))
+ if err!=nil{return err}
+ n,err:=res.RowsAffected();if err!=nil{return err}
+ if n==0{return ErrHostArchived}
+ return nil
+}
 func(s *SQLite)GetHost(ctx context.Context,id string)(core.Host,error){return get[core.Host](ctx,s.db,"hosts",id)}
 func(s *SQLite)ListHosts(ctx context.Context)([]core.Host,error){return list[core.Host](ctx,s.db,"hosts")}
 func(s *SQLite)UpsertPool(ctx context.Context,v core.RunnerPool)error{return upsert(ctx,s.db,"pools",v.ID,v)}

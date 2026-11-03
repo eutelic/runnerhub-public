@@ -206,7 +206,7 @@ test('hosts show online first, preserve separate IDs, and filter offline records
   const all=element('hosts').innerHTML;
   assert.ok(all.indexOf('data-host-id="live-identity"')<all.indexOf('data-host-id="old-identity"'));
   assert.match(all,/Other host IDs share this name/);
-  assert.match(all,/3 total/);
+  assert.match(all,/3 active records/);
   element('host-filter').value='offline';
   vm.runInContext('renderHosts(hostSamples)',ctx);
   const filtered=element('hosts').innerHTML;
@@ -448,4 +448,62 @@ test('online Docker hosts offer safe KVM onboarding without re-enrolling the Doc
   assert.match(element('hosts').innerHTML,/Set up KVM/);
   vm.runInContext("renderHosts([{id:'h2',name:'compute-android',provider:'process',state:'online',userTags:{}}])",ctx);
   assert.doesNotMatch(element('hosts').innerHTML,/Set up KVM/);
+});
+
+
+test('archived enrollments are hidden by default and grouped under the live identity',()=>{
+  const {ctx,element}=createDashboard();
+  const hosts=[
+    {id:'old-enrollment',name:'compute',state:'archived',provider:'docker',mergedIntoHostId:'current-enrollment',
+      archivedAt:'2026-11-03T15:00:00Z'},
+    {id:'current-enrollment',name:'compute',state:'online',provider:'docker',
+      lastSeenAt:'2026-11-03T15:01:00Z'}
+  ];
+  ctx.hostSamples=hosts;
+  vm.runInContext('renderHosts(hostSamples)',ctx);
+  const html=element('hosts').innerHTML;
+  assert.match(html,/data-host-id="current-enrollment"/);
+  assert.doesNotMatch(html,/data-host-id="old-enrollment"/);
+  assert.match(html,/Previous enrollments \(1\)/);
+  assert.match(html,/old-enrollment/);
+  assert.match(html,/1 archived/);
+  assert.doesNotMatch(html,/Other host IDs share this name/);
+
+  element('host-filter').value='archived';
+  vm.runInContext('renderHosts(hostSamples)',ctx);
+  const history=element('hosts').innerHTML;
+  assert.match(history,/data-host-id="old-enrollment"/);
+  assert.match(history,/Merged history into host ID/);
+  assert.doesNotMatch(history,/data-host-recover=/);
+});
+
+test('offline duplicate offers archive and merge without auto-merging unrelated hosts',()=>{
+  const {ctx,element}=createDashboard();
+  ctx.hostSamples=[
+    {id:'old',name:'compute',provider:'docker',state:'offline'},
+    {id:'current',name:'compute',provider:'docker',state:'online'},
+    {id:'different',name:'other',provider:'docker',state:'online'},
+  ];
+  vm.runInContext('renderHosts(hostSamples)',ctx);
+  const html=element('hosts').innerHTML;
+  assert.match(html,/data-host-archive="old"/);
+  assert.match(html,/data-host-merge="true"/);
+  assert.doesNotMatch(html,/data-host-archive="different"/);
+});
+
+test('merge requires typing the OLD host ID and sends only selected destination',async()=>{
+  const {ctx,calls,requestOptions}=createDashboard();
+  ctx.hostSamples=[
+    {id:'old',name:'compute',provider:'docker',state:'offline'},
+    {id:'current',name:'compute',provider:'docker',state:'online'}
+  ];
+  ctx.window.prompt=()=> 'old';
+  vm.runInContext('snapshot.hosts=hostSamples',ctx);
+  const button={dataset:{hostArchive:'old',hostMerge:'true'},disabled:false};
+  ctx.archiveButton=button;
+  await vm.runInContext('archiveOldHost(archiveButton)',ctx);
+  assert.ok(calls.includes('/api/v1/hosts/old/archive'));
+  const submitted=JSON.parse(requestOptions.get('/api/v1/hosts/old/archive').body);
+  assert.equal(submitted.targetHostId,'current');
+  assert.equal(button.disabled,false);
 });
