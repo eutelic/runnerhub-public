@@ -143,6 +143,8 @@ jobs:
         run: bash scripts/test-workflow-concurrency.sh
       - name: Validate deterministic affected-job planner
         run: bash scripts/test-ci-changes.sh
+      - name: Validate scoped exited-worker cleanup safety
+        run: bash scripts/test-cleanup-exited-workers.sh
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version: '1.26.10'
