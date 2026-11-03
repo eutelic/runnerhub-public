@@ -1490,6 +1490,7 @@ function publisherEditor(repo,pool,status,runtime,hostAvailable,standardConnecte
   const enabled=isPublisherEnabled(pool);
   const cpu=pool?.resources?.cpuMillis?cpuCores(pool.resources.cpuMillis):2.5;
   const memory=pool?.resources?.memoryBytes?gib(pool.resources.memoryBytes):8;
+  const disk=pool?.resources?.diskBytes?gib(pool.resources.diskBytes):40;
   const max=pool?.maxConcurrency||2;
   const listener=enabled?(status?.state||'pending'):'disabled';
   const runtimeState=enabled?(runtime?.state||'unknown'):'disabled';
@@ -1508,10 +1509,11 @@ function publisherEditor(repo,pool,status,runtime,hostAvailable,standardConnecte
   const fields='<div class="resource-grid">'+
       '<label>Publisher CPU<input data-publisher-field="cpu" type="number" min="0.25" step="0.25" value="'+esc(cpu)+'"></label>'+
       '<label>Publisher RAM (GiB)<input data-publisher-field="memory" type="number" min="1" step="0.5" value="'+esc(memory)+'"></label>'+
+      '<label>Publisher disk (GiB)<input data-publisher-field="disk" type="number" min="1" step="1" value="'+esc(disk)+'"></label>'+
       '<label>Max publishers<input data-publisher-field="concurrency" type="number" min="1" step="1" value="'+esc(max)+'"></label>'+
     '</div>'+
     '<label class="check-row"><input data-publisher-field="autotune" type="checkbox"'+(pool?.autoTuneResources?' checked':'')+'> Auto-size publisher CPU/RAM from observed jobs</label>'+
-    '<div class="resource-note muted">Max publishers is an upper bound. Auto-size waits for at least 5 valid jobs and sizes from the busiest outer container (runner or private DinD sidecar), not their summed CPU/RAM. Legacy aggregate-only samples are ignored.</div>';
+    '<div class="resource-note muted">Max publishers is an upper bound, not a guarantee of runnable capacity. Each publisher reserves the configured disk on one Docker-in-Docker capable host; set disk based on measured build usage and available host storage, not just the concurrency limit. Auto-size waits for at least 5 valid jobs and sizes from the busiest outer container (runner or private DinD sidecar), not their summed CPU/RAM. Legacy aggregate-only samples are ignored.</div>';
   let buttons='';
   if(enabled){
     buttons='<div class="publisher-actions"><button data-publisher-action="update" data-repo="'+esc(repo.fullName)+'" data-installation="'+esc(repo.installationId)+'">Save publisher settings</button><button class="secondary" data-learning-reset data-pool-id="'+esc(pool.id)+'" data-learning-label="publisher runner">Reset learning</button><button class="secondary" data-publisher-action="disable" data-repo="'+esc(repo.fullName)+'" data-installation="'+esc(repo.installationId)+'">Disable publisher</button></div>';
@@ -2186,11 +2188,13 @@ async function savePublisher(button){
   if(enabled){
     const cpu=Number(panel.querySelector('[data-publisher-field="cpu"]').value);
     const memory=Number(panel.querySelector('[data-publisher-field="memory"]').value);
+    const disk=Number(panel.querySelector('[data-publisher-field="disk"]').value);
     const concurrency=Number(panel.querySelector('[data-publisher-field="concurrency"]').value);
     if(!Number.isFinite(cpu)||cpu<=0)return message('Publisher CPU must be greater than 0.','error');
     if(!Number.isFinite(memory)||memory<=0)return message('Publisher RAM must be greater than 0.','error');
+    if(!Number.isFinite(disk)||disk<1||!Number.isSafeInteger(Math.round(disk*1073741824)))return message('Publisher disk must be at least 1 GiB and a valid number.','error');
     if(!Number.isInteger(concurrency)||concurrency<1)return message('Publisher concurrency must be at least 1.','error');
-    body.resources={cpuMillis:Math.round(cpu*1000),memoryBytes:Math.round(memory*1073741824),diskBytes:42949672960};
+    body.resources={cpuMillis:Math.round(cpu*1000),memoryBytes:Math.round(memory*1073741824),diskBytes:Math.round(disk*1073741824)};
     body.maxConcurrency=concurrency;
     body.autoTuneResources=panel.querySelector('[data-publisher-field="autotune"]').checked;
   }

@@ -598,3 +598,66 @@ test('merge requires typing the OLD host ID and sends only selected destination'
   assert.equal(submitted.targetHostId,'current');
   assert.equal(button.disabled,false);
 });
+
+
+test('publisher editor shows persisted disk budget instead of forcing 40 GiB',()=>{
+  const {ctx}=createDashboard();
+  ctx.publisherPool={id:'publisher',scope:{owner:'eutelic',repository:'runnerhub'},
+    githubInstallationId:42,scaleSetName:'runnerhub-publisher',maxConcurrency:3,
+    resources:{cpuMillis:2500,memoryBytes:8*1073741824,diskBytes:24*1073741824}};
+  const html=vm.runInContext(
+    "publisherEditor({fullName:'eutelic/runnerhub',installationId:42},publisherPool,{state:'ready'},{state:'healthy'},true,true)",
+    ctx);
+  assert.match(html,/data-publisher-field="disk"[^>]*value="24"/);
+  assert.match(html,/data-publisher-field="concurrency"[^>]*value="3"/);
+  assert.match(html,/disk on one Docker-in-Docker capable host/);
+  const defaultHTML=vm.runInContext(
+    "publisherEditor({fullName:'eutelic/runnerhub',installationId:42},null,null,null,true,true)",
+    ctx);
+  assert.match(defaultHTML,/data-publisher-field="disk"[^>]*value="40"/);
+});
+
+test('publisher save submits requested diskBytes instead of hardcoding 40 GiB',async()=>{
+  const {ctx,requestOptions}=createDashboard();
+  const values={
+    '[data-publisher-field="cpu"]':{value:'2.5'},
+    '[data-publisher-field="memory"]':{value:'8'},
+    '[data-publisher-field="disk"]':{value:'20'},
+    '[data-publisher-field="concurrency"]':{value:'3'},
+    '[data-publisher-field="autotune"]':{checked:false},
+  };
+  const panel={open:true,querySelector(selector){return values[selector]||null}};
+  ctx.saveButton={
+    dataset:{publisherAction:'update',installation:'42',repo:'eutelic/runnerhub'},
+    disabled:false,closest(){return panel}
+  };
+  await vm.runInContext('savePublisher(saveButton)',ctx);
+  const options=requestOptions.get('/api/v1/github/publisher');
+  assert.equal(options?.method,'POST');
+  const saved=JSON.parse(options.body);
+  assert.equal(saved.maxConcurrency,3);
+  assert.equal(saved.resources.cpuMillis,2500);
+  assert.equal(saved.resources.memoryBytes,8*1073741824);
+  assert.equal(saved.resources.diskBytes,20*1073741824);
+});
+
+test('invalid publisher disk cannot trigger a configuration write',async()=>{
+  const {ctx,requestOptions}=createDashboard();
+  const values={
+    '[data-publisher-field="cpu"]':{value:'2.5'},
+    '[data-publisher-field="memory"]':{value:'8'},
+    '[data-publisher-field="disk"]':{value:'0'},
+    '[data-publisher-field="concurrency"]':{value:'3'},
+    '[data-publisher-field="autotune"]':{checked:false},
+  };
+  const panel={open:true,querySelector(selector){return values[selector]||null}};
+  ctx.saveButton={
+    dataset:{publisherAction:'update',installation:'42',repo:'eutelic/runnerhub'},
+    disabled:false,closest(){return panel}
+  };
+  await vm.runInContext('savePublisher(saveButton)',ctx);
+  assert.equal(requestOptions.has('/api/v1/github/publisher'),false);
+  values['[data-publisher-field="disk"]'].value='not-a-number';
+  await vm.runInContext('savePublisher(saveButton)',ctx);
+  assert.equal(requestOptions.has('/api/v1/github/publisher'),false);
+});
