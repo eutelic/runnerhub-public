@@ -398,3 +398,54 @@ test('current runner telemetry ages out while retained peak metrics remain histo
   assert.match(element('active-runners').innerHTML,/stale/);
   assert.doesNotMatch(element('active-runners').innerHTML,/1.5 cores/);
 });
+
+
+test('Android emulator profile preset fills only trusted native KVM settings',()=>{
+  const {ctx}=createDashboard();
+  const html=vm.runInContext("runnerProfileEditor({fullName:'example-org/mobile-app',installationId:1},[],true)",ctx);
+  assert.match(html,/data-android-emulator-preset/);
+  assert.match(html,/Only the dedicated Android emulator profile/);
+
+  const names=['name','tags','isolation','cpu','memory','concurrency','autotune'];
+  const fields=new Map(names.map(name=>[name,{value:'',checked:true}]));
+  const panel={querySelector(selector){
+    const match=selector.match(/data-profile-field="([^"]+)"/);
+    return match?fields.get(match[1]):null;
+  }};
+  ctx.testEmulatorPreset={closest(){return panel}};
+  vm.runInContext("applyAndroidEmulatorPreset(testEmulatorPreset)",ctx);
+
+  assert.equal(fields.get('name').value,'android-emulator');
+  assert.equal(fields.get('tags').value,'android-emulator, hardware.kvm');
+  assert.equal(fields.get('isolation').value,'host-persistent');
+  assert.equal(fields.get('cpu').value,'4');
+  assert.equal(fields.get('memory').value,'8');
+  assert.equal(fields.get('concurrency').value,'1');
+  assert.equal(fields.get('autotune').checked,false);
+});
+
+test('native KVM machine setup mode is separate from standard Docker bootstrap',()=>{
+  const {ctx,element}=createDashboard();
+  element('machine-mode').value='android-emulator';
+  element('machine-name').value='compute';
+  element('machine-tags').value='fast';
+  vm.runInContext('chooseMachineMode()',ctx);
+  assert.equal(element('machine-name').value,'compute-android');
+  assert.match(element('machine-tags').value,/android-emulator/);
+  assert.equal(element('machine-allow-privileged').checked,false);
+  assert.equal(element('machine-allow-privileged').disabled,true);
+  assert.match(element('add-machine').textContent,/KVM/);
+  assert.match(element('machine-mode-help').textContent,/without touching its existing Docker agent/);
+  element('machine-mode').value='docker';
+  vm.runInContext('chooseMachineMode()',ctx);
+  assert.equal(element('machine-allow-privileged').disabled,false);
+});
+
+test('online Docker hosts offer safe KVM onboarding without re-enrolling the Docker host',()=>{
+  const {ctx,element}=createDashboard();
+  vm.runInContext("renderHosts([{id:'h1',name:'compute',provider:'docker',state:'online',capacity:{cpuMillis:32000,memoryBytes:50000000000},userTags:{}}])",ctx);
+  assert.match(element('hosts').innerHTML,/data-host-android="h1"/);
+  assert.match(element('hosts').innerHTML,/Set up KVM/);
+  vm.runInContext("renderHosts([{id:'h2',name:'compute-android',provider:'process',state:'online',userTags:{}}])",ctx);
+  assert.doesNotMatch(element('hosts').innerHTML,/Set up KVM/);
+});

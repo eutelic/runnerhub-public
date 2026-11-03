@@ -10,6 +10,8 @@ The default target is **trusted private-repository CI** with ephemeral workers. 
 
 **Start with the [alpha quickstart](docs/QUICKSTART.md)** for the complete GitHub App → Docker host → automatic first-job path. For TrueNAS SCALE, use the dedicated [TrueNAS Custom App guide](deploy/truenas/README.md).
 
+For KVM-backed Android emulator CI, see [dedicated native emulator host setup](docs/ANDROID_EMULATOR_RUNNERS.md). This requires a verified Linux amd64 process host; ordinary TrueNAS Docker workers do not expose KVM.
+
 See [ROADMAP](ROADMAP.md), [security model](docs/SECURITY.md), [release guide](docs/RELEASE.md), and [provider guides](docs/providers/).
 
 ## Implemented
@@ -40,7 +42,8 @@ RunnerHub separates **soft host preference** from **hard placement constraints**
 - Give a machine a higher scheduling priority when normal `runs-on: runnerhub` work should prefer it. Priority is considered only after compatibility and resource checks, so jobs automatically fall back to lower-priority hosts when the preferred machine is offline or full.
 - Use machine tags for hard capabilities or intentional placement boundaries such as `gpu`, `high-memory`, or `fast`.
 - Use a custom runner profile when a workflow must explicitly select a machine class. A profile named `fast` is exposed to GitHub as `runs-on: runnerhub-fast`.
-- Custom profiles can use either `container-trusted` or `container-dind`. Docker-capable profiles require privileged-worker support on both the RunnerHub deployment and the selected host.
+- Ordinary custom profiles use `container-trusted` or `container-dind`; Docker-capable publisher profiles require privileged-worker support on both the RunnerHub deployment and the selected host.
+- The **dedicated `runnerhub-android-emulator` profile** is an exception: it requires a trusted private repository and a separate Linux/amd64 native process agent with kernel-verified KVM. From **Hosts**, choose **Set up KVM** on an online Docker machine (or **Add machine → Native Android emulator / KVM agent**). RunnerHub installs a second unprivileged systemd agent and the pinned GitHub Actions runner over SSH; the existing Docker agent is not replaced. See [the Android worker setup guide](docs/ANDROID_EMULATOR_RUNNERS.md).
 - The Vercel deployment preset creates `runnerhub-vercel` as a `container-trusted` profile pinned to machines tagged `vercel`, with max concurrency 1. RunnerHub keeps `VERCEL_TOKEN` out of its database; the dashboard provides a copyable GitHub Actions workflow that reads the token from GitHub Actions secrets and uses `VERCEL_ORG_ID` / `VERCEL_PROJECT_ID` variables.
 
 This keeps ordinary workflows portable while still supporting explicit lanes for specialized hardware or Docker-heavy release jobs.

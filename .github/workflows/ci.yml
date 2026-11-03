@@ -156,6 +156,19 @@ jobs:
         run: go run github.com/securego/gosec/v2/cmd/gosec@v2.28.0 -exclude-generated -severity high ./...
       - run: go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...
 
+  dashboard-ux:
+    needs: plan
+    if: needs.plan.outputs.core == 'true'
+    name: Dashboard UX tests
+    runs-on: runnerhub
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '22'
+      - name: Test dashboard onboarding and native KVM controls
+        run: node --test web/dashboard-ux.test.cjs
+
   minimum-toolchains:
     needs: plan
     if: needs.plan.outputs.minimum == 'true' && needs.plan.outputs.reuse_minimum != 'true'

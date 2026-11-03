@@ -131,7 +131,7 @@ els.token.value=sessionStorage.getItem('runnerhub-token')||'';
 els.token.addEventListener('input',()=>{sessionStorage.setItem('runnerhub-token',els.token.value);refresh()});
 bind('create','click',createPool);
 bind('machine-scan-fingerprint','click',scanMachineHostKey);
-bind('add-machine','click',addMachine);
+bind('machine-mode','change',chooseMachineMode); bind('add-machine','click',addMachine);
 bind('machine-name','input',()=>renderMachineDuplicateWarning());
 document.getElementById('machine-operations')?.addEventListener('click',event=>{
   const button=event.target.closest('button[data-operation-view]');
@@ -201,6 +201,8 @@ els.activeRunners.addEventListener('click',event=>{
   if(button)reconcileFinishedGitHubWorker(button);
 });
 els.hosts.addEventListener('click',e=>{
+  const android=e.target.closest('button[data-host-android]');
+  if(android){setupHostAndroid(android);return}
   const recover=e.target.closest('button[data-host-recover]');
   if(recover){recoverHost(recover);return}
   const save=e.target.closest('button[data-host-tags]');
@@ -229,6 +231,8 @@ els.repos.addEventListener('click',e=>{
   if(vercelCopy){copyVercelWorkflow(vercelCopy);return}
   const vercel=e.target.closest('button[data-vercel-action]');
   if(vercel){saveVercelProfile(vercel);return}
+  const emulatorPreset=e.target.closest('button[data-android-emulator-preset]');
+  if(emulatorPreset){applyAndroidEmulatorPreset(emulatorPreset);return}
   const profile=e.target.closest('button[data-profile-action]');
   if(profile){saveRunnerProfile(profile);return}
   const publisher=e.target.closest('button[data-publisher-action]');
@@ -549,7 +553,9 @@ function renderHosts(hosts,workers=[],poolByID=new Map()){
     return '<article class="host-card" data-host-id="'+esc(h.id)+'">'+
       '<div class="host-card-top"><div class="host-heading"><strong>'+esc(h.name)+'</strong> '+
       '<span class="'+badgeClass+'">'+esc(h.state||'unknown')+'</span></div>'+
-      '<button type="button" class="secondary compact" data-host-recover="'+esc(h.id)+'">Repair / re-enroll</button></div>'+
+      '<button type="button" class="secondary compact" data-host-recover="'+esc(h.id)+'">Repair / re-enroll</button>'+
+      (state==='online'&&String(h.provider||'').toLowerCase()==='docker'
+       ? '<button type="button" class="secondary compact" data-host-android="'+esc(h.id)+'">Set up KVM</button>' : '')+'</div>'+
       '<div class="host-meta">Last seen: '+esc(!isZeroTime(h.lastSeenAt)?fmtAge(h.lastSeenAt)+' ago':'unknown')+
       ' · ID <code title="'+esc(h.id)+'">'+esc(h.id)+'</code></div>'+
       '<div class="host-meta">Workers: '+used.busy+' busy / '+used.active+' active · Agent revision: '+
@@ -1433,7 +1439,7 @@ function runnerProfileEditor(repo,profiles,standardConnected){
   const existing=(profiles||[]).map(p=>{
     const tags=Object.keys(p.hostSelector||{}).join(', ')||'—';
     const enabled=Number(p.githubInstallationId)>0;
-    const mode=p.isolation==='container-dind'?'Docker-capable':'standard';
+    const mode=p.isolation==='container-dind'?'Docker-capable':p.isolation==='host-persistent'?'Native host (trusted)':'standard';
     return '<div class="profile-row"><div><code>runs-on: '+esc(p.scaleSetName)+'</code><div class="muted small">machines: '+esc(tags)+' · '+esc(mode)+' · '+esc(cpuCores(p.resources?.cpuMillis))+' CPU · '+esc(gib(p.resources?.memoryBytes))+' GiB</div></div>'+
       (enabled?'<div class="publisher-actions"><button class="secondary compact" data-learning-reset data-pool-id="'+esc(p.id)+'" data-learning-label="'+esc(p.scaleSetName)+'">Reset learning</button><button class="secondary compact" data-profile-action="disable" data-profile-name="'+esc(p.scaleSetName)+'" data-repo="'+esc(repo.fullName)+'" data-installation="'+esc(repo.installationId)+'">Disable</button></div>':'<span class="badge neutral">disabled</span>')+
     '</div>';
@@ -1441,12 +1447,14 @@ function runnerProfileEditor(repo,profiles,standardConnected){
   const disabled=standardConnected?'':' disabled';
   return '<details class="repo-config profile-config">'+
     '<summary>Custom runner profiles'+(active.length?' ('+active.length+')':'')+'</summary>'+
+    '<div class="resource-note muted">Only the dedicated Android emulator profile may use native host execution; ordinary custom profiles must stay container-isolated. The KVM device is verified by the native agent.</div>'+ 
+    '<button type="button" class="secondary compact" data-android-emulator-preset'+disabled+'>Fill Android emulator profile</button>'+
     '<div class="resource-note muted">Tags are hard placement constraints. Use host priority for normal scheduling preference; use a custom profile when a workflow must explicitly target a machine class such as <code>runnerhub-fast</code>. Docker-capable profiles reserve two host CPU/RAM envelopes per runner (runner + private DinD sidecar). Resource learning uses the busiest individual container, not the summed DinD pair.</div>'+
     (existing?'<div class="profile-list">'+existing+'</div>':'')+
     '<div class="resource-grid">'+
       '<label>Profile name<input data-profile-field="name" placeholder="fast"'+disabled+'></label>'+
       '<label>Required machine tags<input data-profile-field="tags" placeholder="fast"'+disabled+'></label>'+
-      '<label>Mode<select data-profile-field="isolation"'+disabled+'><option value="container-trusted">Standard</option><option value="container-dind">Docker-capable</option></select></label>'+
+      '<label>Mode<select data-profile-field="isolation"'+disabled+'><option value="container-trusted">Standard</option><option value="container-dind">Docker-capable</option><option value="host-persistent">Native host (trusted only)</option></select></label>'+
       '<label>CPU / runner<input data-profile-field="cpu" type="number" min="0.25" step="0.25" value="2.5"'+disabled+'></label>'+
       '<label>RAM / runner (GiB)<input data-profile-field="memory" type="number" min="1" step="0.5" value="4"'+disabled+'></label>'+
       '<label>Max concurrent<input data-profile-field="concurrency" type="number" min="1" step="1" value="2"'+disabled+'></label>'+
@@ -1705,12 +1713,33 @@ function renderMachineDuplicateWarning(hosts=snapshot.hosts){
       '. This may be a previous enrollment or a distinct machine. Check IDs before creating another record.'
     : '';
 }
+function setupHostAndroid(button){
+  const host=(snapshot.hosts||[]).find(h=>String(h.id)===button.dataset.hostAndroid);
+  if(!host||String(host.state).toLowerCase()!=='online'||String(host.provider).toLowerCase()!=='docker'){
+    return message('A verified online Docker host is required. Refresh and try again.','error');
+  }
+  document.getElementById('machine-mode').value='android-emulator';
+  document.getElementById('machine-name').value=host.name||'';
+  document.getElementById('machine-tags').value='android-emulator';
+  document.getElementById('machine-priority').value=String(host.priority||0);
+  for(const id of ['machine-host-fingerprint','machine-password','machine-sudo-password','machine-private-key','machine-registry-password'])document.getElementById(id).value='';
+  chooseMachineMode();
+  renderMachineDuplicateWarning();
+  const panel=document.querySelector('.machine-add');
+  if(panel){panel.open=true;panel.scrollIntoView?.({behavior:'smooth',block:'start'})}
+  message('Setting up a separate Android KVM agent for '+host.name+'. Verify SSH address, user and fingerprint. The Docker agent stays online.','info');
+  document.getElementById('machine-address').focus?.();
+}
 function recoverHost(button){
   const host=(snapshot.hosts||[]).find(h=>String(h.id)===button.dataset.hostRecover);
   if(!host)return message('Host is no longer in the current fleet snapshot. Refresh and try again.','error');
+  const isAndroid=String(host.provider||'').toLowerCase()==='process' &&
+    host.systemTags?.['workload.android-emulator-only']==='true';
+  document.getElementById('machine-mode').value=isAndroid?'android-emulator':'docker';
   document.getElementById('machine-name').value=host.name||'';
   document.getElementById('machine-tags').value=hostTagText(host);
   document.getElementById('machine-priority').value=String(host.priority||0);
+  chooseMachineMode();
   // Credentials and fingerprints are not transferable between host identities.
   for(const id of ['machine-host-fingerprint','machine-password','machine-sudo-password',
     'machine-private-key','machine-registry-password'])document.getElementById(id).value='';
@@ -1736,9 +1765,33 @@ async function scanMachineHostKey(){
   }catch(e){message(e.message,'error')}finally{button.disabled=false}
 }
 
+function chooseMachineMode(){
+  const native=document.getElementById('machine-mode').value==='android-emulator';
+  const name=document.getElementById('machine-name');
+  const tags=document.getElementById('machine-tags');
+  const privileged=document.getElementById('machine-allow-privileged');
+  const button=document.getElementById('add-machine');
+  const hint=document.getElementById('machine-mode-help');
+  if(native){
+    if(name.value.trim()&&!name.value.trim().endsWith('-android'))name.value=name.value.trim()+'-android';
+    const existing=tags.value.split(',').map(s=>s.trim()).filter(Boolean);
+    if(!existing.includes('android-emulator'))existing.push('android-emulator');
+    tags.value=existing.join(', ');
+    privileged.checked=false;
+    privileged.disabled=true;
+    button.textContent='Set up Android KVM agent';
+    hint.textContent='Installs a dedicated unprivileged native agent and verified GitHub Actions runner on this machine, without touching its existing Docker agent. Requires Linux x64, KVM, Docker for binary extraction, and sudo during SSH setup. Only trusted private repositories should run here.';
+  }else{
+    privileged.disabled=false;
+    button.textContent='Add machine';
+    hint.textContent='SSH is used only for setup. If sudo needs a password, RunnerHub uses the sudo password above or falls back to the SSH password. Publisher support enables privileged per-job Docker-in-Docker sidecars, not host Docker socket access inside workflow jobs.';
+  }
+}
+
 async function addMachine(){
   const button=document.getElementById('add-machine');
   const body={
+    mode:document.getElementById('machine-mode').value,
     address:document.getElementById('machine-address').value.trim(),
     user:document.getElementById('machine-user').value.trim(),
     name:document.getElementById('machine-name').value.trim(),
@@ -1755,6 +1808,7 @@ async function addMachine(){
   };
   if(!body.address||!body.user||!body.name)return message('Machine address, SSH user, and RunnerHub name are required.','error');
   if(!body.hostKeyFingerprint)return message('Verify and enter the SSH host key fingerprint before adding the machine.','error');
+  if(body.mode==='android-emulator'&&body.allowPrivilegedWorkers)return message('Native Android KVM agents cannot enable publisher/DinD privileges.','error');
   if(machineBootstrap?.state==='working')return message('A machine enrollment is already underway. Check its status before retrying.','error');
   button.disabled=true;
   const startedAt=new Date().toISOString();
@@ -1885,6 +1939,26 @@ async function saveVercelProfile(button){
     const panel=button.closest('.vercel-config');if(panel)panel.open=false;
     await refresh();
   }catch(e){message(e.message,'error');button.disabled=false}
+}
+
+function applyAndroidEmulatorPreset(button) {
+  const panel=button.closest('.profile-config');
+  if(!panel)return;
+  const fields={
+    name:'android-emulator',
+    tags:'android-emulator, hardware.kvm',
+    isolation:'host-persistent',
+    cpu:'4',
+    memory:'8',
+    concurrency:'1',
+  };
+  for(const [key,value] of Object.entries(fields)){
+    const el=panel.querySelector('[data-profile-field="'+key+'"]');
+    if(el)el.value=value;
+  }
+  const auto=panel.querySelector('[data-profile-field="autotune"]');
+  if(auto)auto.checked=false;
+  message('Dedicated Android emulator profile filled. Connect a native KVM host before enabling it.','info');
 }
 
 async function saveRunnerProfile(button){

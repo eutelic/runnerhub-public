@@ -105,6 +105,7 @@
           <summary>Add machine</summary>
           <div class="advanced-body">
             <div class="resource-grid">
+              <label>Runner type<select id="machine-mode"><option value="docker">Standard Docker CI agent</option><option value="android-emulator">Native Android emulator / KVM agent</option></select></label>
               <label>IP / hostname<input id="machine-address" placeholder="192.168.1.50"></label>
               <label>SSH user<input id="machine-user" placeholder="example-user"></label>
               <label>RunnerHub name<input id="machine-name" placeholder="runner-host-01"></label>
@@ -131,7 +132,7 @@
             <label class="check-row"><input id="machine-install-docker" type="checkbox" checked> Install Docker automatically if it is missing</label>
             <label class="check-row"><input id="machine-allow-privileged" type="checkbox"> Allow isolated Docker/publisher runners on this machine</label>
             <div id="machine-duplicate-warning" class="resource-note warn" role="status" aria-live="polite"></div>
-            <div class="resource-note muted">SSH is used only for setup. If sudo needs a password, RunnerHub uses the sudo password above or falls back to the SSH password. Publisher support enables privileged per-job Docker-in-Docker sidecars, not host Docker socket access inside workflow jobs. After enrollment, the machine connects outbound to RunnerHub and stores its own rotating credential.</div>
+            <div id="machine-mode-help" class="resource-note muted">SSH is used only for setup. If sudo needs a password, RunnerHub uses the sudo password above or falls back to the SSH password. Publisher support enables privileged per-job Docker-in-Docker sidecars, not host Docker socket access inside workflow jobs. After enrollment, the machine connects outbound to RunnerHub and stores its own rotating credential.</div>
             <button id="add-machine">Add machine</button>
           </div>
         </details>

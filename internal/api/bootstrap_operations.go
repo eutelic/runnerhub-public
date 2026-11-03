@@ -35,6 +35,17 @@ func validateBootstrapInput(in *bootstrapHostRequest) error {
 	if in.Priority < -1000 || in.Priority > 1000 {
 		return errors.New("host priority must be between -1000 and 1000")
 	}
+	mode:=strings.TrimSpace(in.Mode)
+	if mode!="" && mode!="docker" && mode!="android-emulator" {return errors.New("unsupported machine setup mode")}
+	in.Mode=mode
+	if mode=="android-emulator" {
+		if in.AllowPrivilegedWorkers {return errors.New("native Android KVM agent cannot enable publisher/DinD privileges")}
+		for _,tag:=range in.Tags {
+			if strings.EqualFold(strings.TrimSpace(tag),core.AndroidEmulatorCapabilityTag) {
+				return errors.New("hardware.kvm must be system-verified, not supplied as a user tag")
+			}
+		}
+	}
 	_, err := tagMap(in.Tags)
 	return err
 }
@@ -44,6 +55,8 @@ func (s *Service) runHostBootstrap(ctx context.Context, in bootstrapHostRequest)
 	if err != nil {
 		return core.Host{}, err
 	}
+	nativeAndroid:=in.Mode=="android-emulator"
+	if nativeAndroid {tags["android-emulator"]="true"}
 	before, err := s.Store.ListHosts(ctx)
 	if err != nil {
 		return core.Host{}, err
@@ -51,8 +64,13 @@ func (s *Service) runHostBootstrap(ctx context.Context, in bootstrapHostRequest)
 	existing := make(map[string]struct{}, len(before))
 	for _, h := range before {
 		existing[h.ID] = struct{}{}
+		if nativeAndroid && strings.EqualFold(h.Name,in.Name) && h.State==core.HostOnline {
+			return core.Host{},errors.New("an online host already uses this name; use a separate identity such as compute-android")
+		}
 	}
-	token, err := s.Hub.IssueEnrollmentToken(in.Name, tags, 10*time.Minute)
+	ttl:=10*time.Minute
+	if nativeAndroid {ttl=20*time.Minute}
+	token, err := s.Hub.IssueEnrollmentToken(in.Name, tags, ttl)
 	if err != nil {
 		return core.Host{}, err
 	}
@@ -77,6 +95,7 @@ func (s *Service) runHostBootstrap(ctx context.Context, in bootstrapHostRequest)
 		InstallDocker:installDocker,
 		AllowInsecureHTTP:strings.HasPrefix(strings.ToLower(s.MachineBootstrapURL),"http://"),
 		AllowPrivilegedWorkers:in.AllowPrivilegedWorkers,
+		AndroidEmulator:nativeAndroid,
 	}
 	host, err := s.MachineBootstrap.Bootstrap(ctx,req,token,func(ctx context.Context,name string)(core.Host,error){
 		return machinebootstrap.WaitTimeout(ctx,45*time.Second,func()(core.Host,bool,error){
@@ -90,6 +109,9 @@ func (s *Service) runHostBootstrap(ctx context.Context, in bootstrapHostRequest)
 		})
 	})
 	if err!=nil{return host,err}
+	if nativeAndroid && (host.Provider!="process" || host.SystemTags[core.AndroidEmulatorCapabilityTag]!="true") {
+		return host,errors.New("native Android agent lacks a verified process provider and hardware.kvm capability")
+	}
 	if host.Priority!=in.Priority{
 		host.Priority=in.Priority
 		if err:=s.Store.UpsertHost(ctx,host);err!=nil{return core.Host{},err}
@@ -139,7 +161,7 @@ func (s *Service) startHostBootstrapOperation(w http.ResponseWriter,r *http.Requ
 	if !reused {
 		// No SSH credentials are written to the operations table. The request
 		// remains only in this goroutine and is discarded when it completes.
-		// #nosec G118 -- Intentional detached, bounded enrollment worker: performHostBootstrapOperation owns an eight-minute timeout and preserves state after the HTTP response.
+		// #nosec G118 -- Intentional detached, bounded enrollment worker: performHostBootstrapOperation owns a bounded mode-dependent timeout and preserves state after the HTTP response.
 		go s.performHostBootstrapOperation(active.ID,in,active.Actor)
 	}
 	writeJSON(w,http.StatusAccepted,struct{
@@ -170,7 +192,9 @@ func (s *Service) transitionHostOperation(ctx context.Context,id,state,step,deta
 }
 
 func (s *Service) performHostBootstrapOperation(id string,in bootstrapHostRequest,initiator string){
-	ctx,cancel:=context.WithTimeout(context.Background(),8*time.Minute)
+	timeout:=8*time.Minute
+	if in.Mode=="android-emulator" {timeout=16*time.Minute}
+	ctx,cancel:=context.WithTimeout(context.Background(),timeout)
 	defer cancel()
 	s.transitionHostOperation(ctx,id,"working","preparing-enrollment",
 		"Preparing an enrollment token and checking the existing host identities.","")
@@ -199,11 +223,16 @@ func (s *Service) performHostBootstrapOperation(id string,in bootstrapHostReques
 	if err!=nil{
 		step:="bootstrap-failed"
 		state:="failed"
-		detail:="Remote bootstrap failed. Check SSH access, Docker and agent logs before retrying."
+		detail:="Remote bootstrap failed. Check SSH access, KVM permissions if applicable, Docker and agent logs before retrying."
 		if host.ID!=""{
 			state="blocked"
-			step="enrollment-cleanup-failed"
-			detail="The new agent was observed, but final enrollment-secret cleanup failed. Check the remote agent and remove the temporary credential before retrying."
+			if in.Mode=="android-emulator" && (host.Provider!="process" || host.SystemTags[core.AndroidEmulatorCapabilityTag]!="true") {
+				step="native-kvm-unverified"
+				detail="Native agent responded but did not report the system-verified hardware.kvm capability. Check /dev/kvm access for runnerhub-android and the agent revision."
+			}else{
+				step="enrollment-cleanup-failed"
+				detail="The new agent was observed, but final enrollment-secret cleanup failed. Check the remote agent and remove the temporary credential before retrying."
+			}
 		}else if ctx.Err()!=nil{
 			state="unknown"
 			step="bootstrap-timed-out"

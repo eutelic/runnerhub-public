@@ -102,6 +102,20 @@ func TestUpdateHostPriority(t *testing.T) {
 	}
 }
 
+func TestHostPersistentProfileIsNotGeneralPurpose(t *testing.T) {
+    for _,tt:=range []struct{name string;isolation core.IsolationMode;wantError bool}{
+        {"runnerhub-android-emulator",core.IsolationHostPersistent,false},
+        {"runnerhub-fast",core.IsolationHostPersistent,true},
+        {"runnerhub",core.IsolationHostPersistent,true},
+        {"runnerhub-fast",core.IsolationContainerTrusted,false},
+        {"runnerhub-publisher",core.IsolationContainerDinD,false},
+    } {
+        err:=requireDedicatedNativeProfile(tt.name,tt.isolation)
+        if (err!=nil)!=tt.wantError {
+            t.Errorf("name=%q isolation=%q err=%v; wantError=%v",tt.name,tt.isolation,err,tt.wantError)
+        }
+    }
+}
 func TestProfileIsolationDefaultsAndAllowsDinD(t *testing.T) {
 	got, err := profileIsolation("", nil)
 	if err != nil {
@@ -128,6 +142,10 @@ func TestProfileIsolationDefaultsAndAllowsDinD(t *testing.T) {
 		t.Fatalf("existing isolation=%q, want preserved DinD", got)
 	}
 
+	got, err = profileIsolation(core.IsolationHostPersistent, nil)
+	if err != nil || got != core.IsolationHostPersistent {
+		t.Fatalf("native process isolation=%q err=%v", got, err)
+	}
 	if _, err := profileIsolation(core.IsolationMicroVM, nil); err == nil {
 		t.Fatal("unsupported custom profile isolation should fail")
 	}

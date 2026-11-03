@@ -53,6 +53,7 @@ func main() {
 		p, err := processprovider.New(processprovider.Config{
 			HostID:    name,
 			RunnerDir: mustEnv("RUNNERHUB_RUNNER_DIR"),
+            AndroidEmulatorOnly: boolEnv("RUNNERHUB_ANDROID_EMULATOR_ONLY", false),
 			StateDir:  filepath.Join(stateDir, "process"),
 		})
 		must(err)
@@ -96,10 +97,12 @@ func main() {
 		log.Fatalf("unsupported provider %q", kind)
 	}
 
+	enrollmentToken, err := readEnrollmentToken()
+	must(err)
 	credentialFile := env("RUNNERHUB_CREDENTIAL_FILE", filepath.Join(stateDir, "agent-credentials.json"))
 	client, err := agent.NewClient(agent.ClientConfig{
 		ControlPlaneURL:   mustEnv("RUNNERHUB_CONTROL_PLANE_URL"),
-		EnrollmentToken:   os.Getenv("RUNNERHUB_ENROLLMENT_TOKEN"),
+		EnrollmentToken:   enrollmentToken,
 		CredentialFile:    credentialFile,
 		Name:              name,
 		Provider:          kind,

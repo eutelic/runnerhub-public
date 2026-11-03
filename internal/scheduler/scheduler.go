@@ -105,7 +105,7 @@ func SummarizeCapacity(pool core.RunnerPool, hosts []core.Host, workers []core.W
 
 	var capacityReasons []string
 	for _, h := range hosts {
-		if h.State != core.HostOnline || !matchTags(h.Tags, pool.HostSelector) || !supportsIsolation(h, pool.Isolation) {
+		if h.State != core.HostOnline || !matchTags(h.Tags, pool.HostSelector) || !supportsIsolation(h, pool.Isolation) || specializedHostRejectionReason(h, pool) != "" {
 			continue
 		}
 		summary.CompatibleHosts++
@@ -129,6 +129,9 @@ func SummarizeCapacity(pool core.RunnerPool, hosts []core.Host, workers []core.W
 	case summary.CompatibleHosts == 0:
 		summary.Bottleneck = "no_compatible_host"
 		summary.Reason = "no compatible online hosts"
+		if core.IsAndroidEmulatorPool(pool) {
+			summary.Reason = "Android emulator requires an online Linux amd64 process host with verified /dev/kvm and dedicated android-emulator tag"
+		}
 	case summary.AdditionalWorkers == 0:
 		summary.Bottleneck = "host_resources"
 		summary.Reason = strings.Join(capacityReasons, "; ")
@@ -193,6 +196,9 @@ func HostRejectionReason(h core.Host, pool core.RunnerPool, used core.Resources)
 	if !matchTags(h.Tags, pool.HostSelector) {
 		return "selector mismatch"
 	}
+	if reason := specializedHostRejectionReason(h, pool); reason != "" {
+		return reason
+	}
 	if !supportsIsolation(h, pool.Isolation) {
 		return "isolation unsupported"
 	}
@@ -200,6 +206,22 @@ func HostRejectionReason(h core.Host, pool core.RunnerPool, used core.Resources)
 		return reason
 	}
 	return ""
+}
+
+func specializedHostRejectionReason(h core.Host, pool core.RunnerPool) string {
+  if h.SystemTags[core.AndroidEmulatorDedicatedTag]=="true" && !core.IsAndroidEmulatorPool(pool){
+    return "dedicated native KVM host only accepts Android emulator jobs"
+  }
+  if !core.IsAndroidEmulatorPool(pool) {
+    return ""
+  }
+  if h.Provider != "process" || h.OS != "linux" || h.Architecture != "amd64" {
+    return "Android emulator requires a Linux amd64 native process host"
+  }
+  if h.SystemTags[core.AndroidEmulatorCapabilityTag] != "true" {
+    return "KVM unavailable to the host runner user (verified hardware.kvm capability missing)"
+  }
+  return ""
 }
 
 func EffectiveWorkerResources(w core.Worker) core.Resources {
