@@ -38,6 +38,10 @@ broad=false
 
 for path in "${changed[@]}"; do
   case "$path" in
+    docs/*|README.md|ROADMAP.md)
+      # Documentation is neutral when combined with an affected code change.
+      # Keep unknown non-documentation paths fail-conservative below.
+      ;;
     .github/workflows/ci.yml|scripts/ci-changes.sh|scripts/test-workflow-concurrency.sh)
       broad=true
       ;;

@@ -47,4 +47,15 @@ run_case scaleset "printf 'x\n' > scaleset/main.go" \
 run_case workflow "printf 'x\n' > .github/workflows/ci.yml" \
   core=true minimum=true root_permission=true core_race=true scaleset=true agent=true docker_stack=true
 
+run_case docs_plus_ui "mkdir -p docs; printf 'notes\n' > docs/audit.md; printf 'x\n' > web/app.js" \
+  core=true minimum=false root_permission=false core_race=false scaleset=false agent=false docker_stack=false
+run_case docs_plus_scaleset "mkdir -p docs; printf 'notes\n' > docs/architecture.md; printf 'x\n' > scaleset/main.go" \
+  core=false minimum=true root_permission=false core_race=false scaleset=true agent=false docker_stack=false
+run_case docs_only "mkdir -p docs; printf 'notes\n' > docs/README.md" \
+  core=false minimum=false root_permission=false core_race=false scaleset=false agent=false docker_stack=false
+run_case readme_plus_ui "printf 'notes\n' >> README.md; printf 'x\n' > web/app.js" \
+  core=true minimum=false root_permission=false core_race=false scaleset=false agent=false docker_stack=false
+run_case unknown_unsafe "mkdir -p random; printf 'x\n' > random/new-file.txt" \
+  core=true minimum=true root_permission=true core_race=true scaleset=true agent=true docker_stack=true
+
 echo "[ ok ] deterministic CI affected-job planner"
