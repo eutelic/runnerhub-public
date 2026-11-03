@@ -57,3 +57,25 @@ func TestHistoryEndpointUsesSQLitePagingAndViewerAuthorization(t *testing.T) {
         t.Fatalf("unauthenticated history status %d",response.Code)
     }
 }
+
+func TestHistoryEndpointRejectsInvalidDateBounds(t *testing.T){
+    db,err:=store.OpenSQLite(":memory:")
+    if err!=nil{t.Fatal(err)}
+    defer db.Close()
+    mgr:=auth.New(auth.Config{APIKeys:map[string]auth.Principal{
+        "viewer-token":{Name:"viewer",Role:auth.RoleViewer},
+    }})
+    handler:=(&Service{Store:db,Auth:mgr}).Handler()
+    for _,u:=range []string{
+        "/api/v1/workers/history?from=2026-02-30",
+        "/api/v1/workers/history?to=2026-11-99",
+        "/api/v1/workers/history?from=2026-11-03&to=2026-11-02",
+        "/api/v1/workers/history?from=2026-11-02T12:00:00Z",
+    } {
+        req:=httptest.NewRequest(http.MethodGet,u,nil)
+        req.Header.Set("Authorization","Bearer viewer-token")
+        rr:=httptest.NewRecorder()
+        handler.ServeHTTP(rr,req)
+        if rr.Code!=http.StatusBadRequest{t.Errorf("%s status=%d body=%s",u,rr.Code,rr.Body.String())}
+    }
+}

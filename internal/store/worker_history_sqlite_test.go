@@ -64,3 +64,50 @@ func TestSQLiteWorkerHistoryFilteringAndPaging(t *testing.T) {
     _,err=s.QueryWorkerHistory(ctx,WorkerHistoryQuery{Limit:101})
     if err==nil {t.Fatal("unbounded history page was accepted")}
 }
+
+func TestSQLiteWorkerHistoryUTCDateBounds(t *testing.T) {
+    s,err:=OpenSQLite(":memory:")
+    if err!=nil{t.Fatal(err)}
+    defer s.Close()
+    ctx:=context.Background()
+    for _,w:=range []core.Worker{
+        {ID:"old",State:core.WorkerCompleted,UpdatedAt:time.Date(2026,10,31,23,59,59,0,time.UTC)},
+        {ID:"first",State:core.WorkerCompleted,UpdatedAt:time.Date(2026,11,1,0,0,0,0,time.UTC)},
+        {ID:"last",State:core.WorkerCompleted,UpdatedAt:time.Date(2026,11,2,23,59,59,0,time.UTC)},
+        {ID:"new",State:core.WorkerCompleted,UpdatedAt:time.Date(2026,11,3,0,0,0,0,time.UTC)},
+        // A missing updatedAt should fall back to the visible createdAt.
+        {ID:"created-only",State:core.WorkerRequested,CreatedAt:time.Date(2026,11,2,8,0,0,0,time.UTC)},
+        // An offset-bearing RFC3339 timestamp is normalized to UTC.
+        {ID:"offset",State:core.WorkerCompleted,UpdatedAt:time.Date(2026,11,2,23,30,0,0,time.FixedZone("EST",-5*3600))},
+    } {
+        if err:=s.UpsertWorker(ctx,w);err!=nil{t.Fatal(err)}
+    }
+    page,err:=s.QueryWorkerHistory(ctx,WorkerHistoryQuery{Limit:25,From:"2026-11-01",To:"2026-11-02"})
+    if err!=nil{t.Fatal(err)}
+    ids:=map[string]bool{}
+    for _,w:=range page.Items{ids[w.ID]=true}
+    for _,id:=range []string{"first","last","created-only"}{
+        if !ids[id]{t.Errorf("missing in UTC date window: %s",id)}
+    }
+    for _,id:=range []string{"old","new","offset"}{
+        if ids[id]{t.Errorf("outside UTC date window: %s",id)}
+    }
+    if page.Total!=3{t.Fatalf("UTC date window: %+v",page)}
+}
+
+func TestSQLiteHistorySearchFindsGitHubJobID(t *testing.T) {
+ s,err:=OpenSQLite(":memory:")
+ if err!=nil{t.Fatal(err)}
+ defer s.Close()
+ if err:=s.UpsertWorker(context.Background(),core.Worker{
+     ID:"work-job-id",JobName:"Build",JobID:"984321654",State:core.WorkerDeleted,
+     UpdatedAt:time.Date(2026,11,2,0,0,0,0,time.UTC),
+ });err!=nil{t.Fatal(err)}
+ matches,err:=s.QueryWorkerHistory(context.Background(),WorkerHistoryQuery{
+     Limit:10,Search:"984321654",
+ })
+ if err!=nil{t.Fatal(err)}
+ if matches.Total!=1||matches.Items[0].ID!="work-job-id"{
+     t.Fatalf("GitHub job id search failed: %+v",matches)
+ }
+}

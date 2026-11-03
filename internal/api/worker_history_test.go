@@ -41,3 +41,22 @@ func TestFilterHistoryPaginationAndSearch(t *testing.T) {
     beyond := filterHistory(workers,historyFilter{Limit:25,Offset:99})
     if beyond.Total!=3 || beyond.HasMore || len(beyond.Items)!=0 || beyond.Items==nil { t.Fatalf("bad empty end page: %+v",beyond) }
 }
+
+func TestFilterHistoryUTCDateWindowMatchesIndexedSemantics(t *testing.T) {
+    items:=[]core.Worker{
+        {ID:"a",UpdatedAt:time.Date(2026,10,31,23,59,0,0,time.UTC)},
+        {ID:"b",UpdatedAt:time.Date(2026,11,1,0,0,0,0,time.UTC)},
+        {ID:"c",CreatedAt:time.Date(2026,11,2,22,0,0,0,time.UTC)},
+        {ID:"d",UpdatedAt:time.Date(2026,11,3,0,0,0,0,time.UTC)},
+        {ID:"e"},
+    }
+    p:=filterHistory(items,historyFilter{Limit:20,From:"2026-11-01",To:"2026-11-02"})
+    if p.Total!=2 || len(p.Items)!=2{t.Fatalf("wrong window: %+v",p)}
+    if p.Items[0].ID!="c"||p.Items[1].ID!="b"{t.Fatalf("wrong chronological result: %+v",p.Items)}
+}
+
+func TestWorkerHistoryFallbackSearchesJobID(t *testing.T){
+ rows:=[]core.Worker{{ID:"w-1",JobID:"90701672",JobName:"Build",UpdatedAt:time.Now().UTC()}}
+ p:=filterHistory(rows,historyFilter{Limit:10,Search:"90701672"})
+ if p.Total!=1||p.Items[0].ID!="w-1"{t.Fatalf("job id search failed: %+v",p)}
+}

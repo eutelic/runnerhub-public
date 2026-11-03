@@ -5,6 +5,7 @@ import (
     "sort"
     "strconv"
     "strings"
+    "time"
 
     "github.com/eutelic/runnerhub/internal/auth"
     "github.com/eutelic/runnerhub/internal/core"
@@ -30,6 +31,8 @@ type historyFilter struct {
     Search string
     Limit int
     Offset int
+    From string
+    To string
 }
 
 func (s *Service) workerHistory(w http.ResponseWriter, r *http.Request) {
@@ -52,7 +55,22 @@ func (s *Service) workerHistory(w http.ResponseWriter, r *http.Request) {
         }
         offset = value
     }
+    from:=strings.TrimSpace(q.Get("from"))
+    to:=strings.TrimSpace(q.Get("to"))
+    for _,date:=range []string{from,to}{
+        if date==""{continue}
+        parsed,err:=time.Parse("2006-01-02",date)
+        if err!=nil||parsed.Format("2006-01-02")!=date{
+            problem(w,400,errInvalidHistoryParameter("history from/to must be YYYY-MM-DD UTC dates"))
+            return
+        }
+    }
+    if from!=""&&to!=""&&from>to{
+        problem(w,400,errInvalidHistoryParameter("history from date must not be after to date"))
+        return
+    }
     query := store.WorkerHistoryQuery{
+        From:from,To:to,
         Repository:q.Get("repository"), Pool:q.Get("pool"),
         Host:q.Get("host"), State:q.Get("state"),
         Search:q.Get("search"), Limit:limit, Offset:offset,
@@ -68,7 +86,7 @@ func (s *Service) workerHistory(w http.ResponseWriter, r *http.Request) {
         if err != nil { problem(w,500,err);return }
         page = filterHistory(workers,historyFilter{
             Repository:query.Repository,Pool:query.Pool,Host:query.Host,
-            State:query.State,Search:query.Search,Limit:query.Limit,Offset:query.Offset,
+            State:query.State,Search:query.Search,From:query.From,To:query.To,Limit:query.Limit,Offset:query.Offset,
         })
     }
     if auth.PrincipalFrom(r.Context()).Role == auth.RoleScaler {
@@ -94,10 +112,19 @@ func filterHistory(workers []core.Worker, filter historyFilter) workerHistoryPag
         if filter.Repository != "" && !strings.EqualFold(repository, strings.TrimSpace(filter.Repository)) { continue }
         if filter.Pool != "" && wk.PoolID != strings.TrimSpace(filter.Pool) { continue }
         if filter.Host != "" && wk.HostID != strings.TrimSpace(filter.Host) { continue }
+        at:=wk.UpdatedAt
+        if at.IsZero(){at=wk.CreatedAt}
+        if filter.From!="" || filter.To!=""{
+            if at.IsZero(){continue}
+            day:=at.UTC().Format("2006-01-02")
+            if filter.From!="" && day<filter.From{continue}
+            if filter.To!="" && day>filter.To{continue}
+        }
         if filter.State != "" && !workerMatchesHistoryState(wk, filter.State) { continue }
         if filter.Search != "" && !(contains(repository, filter.Search) ||
             contains(wk.JobName, filter.Search) || contains(wk.FailureReason, filter.Search) ||
             contains(wk.ID, filter.Search) || contains(wk.RunnerName, filter.Search) ||
+            contains(wk.JobID, filter.Search) ||
             (wk.WorkflowRunID>0 && contains(strconv.FormatInt(wk.WorkflowRunID, 10), filter.Search))) { continue }
         selected = append(selected, wk)
     }

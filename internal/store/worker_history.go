@@ -13,6 +13,8 @@ type WorkerHistoryQuery struct {
     Host string
     State string
     Search string
+    From string // UTC calendar date YYYY-MM-DD, inclusive
+    To string   // UTC calendar date YYYY-MM-DD, inclusive
     Limit int
     Offset int
 }

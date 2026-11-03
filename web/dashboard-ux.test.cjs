@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const vm = require('node:vm');
 
 const source = fs.readFileSync(require('node:path').join(__dirname,'app.js'),'utf8');
-assert.match(source,/initPageNav\(\);\s*renderMachineBootstrap\(\);\s*refresh\(\);\s*refreshMachineOperation\(\);/);
+assert.match(source,/initPageNav\(\);\s*window\.addEventListener\('popstate',[\s\S]*?\);\s*renderMachineBootstrap\(\);\s*refresh\(\);\s*refreshMachineOperation\(\);/);
 const testSource = source.replace(/initPageNav\(\);[\s\S]*$/, 'initPageNav();renderMachineBootstrap();');
 
 function createDashboard(endpoints = {}, storage = new Map(), session = new Map()) {
@@ -33,10 +33,21 @@ function createDashboard(endpoints = {}, storage = new Map(), session = new Map(
     getElementById:element, querySelector(){return null}, querySelectorAll(){return []},
     body:{classList:{add(){}}}
   };
+  const location={hostname:'localhost',origin:'http://localhost:8788',pathname:'/',hash:'',search:''};
+  const urlChanges=[];
+  const history={
+    pushState(){},
+    replaceState(_state,_title,url){
+      urlChanges.push(url);
+      const [pathAndQuery,fragment='']=url.split('#');
+      const q=pathAndQuery.indexOf('?');
+      location.pathname=q>=0?pathAndQuery.slice(0,q):pathAndQuery;
+      location.search=q>=0?pathAndQuery.slice(q):'';
+      location.hash=fragment?'#'+fragment:'';
+    }
+  };
   const ctx = vm.createContext({
-    document,window:{addEventListener(){},confirm(){return true},prompt(){return 'https://github.com/eutelic/runnerhub/actions/runs/41211256199/job/124571922351'}},location:{
-      hostname:'localhost',origin:'http://localhost:8788',hash:''
-    },history:{pushState(){}},sessionStorage:{
+    document,window:{addEventListener(){},confirm(){return true},prompt(){return 'https://github.com/eutelic/runnerhub/actions/runs/41211256199/job/124571922351'}},location,history,sessionStorage:{
       getItem(key){return key==='runnerhub-token'?'test-token':(session.get(key)||null)},
       setItem(key,value){session.set(key,value)},removeItem(key){session.delete(key)}
     },localStorage:{getItem(key){return storage.get(key)||null},setItem(key,value){storage.set(key,value)}},
@@ -52,7 +63,7 @@ function createDashboard(endpoints = {}, storage = new Map(), session = new Map(
     console,Date,Number,Map,Set,URLSearchParams
   });
   vm.runInContext(testSource,ctx,{filename:'app.js'});
-  return {ctx,elements,element,document,calls,requestOptions,endpoints,storage,session};
+  return {ctx,elements,element,document,calls,requestOptions,endpoints,storage,session,location,urlChanges};
 }
 
 test('fleet overview identifies bad listener and zero online hosts with actionable links',()=>{
@@ -397,6 +408,86 @@ test('current runner telemetry ages out while retained peak metrics remain histo
     new Map([['h1',{id:'h1',name:'host'}]]),new Map())`,ctx);
   assert.match(element('active-runners').innerHTML,/stale/);
   assert.doesNotMatch(element('active-runners').innerHTML,/1.5 cores/);
+});
+
+test('history investigations restore shareable host, pool, UTC dates, and pagination',async()=>{
+  const {ctx,element,calls,location,urlChanges,endpoints}=createDashboard();
+  location.search='?h_repository=eutelic%2Frunnerhub&h_state=failed&h_search=timeout&h_host=host-22&h_pool=pool-7&h_from=2026-10-31&h_to=2026-11-02&h_offset=20&other=keep';
+  location.hash='#activity';
+  vm.runInContext('restoreHistoryFiltersFromURL()',ctx);
+  assert.equal(element('history-repo').value,'eutelic/runnerhub');
+  assert.equal(element('history-host').value,'host-22');
+  assert.equal(element('history-pool').value,'pool-7');
+  assert.equal(element('history-from').value,'2026-10-31');
+  assert.equal(element('history-to').value,'2026-11-02');
+  assert.equal(vm.runInContext('historyOffset',ctx),20);
+  const url='/api/v1/workers/history?limit=20&offset=20&repository=eutelic%2Frunnerhub&state=failed&search=timeout&pool=pool-7&host=host-22&from=2026-10-31&to=2026-11-02';
+  endpoints[url]={items:[],total:25,hasMore:false};
+  await vm.runInContext('loadHistory()',ctx);
+  assert.ok(calls.includes(url),JSON.stringify(calls));
+  vm.runInContext('writeHistoryFiltersToURL()',ctx);
+  assert.match(urlChanges.at(-1),/h_offset=20/);
+  assert.match(urlChanges.at(-1),/h_pool=pool-7/);
+  assert.match(urlChanges.at(-1),/other=keep/);
+  assert.match(urlChanges.at(-1),/#activity$/);
+});
+
+test('history URL state rejects invalid page and preserves unrelated query parameters',()=>{
+  const {ctx,element,location,urlChanges}=createDashboard();
+  location.search='?h_offset=100001&unrelated=123';
+  vm.runInContext('restoreHistoryFiltersFromURL()',ctx);
+  assert.equal(vm.runInContext('historyOffset',ctx),0);
+  element('history-repo').value='another/repo';
+  element('history-from').value='2026-11-02';
+  element('history-to').value='2026-11-01';
+  assert.equal(vm.runInContext('historyDatesAreOrdered()',ctx),false);
+  element('history-to').value='2026-11-02';
+  vm.runInContext('writeHistoryFiltersToURL()',ctx);
+  assert.match(urlChanges.at(-1),/h_repository=another%2Frepo/);
+  assert.match(urlChanges.at(-1),/unrelated=123/);
+  assert.doesNotMatch(urlChanges.at(-1),/h_offset=/);
+});
+
+test('history host/pool suggestions are grounded in known fleet records',()=>{
+  const {ctx,element}=createDashboard();
+  vm.runInContext(`snapshot.hosts=[{id:'host-7',name:'compute',state:'online'}];
+    snapshot.pools=[{id:'pool-8',scaleSetName:'runnerhub-publisher',scope:{owner:'eutelic',repository:'runnerhub'}}];
+    updateHistoryFilterSuggestions()`,ctx);
+  assert.match(element('history-host-options').innerHTML,/host-7/);
+  assert.match(element('history-host-options').innerHTML,/compute/);
+  assert.match(element('history-pool-options').innerHTML,/pool-8/);
+  assert.match(element('history-pool-options').innerHTML,/runnerhub-publisher/);
+});
+
+test('share link never leaks unrelated URL query parameters',async()=>{
+  const {ctx,element,location}=createDashboard();
+  location.search='?code=private-oauth-code&h_repository=old';
+  element('history-repo').value='eutelic/runnerhub';
+  let copied='';
+  ctx.navigator={clipboard:{writeText:async text=>{copied=text}}};
+  element('history-copy-link').handlers.click();
+  // Clipboard promise resolves during microtask dispatch.
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.match(copied,/h_repository=eutelic%2Frunnerhub/);
+  assert.doesNotMatch(copied,/private-oauth-code|[?&]code=/);
+  assert.match(copied,/#activity$/);
+});
+
+test('history GitHub links target the exact job when a validated job ID exists',()=>{
+ const {ctx}=createDashboard();
+ const job=vm.runInContext("githubRunLink({repository:'eutelic/runnerhub',workflowRunId:1234,jobId:'125574733491'})",ctx);
+ assert.match(job,/actions\/runs\/1234\/job\/125574733491/);
+ assert.match(job,/View job/);
+ const fallback=vm.runInContext("githubRunLink({repository:'eutelic/runnerhub',workflowRunId:1234,jobId:'unexpected'})",ctx);
+ assert.match(fallback,/actions\/runs\/1234"/);
+ assert.doesNotMatch(fallback,/\/job\//);
+});
+
+
+test('clipboard failure never advises sharing an address bar with OAuth parameters',()=>{
+  assert.match(source,/Clipboard unavailable\. No link was copied/);
+  assert.match(source,/Do not share the address bar URL/);
+  assert.doesNotMatch(source,/Copy the current address bar URL to share this investigation/);
 });
 
 

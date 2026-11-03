@@ -153,14 +153,37 @@ document.getElementById('machine-bootstrap-status')?.addEventListener('click',ev
 bind('install-deployer','click',installDeployer);
 bind('copy-deployer-token','click',copyDeployerToken);
 bind('message-dismiss','click',()=>message(''));
-bind('history-filter-form','submit',event=>{event.preventDefault();historyOffset=0;loadHistory()});
-bind('history-reset','click',()=>{
-  ['history-repo','history-search'].forEach(id=>{document.getElementById(id).value=''});
-  document.getElementById('history-state').value='';
-  historyOffset=0;loadHistory();
+bind('history-filter-form','submit',event=>{
+  event.preventDefault();
+  historyOffset=0;
+  if(!historyDatesAreOrdered())return;
+  writeHistoryFiltersToURL();loadHistory();
 });
-bind('history-prev','click',()=>{historyOffset=Math.max(0,historyOffset-20);loadHistory()});
-bind('history-next','click',()=>{historyOffset+=20;loadHistory()});
+bind('history-reset','click',()=>{
+  for(const [,id] of historyQueryFields)document.getElementById(id).value='';
+  historyOffset=0;writeHistoryFiltersToURL();loadHistory();
+});
+bind('history-prev','click',()=>{historyOffset=Math.max(0,historyOffset-20);writeHistoryFiltersToURL();loadHistory()});
+bind('history-next','click',()=>{historyOffset+=20;writeHistoryFiltersToURL();loadHistory()});
+bind('history-copy-link','click',async()=>{
+  if(!historyDatesAreOrdered())return;
+  writeHistoryFiltersToURL();
+  // A share link intentionally contains ONLY history filters, never unrelated
+  // URL parameters such as OAuth codes or third-party tracking credentials.
+  const shared=new URLSearchParams();
+  for(const [key,id] of historyQueryFields){
+    const value=document.getElementById(id).value.trim();
+    if(value)shared.set('h_'+key,value);
+  }
+  if(historyOffset)shared.set('h_offset',String(historyOffset));
+  const link=location.origin+(location.pathname||'/')+(shared.toString()?'?'+shared:'')+'#activity';
+  try{
+    await navigator.clipboard.writeText(link);
+    message('Investigation link copied. Opening it restores your filters and page.','success');
+  }catch{
+    message('Clipboard unavailable. No link was copied; enable clipboard access and retry. Do not share the address bar URL because it may contain unrelated sign-in parameters.','error');
+  }
+});
 document.getElementById('smoke-workflow').value=smokeWorkflow;
 document.getElementById('fleet-alerts')?.addEventListener('click',event=>{
   const button=event.target.closest('button[data-fleet-alert-silence]');
@@ -468,7 +491,7 @@ function githubRunLink(worker,pool,progress){
   if(!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(String(name||''))||
       !Number.isSafeInteger(id)||id<=0)return '—';
   const [owner,repo]=name.split('/');
-  const jobID=Number(progress?.githubJobId);
+  const jobID=Number(progress?.githubJobId ?? worker.jobId);
   const specific=Number.isSafeInteger(jobID)&&jobID>0;
   return '<a href="https://github.com/'+encodeURIComponent(owner)+'/'+encodeURIComponent(repo)+
     '/actions/runs/'+id+(specific?'/job/'+jobID:'')+
@@ -1179,13 +1202,63 @@ async function refresh(force=false){
   }
 }
 
+const historyQueryFields=[
+  ['repository','history-repo'],['state','history-state'],
+  ['search','history-search'],['pool','history-pool'],['host','history-host'],
+  ['from','history-from'],['to','history-to']
+];
+function updateHistoryFilterSuggestions(){
+  const hosts=(snapshot.hosts||[]).filter(h=>h&&h.id);
+  const pools=(snapshot.pools||[]).filter(p=>p&&p.id);
+  const render=(id,items)=> {
+    const el=document.getElementById(id);
+    if(!el)return;
+    const markup=items.map(item=>'<option value="'+esc(item.value)+'" label="'+esc(item.label)+'"></option>').join('');
+    if(el.innerHTML!==markup)el.innerHTML=markup;
+  };
+  render('history-host-options',hosts.map(h=>({value:h.id,label:(h.name||h.id)+' ('+(h.state||'unknown')+')'})));
+  render('history-pool-options',pools.map(p=>({value:p.id,label:(p.scaleSetName||p.name||p.id)+' ('+repoName(p)+')'})));
+}
+function historyDatesAreOrdered(){
+  const from=document.getElementById('history-from').value;
+  const to=document.getElementById('history-to').value;
+  if(from&&to&&from>to){
+    message('History start date must not be after the end date (UTC).','error');
+    return false;
+  }
+  return true;
+}
+function restoreHistoryFiltersFromURL(){
+  const params=new URLSearchParams(location.search||'');
+  for(const [key,id] of historyQueryFields){
+    document.getElementById(id).value=params.get('h_'+key)||'';
+  }
+  const raw=params.get('h_offset')||'0';
+  const n=Number(raw);
+  historyOffset=Number.isSafeInteger(n)&&n>=0&&n<=100000&&n%20===0?n:0;
+}
+function writeHistoryFiltersToURL(){
+  const params=new URLSearchParams(location.search||'');
+  for(const [key,id] of historyQueryFields){
+    params.delete('h_'+key);
+    const value=document.getElementById(id).value.trim();
+    if(value)params.set('h_'+key,value);
+  }
+  params.delete('h_offset');
+  if(historyOffset)params.set('h_offset',String(historyOffset));
+  const query=params.toString();
+  history.replaceState(null,'',(location.pathname||'/')+(query?'?'+query:'')+'#activity');
+}
+
 async function loadHistory(){
+  updateHistoryFilterSuggestions();
   const button=document.getElementById('history-apply');
   const previous=document.getElementById('history-prev');
   const next=document.getElementById('history-next');
   const count=document.getElementById('history-count');
   const container=document.getElementById('history-results');
   if(!container||!(auth.authenticated||els.token.value))return;
+  if(!historyDatesAreOrdered())return;
   const sequence=++historyRequestSequence;
   button.disabled=true;
   previous.disabled=next.disabled=true;
@@ -1196,6 +1269,10 @@ async function loadHistory(){
     state:document.getElementById('history-state').value,
     search:document.getElementById('history-search').value.trim()
   });
+  for(const key of ['pool','host','from','to']){
+    const value=document.getElementById('history-'+key).value.trim();
+    if(value)params.set(key,value);
+  }
   try{
     const page=await j('/api/v1/workers/history?'+params);
     if(sequence!==historyRequestSequence)return;
@@ -1203,6 +1280,7 @@ async function loadHistory(){
     const total=Number(page.total)||0;
     if(historyOffset>=total&&historyOffset>0){
       historyOffset=Math.max(0,Math.floor((total-1)/20)*20);
+      writeHistoryFiltersToURL();
       return void loadHistory();
     }
     const byPool=new Map((snapshot.pools||[]).map(pool=>[pool.id,pool]));
@@ -2160,7 +2238,12 @@ async function createPool(){
   }catch(e){message(e.message,'error')}
 }
 
+restoreHistoryFiltersFromURL();
 initPageNav();
+window.addEventListener('popstate',()=>{
+  restoreHistoryFiltersFromURL();
+  if(location.hash==='#activity'&&(auth.authenticated||els.token.value))loadHistory();
+});
 renderMachineBootstrap();
 refresh();
 refreshMachineOperation();

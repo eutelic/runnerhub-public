@@ -253,7 +253,7 @@
         <div>
           <div class="section-kicker">Investigations</div>
           <h2>Worker history</h2>
-          <div class="muted small">Find recent and historical jobs by repository, status, run ID or error. Paged server-side; this is not the GitHub job queue.</div>
+          <div class="muted small">Find historical jobs by repository, state, host, pool, date, run ID or error. UTC date bounds filter last worker activity. Filters stay in the address bar for sharing; this is not the GitHub job queue.</div>
         </div>
         <a href="/diagnostics.html" class="button secondary compact">Investigate run</a>
       </div>
@@ -271,8 +271,13 @@
           <option value="cleanup_pending">Cleanup pending</option>
         </select></label>
         <label>Run / job / error <input id="history-search" type="search" autocomplete="off" placeholder="run ID, job, failure"></label>
+        <label>Pool <input id="history-pool" list="history-pool-options" autocomplete="off" placeholder="Select or enter pool ID"><datalist id="history-pool-options"></datalist></label>
+        <label>Host <input id="history-host" list="history-host-options" autocomplete="off" placeholder="Select or enter host ID"><datalist id="history-host-options"></datalist></label>
+        <label>From (UTC) <input id="history-from" type="date" aria-label="Worker activity from date in UTC"></label>
+        <label>Through (UTC) <input id="history-to" type="date" aria-label="Worker activity through date in UTC"></label>
         <button type="submit" id="history-apply">Find workers</button>
         <button type="button" id="history-reset" class="secondary">Reset</button>
+        <button type="button" id="history-copy-link" class="secondary">Copy investigation link</button>
       </form>
       <div id="history-results" aria-live="polite"><div class="empty">Open Activity to load worker history.</div></div>
       <div class="history-pager">

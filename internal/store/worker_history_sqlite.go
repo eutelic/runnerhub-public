@@ -25,6 +25,12 @@ func (s *SQLite) QueryWorkerHistory(ctx context.Context, f WorkerHistoryQuery) (
     const state = `LOWER(COALESCE(json_extract(data,'$.state'),''))`
     const result = `LOWER(COALESCE(json_extract(data,'$.jobResult'),''))`
     const failure = `COALESCE(json_extract(data,'$.failureReason'),'')`
+    // Match the timestamp operators see in the worker UI, not SQLite's
+    // unrelated row-write time. date() normalizes RFC3339 offsets to UTC.
+    const activityDate = `date(CASE
+       WHEN COALESCE(json_extract(data,'$.updatedAt'),'') NOT IN ('','0001-01-01T00:00:00Z')
+       THEN json_extract(data,'$.updatedAt')
+       ELSE NULLIF(json_extract(data,'$.createdAt'),'') END)`
     conditions := []string{}
     args := []any{}
     if v := strings.ToLower(strings.TrimSpace(f.Repository)); v != "" {
@@ -38,6 +44,14 @@ func (s *SQLite) QueryWorkerHistory(ctx context.Context, f WorkerHistoryQuery) (
     if v := strings.TrimSpace(f.Host); v != "" {
         conditions = append(conditions, "json_extract(data,'$.hostId')=?")
         args = append(args,v)
+    }
+    if f.From != "" {
+        conditions=append(conditions,activityDate+">=?")
+        args=append(args,f.From)
+    }
+    if f.To != "" {
+        conditions=append(conditions,activityDate+"<=?")
+        args=append(args,f.To)
     }
     if v := strings.ToLower(strings.TrimSpace(f.State)); v != "" {
         switch v {
@@ -69,6 +83,7 @@ func (s *SQLite) QueryWorkerHistory(ctx context.Context, f WorkerHistoryQuery) (
             `LOWER(COALESCE(json_extract(data,'$.failureReason'),''))` + likeClause,
             `LOWER(COALESCE(json_extract(data,'$.id'),''))` + likeClause,
             `LOWER(COALESCE(json_extract(data,'$.runnerName'),''))` + likeClause,
+            `LOWER(CAST(COALESCE(json_extract(data,'$.jobId'),'') AS TEXT))` + likeClause,
             `(COALESCE(json_extract(data,'$.workflowRunId'),0)>0 AND
                  CAST(json_extract(data,'$.workflowRunId') AS TEXT)` + likeClause + `)`,
         }
