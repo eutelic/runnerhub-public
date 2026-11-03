@@ -622,7 +622,11 @@ function renderHosts(hosts,workers=[],poolByID=new Map()){
       sameNameNote+offlineNote+mergedNote+previousNote+
       (state==='archived'?'':'<details class="host-settings" data-host-settings="'+esc(h.id)+'"><summary>Capacity and scheduling settings</summary>'+
       '<div class="host-resources">CPU: '+esc(h.capacity?.cpuMillis?cpuCores(used.cpu)+' / '+cpuCores(h.capacity.cpuMillis)+' cores':'unknown')+
-      ' · RAM: '+esc(h.capacity?.memoryBytes?gib(used.ram)+' / '+gib(h.capacity.memoryBytes)+' GiB':'unknown')+'</div>'+
+      ' · RAM: '+esc(h.capacity?.memoryBytes?gib(used.ram)+' / '+gib(h.capacity.memoryBytes)+' GiB':'unknown')+
+      ' · Disk available: '+esc(h.capacity?.diskBytes?gib(h.capacity.diskBytes)+' GiB':'unknown')+'</div>'+
+      (String(h.provider||'').toLowerCase()==='docker'
+        ? '<div class="resource-note muted">Disk available is filesystem free space at the agent state directory, not total disk capacity. Publisher/DinD runners also reserve their configured disk budget when scheduling.</div>'
+        : '')+
       '<div class="resource-grid"><label>Priority<input class="inline-tags" data-host-priority-input="'+esc(h.id)+
       '" type="number" min="-1000" max="1000" step="1" value="'+esc(draft?.priority??Number(h.priority||0))+'"></label>'+
       '<label>Tags<input class="inline-tags" data-host-tag-input="'+esc(h.id)+'" value="'+

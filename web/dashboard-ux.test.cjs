@@ -661,3 +661,20 @@ test('invalid publisher disk cannot trigger a configuration write',async()=>{
   await vm.runInContext('savePublisher(saveButton)',ctx);
   assert.equal(requestOptions.has('/api/v1/github/publisher'),false);
 });
+
+test('Docker hosts expose advertised free disk separately from CPU/RAM reservations',()=>{
+  const {ctx,element}=createDashboard();
+  const hosts=[
+    {id:'compute-host',name:'compute',provider:'docker',state:'online',
+      capacity:{cpuMillis:32000,memoryBytes:56*1073741824,diskBytes:28*1073741824}},
+    {id:'unknown-disk',name:'truenas',provider:'docker',state:'offline',
+      capacity:{cpuMillis:6000,memoryBytes:32*1073741824,diskBytes:0}},
+  ];
+  ctx.testHosts=hosts;
+  vm.runInContext('renderHosts(testHosts)',ctx);
+  const html=element('hosts').innerHTML;
+  assert.match(html,/compute[\s\S]*Disk available: 28 GiB/);
+  assert.match(html,/Disk available is filesystem free space at the agent state directory, not total disk capacity/);
+  assert.match(html,/Publisher\/DinD runners also reserve their configured disk budget/);
+  assert.match(html,/Disk available: unknown/);
+});
