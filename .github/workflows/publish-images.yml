@@ -10,6 +10,8 @@ on:
       - '.dockerignore'
       - '.github/workflows/publish-images.yml'
       - 'deploy/docker/**'
+      - 'deploy/truenas/compose.yaml'
+      - 'deploy/truenas/prepare-compose.sh'
       - 'deploy/truenas/check-images.sh'
       - 'deploy/truenas/verify-image-set.sh'
       - 'cmd/**'
