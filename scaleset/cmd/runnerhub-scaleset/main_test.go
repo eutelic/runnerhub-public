@@ -2,7 +2,11 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -389,14 +393,22 @@ func TestRateLimitTrackerUsesResetAndRetryAfter(t *testing.T) {
 }
 
 func TestScaleSetClientConstructionDoesNotPanicOnCustomRetries(t *testing.T) {
-	// Regression: actions/scaleset v0.4.0 asserts that the retryable HTTP
-	// client's transport is *http.Transport. A RoundTripper wrapper panicked
-	// in newCommonClient before GitHub could receive any requests.
+	// The SDK validates GitHub App credentials during client construction.
+	// Use a real ephemeral RSA key so this test exercises the retry transport
+	// rather than failing prematurely on an invalid placeholder credential.
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate test GitHub App key: %v", err)
+	}
+	privateKey := pem.EncodeToMemory(&pem.Block{
+		Type: "RSA PRIVATE KEY",
+		Bytes: x509.MarshalPKCS1PrivateKey(key),
+	})
 	cfg := config{
 		RegistrationURL:   "https://github.com/eutelic/file-ingest",
 		AppClientID:       "Iv1.test",
 		AppInstallationID: 123,
-		AppPrivateKey:     "placeholder-nonempty-key",
+		AppPrivateKey:     string(privateKey),
 		rateLimit:         &githubRateLimitTracker{},
 	}
 	client, err := cfg.client()

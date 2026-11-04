@@ -75,6 +75,11 @@ jobs:
             golang:1.26.10 \
             bash -lc 'go test -race ./internal/...'
           go vet ./...
+      - name: Select declared scale-set Go toolchain
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: scaleset/go.mod
+          cache-dependency-path: scaleset/go.sum
       - name: Scale-set tests
         working-directory: scaleset
         run: |

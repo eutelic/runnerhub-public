@@ -184,7 +184,7 @@ func newGitHubRetryClient(tracker *githubRateLimitTracker) *retryablehttp.Client
 	client.RetryWaitMin = time.Second
 	client.RetryWaitMax = 5 * time.Minute
 	client.Backoff = githubRetryBackoff
-	// Keep the default concrete *http.Transport for actions/scaleset v0.4.0.
+	// Keep the original retry transport's rate-limit hooks; the SDK uses its own transport interface.
 	client.RequestLogHook = func(_ retryablehttp.Logger, req *http.Request, _ int) {
 		waitForGitHubCooldown(req.Context(), tracker)
 	}
@@ -235,6 +235,7 @@ func loadConfig() (config, error) {
 		return c, err
 	}
 	if path := os.Getenv("RUNNERHUB_GITHUB_APP_PRIVATE_KEY_FILE"); path != "" {
+		// #nosec G703 -- this path is supplied by trusted service configuration.
 		b, err := os.ReadFile(path)
 		if err != nil {
 			return c, fmt.Errorf("read github app key: %w", err)
@@ -269,7 +270,15 @@ func (c config) client() (*scaleset.Client, error) {
 	if tracker == nil {
 		tracker = &githubRateLimitTracker{}
 	}
-	httpOptions := []scaleset.HTTPOption{scaleset.WithRetryableHTTPClint(newGitHubRetryClient(tracker))}
+	// v0.5.0 accepts a standard HTTP client and owns its own retry layer.
+	// Keep the existing rate-limit-aware retry transport to preserve the
+	// persistent installation cooldown and server Retry-After behavior.
+	retryClient := newGitHubRetryClient(tracker).StandardClient()
+	retryClient.Timeout = scaleset.DefaultTimeout
+	httpOptions := []scaleset.HTTPOption{
+		scaleset.WithHTTPClient(retryClient),
+		scaleset.WithRetry(scaleset.RetryConfig{}), // retryClient already retries
+	}
 	app := scaleset.GitHubAppAuth{ClientID: c.AppClientID, InstallationID: c.AppInstallationID, PrivateKey: c.AppPrivateKey}
 	if app.Validate() == nil {
 		return scaleset.NewClientWithGitHubApp(scaleset.ClientWithGitHubAppConfig{
@@ -440,6 +449,10 @@ func (c runnerHubClient) do(ctx context.Context, method, path string, body any, 
 	return nil
 }
 
+type jobAcquirer interface {
+	AcquireJobs(context.Context, []int64) ([]int64, error)
+}
+
 type scaler struct {
 	mu         sync.Mutex
 	names      map[string]string
@@ -447,6 +460,7 @@ type scaler struct {
 	max        int
 	scaleSetID int
 	github     scaleSetRunnerClient
+	jobs       jobAcquirer
 	hub        runnerHubClient
 	logger     *slog.Logger
 }
@@ -465,6 +479,53 @@ func (s *scaler) syncActiveWorkers(ctx context.Context) error {
 	s.mu.Lock()
 	s.names = names
 	s.mu.Unlock()
+	return nil
+}
+
+// Scale implements the v0.5.0 listener protocol. Acknowledgement happens in
+// the SDK only after this method succeeds, so all operations must be retryable.
+func (s *scaler) Scale(ctx context.Context, message *scaleset.RunnerScaleSetMessage) error {
+	if message == nil {
+		return nil // a long-poll timeout has no new scale-set state
+	}
+	if len(message.JobAvailableMessages) > 0 {
+		if s.jobs == nil {
+			return errors.New("scale-set job acquirer is not configured")
+		}
+		ids := make([]int64, 0, len(message.JobAvailableMessages))
+		for _, job := range message.JobAvailableMessages {
+			if job == nil {
+				continue
+			}
+			ids = append(ids, job.RunnerRequestID)
+		}
+		if len(ids) > 0 {
+			if _, err := s.jobs.AcquireJobs(ctx, ids); err != nil {
+				return fmt.Errorf("acquire scale-set jobs: %w", err)
+			}
+		}
+	}
+	for _, job := range message.JobStartedMessages {
+		if job == nil {
+			continue
+		}
+		if err := s.HandleJobStarted(ctx, job); err != nil {
+			return fmt.Errorf("handle started job: %w", err)
+		}
+	}
+	for _, job := range message.JobCompletedMessages {
+		if job == nil {
+			continue
+		}
+		if err := s.HandleJobCompleted(ctx, job); err != nil {
+			return fmt.Errorf("handle completed job: %w", err)
+		}
+	}
+	if message.Statistics != nil {
+		if _, err := s.HandleDesiredRunnerCount(ctx, message.Statistics.TotalAssignedJobs); err != nil {
+			return fmt.Errorf("reconcile scale-set desired runners: %w", err)
+		}
+	}
 	return nil
 }
 
@@ -609,6 +670,7 @@ func listenerRetryDelay(attempt int, key string) time.Duration {
 	}
 	h := fnv.New64a()
 	_, _ = h.Write([]byte(key + ":" + strconv.Itoa(attempt)))
+	// #nosec G115 -- jitterMax is capped at one quarter of the 5 minute retry ceiling.
 	jitter := time.Duration(h.Sum64() % uint64(jitterMax+1))
 	if base+jitter > 5*time.Minute {
 		return 5 * time.Minute
@@ -672,6 +734,7 @@ func loadManagerConfig() (config, error) {
 		return c, err
 	}
 	if path := os.Getenv("RUNNERHUB_GITHUB_APP_PRIVATE_KEY_FILE"); path != "" {
+		// #nosec G703 -- this path is supplied by trusted service configuration.
 		b, err := os.ReadFile(path)
 		if err != nil {
 			return c, fmt.Errorf("read github app key: %w", err)
@@ -994,6 +1057,7 @@ func runListener(ctx context.Context, c config, onReady func()) error {
 		max:        c.MaxRunners,
 		scaleSetID: set.ID,
 		github:     gh,
+		jobs:       sessions,
 		hub:        hub,
 		logger:     slog.Default(),
 	}
