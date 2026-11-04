@@ -352,20 +352,66 @@ func TestRunnerHubClientCreateSendsGitHubRunnerID(t *testing.T) {
 	}
 }
 
-func TestListenerRetryDelayIsBoundedAndDeterministic(t *testing.T) {
+func TestListenerRetryDelayIsBoundedAndJittered(t *testing.T) {
 	first := listenerRetryDelay(1, "pool-a")
-	second := listenerRetryDelay(2, "pool-a")
 	if first < 10*time.Second || first > 12500*time.Millisecond {
 		t.Fatalf("first delay=%s outside expected jitter window", first)
 	}
-	if second <= first {
-		t.Fatalf("second delay=%s did not grow beyond first=%s", second, first)
+	second := listenerRetryDelay(2, "pool-a")
+	if second < 20*time.Second || second > 25*time.Second {
+		t.Fatalf("second delay=%s outside expected jitter window", second)
 	}
-	if got := listenerRetryDelay(2, "pool-a"); got != second {
-		t.Fatalf("retry jitter is not deterministic: first=%s second=%s", second, got)
+	if got := listenerRetryDelayWithJitter(1, func(int64) int64 { return 0 }); got != 10*time.Second {
+		t.Fatalf("zero jitter delay=%s, want 10s", got)
+	}
+	if got := listenerRetryDelayWithJitter(1, func(n int64) int64 { return n - 1 }); got != 12500*time.Millisecond {
+		t.Fatalf("maximum jitter delay=%s, want 12.5s", got)
 	}
 	if got := listenerRetryDelay(20, "pool-a"); got > 5*time.Minute {
 		t.Fatalf("retry delay exceeded cap: %s", got)
+	}
+}
+
+func TestChangedListenerRetiresBeforeReplacementCanStart(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	cancelCalls := 0
+	active := map[string]managedListener{
+		"pool-a": {
+			cancel: func() {
+				cancelCalls++
+				cancel()
+			},
+			fingerprint: "old-config",
+			ready:       true,
+		},
+	}
+
+	if !beginListenerStop(active, "pool-a") {
+		t.Fatal("changed listener was not marked stopping")
+	}
+	running := active["pool-a"]
+	if !running.stopping || running.ready {
+		t.Fatalf("retiring listener state=%+v, want stopping and not ready", running)
+	}
+	if listenerMayStart("pool-a", active) {
+		t.Fatal("replacement listener could start before old message session closed")
+	}
+	if beginListenerStop(active, "pool-a") {
+		t.Fatal("already stopping listener was canceled twice")
+	}
+	if cancelCalls != 1 {
+		t.Fatalf("cancel calls=%d, want one", cancelCalls)
+	}
+
+	// The manager removes the old entry only after runListener returns, after
+	// its deferred MessageSession.Close has run.
+	delete(active, "pool-a")
+	if !listenerMayStart("pool-a", active) {
+		t.Fatal("replacement remained blocked after old listener exited")
+	}
+	if ctx.Err() == nil {
+		t.Fatal("test listener cancellation was not observed")
 	}
 }
 
