@@ -885,3 +885,27 @@ func TestInspectFailsClosedWhenAggregateCgroupDisappears(t *testing.T) {
 		t.Fatal("aggregate capability remained advertised after cgroup disappearance")
 	}
 }
+func TestInspectRunnerExit143ReportsFailureForCanceledPublisherCleanup(t *testing.T) {
+	f := &fakeRunner{fn: func(_ string, args ...string) (string, error) {
+		joined := strings.Join(args, " ")
+		switch {
+		case strings.HasPrefix(joined, "inspect runner-143 --format"):
+			return `{"Running":false,"ExitCode":143,"Status":"exited","OOMKilled":false,"Error":""}`, nil
+		case strings.HasPrefix(joined, "logs --tail 80 runner-143"):
+			return "Job publish completed with result: Canceled", nil
+		default:
+			return "", nil
+		}
+	}}
+	p, err := newWithRunner(Config{StateDir: t.TempDir(), AllowedImages: []string{"img"}}, f)
+	if err != nil { t.Fatal(err) }
+	state, err := p.Inspect(context.Background(), provider.WorkerHandle{ProviderID: "runner-143"})
+	if err != nil { t.Fatal(err) }
+	if state.State != core.WorkerFailed || state.ExitCode == nil || *state.ExitCode != 143 {
+		t.Fatalf("runner exit state=%+v, want failed with exit 143", state)
+	}
+	if !strings.Contains(state.SafeDetail, "container exited") {
+		t.Fatalf("safe detail=%q", state.SafeDetail)
+	}
+}
+
