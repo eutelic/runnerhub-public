@@ -64,3 +64,71 @@ outage evidence.
 Use **Refresh bundle** to refresh readiness and the full incident bundle.
 No GitHub API tokens, incoming events, or runner settings are changed by
 this panel.
+
+## Repository onboarding audit
+
+Below the pool readiness panel, Diagnostics audits repositories visible to the
+signed-in identity through the installed GitHub App. It explicitly reports:
+
+- private repositories with no standard `runnerhub` pool;
+- repositories with only custom/publisher labels (not silently treated as standard-connected);
+- scale-set listeners that are starting, missing, backing off or errored;
+- known host-eligibility and capacity blockers;
+- configured labels and a link to the repository's GitHub Actions page;
+- public repositories as unsupported by the trusted-worker isolation model.
+
+This is a **read-only inventory**. It does not connect repositories, create
+trusted pools, inspect GitHub's current queued workflow jobs, or assert that a
+particular job requested an available label. A user must explicitly connect
+eligible repositories from the dashboard; publisher/fast profiles require
+separate, deliberate configuration. An installation may omit repositories, so
+the inventory covers only repositories the active GitHub App identity can see.
+The repository inventory request may fail separately from the local pool APIs;
+the panel shows that limitation instead of presenting a false all-clear.
+
+
+## Inspect a specific queued GitHub Actions job
+
+From the repository onboarding audit, click **Inspect pending GitHub jobs**
+for an installed private repository. RunnerHub performs an authenticated,
+read-only inspection of GitHub's latest queued and in-progress workflow
+runs. Requests are on-demand, not part of the periodic dashboard refresh.
+
+The inspection reads up to 5 runs in each state and up to 100 jobs per run;
+results are marked incomplete when GitHub reports more data than was
+retrieved. Each matching pending job shows its GitHub job link, requested
+`runs-on` labels and a conservative current-state explanation:
+
+- `not-connected` — no enabled, repository-scoped RunnerHub pool;
+- `wrong-label` — pool exists but not for the requested scale-set label;
+- `unsupported-label-combination` — requested multiple labels instead of one scale-set label;
+- `listener-not-ready` / `listener-failure` / `jit-failure` — known listener/registration problem;
+- `no-compatible-host` / `capacity` — host eligibility or occupied concurrency;
+- `worker-failure` — worker startup failure reported in health evidence;
+- `runtime-unverified` / `unknown` — evidence is not sufficient to diagnose the queue.
+
+These are best-effort classifications from observed state, not declarations
+of GitHub's root cause. GitHub may expose job labels only after a workflow
+run is planned; jobs without a RunnerHub label are not listed in this panel.
+Inspect the linked GitHub job and live scale-set logs when the code is
+`unknown`. A queued job is not proof that RunnerHub is broken.
+
+## Bulk onboarding
+
+On the dashboard's **Repositories** page, open **Bulk connect selected
+private repositories**. Select the exact repositories to configure. The
+preview requires explicit confirmation and only uses existing
+repository-scoped connect/profile/publisher endpoints.
+
+The default is standard `runnerhub` pools. Optional checkboxes request
+`runnerhub-publisher` (privileged DinD, requires an eligible online host)
+or `runnerhub-fast` (restricted to online hosts with `fast=true`).
+No public repositories are allowed, missing host classes are skipped, and
+existing enabled pools are left unchanged. The sequence stops dependent
+operations for a repository if its earlier operation fails; other
+repositories can continue.
+
+Successful configuration is reported as **pending listener readiness**, not
+as a completed GitHub job. Recheck this Diagnostics page and execute a real
+workflow as a separate verification step. Bulk onboarding does not
+automatically grant or widen GitHub App repository access.

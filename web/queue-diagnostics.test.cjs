@@ -1,6 +1,6 @@
 const {test} = require('node:test');
 const assert = require('node:assert/strict');
-const {summarize} = require('./queue-diagnostics.js');
+const {summarize, auditRepositories, planOnboarding, diagnoseQueuedJob} = require('./queue-diagnostics.js');
 
 function pool(overrides = {}) {
   return {id: 'p1', name: 'default', scope: {owner:'eutelic',repository:'runnerhub'},
@@ -44,4 +44,112 @@ test('unknown listener is explicitly uncertain', () => {
   const result = summarize([pool()],[],[healthy()]);
   assert.equal(result[0].listener,'unknown');
   assert.match(result[0].explanation,/No listener status/);
+});
+
+test('repository audit shows disconnected private repositories and does not invent queued jobs', () => {
+  const result = auditRepositories([
+    {fullName:'eutelic/disconnected',private:true},
+    {fullName:'eutelic/connected',private:true}
+  ], [pool({scope:{kind:'repository',owner:'eutelic',repository:'connected'}})], [listener()], [healthy()]);
+  assert.equal(result[0].name, 'eutelic/disconnected');
+  assert.equal(result[0].code, 'no-standard-pool');
+  assert.match(result[0].explanation, /Connect this private repository/);
+  assert.equal(result[1].code, 'ready');
+  assert.match(result[1].explanation, /no claim about GitHub job queue/);
+});
+
+test('public repositories cannot be mistaken for safe bulk-onboarding targets', () => {
+  const result = auditRepositories([{fullName:'eutelic/public',private:false}],[],[],[]);
+  assert.equal(result[0].code, 'public-unsupported');
+});
+
+test('publisher-only repo is not marked standard-connected', () => {
+  const result = auditRepositories([{fullName:'eutelic/build',private:true}],
+    [pool({scope:{kind:'repository',owner:'eutelic',repository:'build'},
+      scaleSetName:'runnerhub-publisher',labels:['runnerhub-publisher']})],[],[]);
+  assert.equal(result[0].code, 'no-standard-pool');
+  assert.deepEqual(result[0].labels, ['runnerhub-publisher']);
+});
+
+test('listener backoff and zero eligible hosts receive different actionable findings', () => {
+  const repos=[{fullName:'eutelic/runnerhub',private:true}];
+  const pools=[pool({scope:{kind:'repository',owner:'eutelic',repository:'runnerhub'},scaleSetName:'runnerhub'})];
+  assert.equal(auditRepositories(repos,pools,[listener('backing_off')],[healthy()])[0].code,'listener-blocked');
+  const result=auditRepositories(repos,pools,[listener()],[healthy({healthy:false,onlineHosts:0,reasons:['insufficient RAM']})]);
+  assert.equal(result[0].code,'host-ineligible');
+  assert.match(result[0].explanation,/insufficient RAM/);
+});
+
+test('repository audit is case-insensitive and never treats a different repository pool as connected', () => {
+  const result=auditRepositories([
+    {fullName:'EUTELIC/RUNNERHUB',private:true},{fullName:'eutelic/other',private:true}
+  ],[pool({scope:{kind:'repository',owner:'eutelic',repository:'runnerhub'},scaleSetName:'runnerhub'})],
+    [listener()],[healthy()]);
+  assert.equal(result.find(r=>r.name==='EUTELIC/RUNNERHUB').code,'ready');
+  assert.equal(result.find(r=>r.name==='eutelic/other').code,'no-standard-pool');
+});
+
+test('bulk plan only connects explicitly selected installed private repositories',()=>{
+  const repos=[{fullName:'eutelic/a',private:true,installationId:42},{fullName:'eutelic/b',private:true,installationId:42},
+    {fullName:'eutelic/public',private:false,installationId:42}];
+  const plan=planOnboarding(['eutelic/a','eutelic/public','eutelic/a'],repos,[],[],{publisher:false,fast:false});
+  assert.equal(plan.operations.length,1);
+  assert.equal(plan.operations[0].kind,'standard');
+  assert.equal(plan.operations[0].payload.repository,'eutelic/a');
+  assert.equal(plan.operations[0].payload.installationId,42);
+  assert.equal(plan.skipped.length,1);
+});
+
+test('bulk plan requires eligible hosts for optional isolated publisher and fast labels',()=>{
+  const repos=[{fullName:'eutelic/a',private:true,installationId:42}];
+  const plan=planOnboarding(['eutelic/a'],repos,[],[],{publisher:true,fast:true});
+  assert.deepEqual(plan.operations.map(x=>x.kind),['standard']);
+  assert.equal(plan.skipped.length,2);
+  const withHosts=planOnboarding(['eutelic/a'],repos,[],[
+    {state:'online',tags:{'isolation.container-dind':'true'}},
+    {state:'online',tags:{fast:'true'}}
+  ],{publisher:true,fast:true});
+  assert.deepEqual(withHosts.operations.map(x=>x.kind),['standard','publisher','fast']);
+  assert.equal(withHosts.operations[1].endpoint,'/api/v1/github/publisher');
+  assert.equal(withHosts.operations[2].payload.name,'fast');
+  assert.equal(withHosts.operations[2].payload.tags[0],'fast');
+});
+
+test('bulk plan is idempotent for already enabled standard publisher and fast pools',()=>{
+  const repos=[{fullName:'eutelic/a',private:true,installationId:42}];
+  const pools=['runnerhub','runnerhub-publisher','runnerhub-fast'].map((label,i)=>({
+    id:String(i),scope:{kind:'repository',owner:'eutelic',repository:'a'},
+    scaleSetName:label,githubInstallationId:42
+  }));
+  const result=planOnboarding(['eutelic/a'],repos,pools,[
+    {state:'online',tags:{'isolation.container-dind':'true',fast:'true'}}
+  ],{publisher:true,fast:true});
+  assert.deepEqual(result.operations,[]);
+});
+
+test('pending job diagnostics distinguish no connection and unsupported label',()=>{
+  const job={labels:['runnerhub-publisher']};
+  assert.equal(diagnoseQueuedJob(job,'eutelic/a',[],[],[]).code,'not-connected');
+  const pools=[{id:'p1',scope:{kind:'repository',owner:'eutelic',repository:'a'},
+    scaleSetName:'runnerhub',githubInstallationId:42}];
+  assert.equal(diagnoseQueuedJob(job,'eutelic/a',pools,[],[]).code,'wrong-label');
+});
+
+test('pending job diagnostics distinguish JIT failures, placement and capacity',()=>{
+  const p={id:'p1',scope:{kind:'repository',owner:'eutelic',repository:'a'},
+    scaleSetName:'runnerhub',githubInstallationId:42,maxConcurrency:1};
+  const job={labels:['runnerhub']};
+  assert.equal(diagnoseQueuedJob(job,'eutelic/a',[p],
+    [{poolId:'p1',state:'backing_off',detail:'JIT token 403'}],[]).code,'jit-failure');
+  assert.equal(diagnoseQueuedJob(job,'eutelic/a',[p],
+    [{poolId:'p1',state:'ready'}],[{poolId:'p1',healthy:false,onlineHosts:0}]).code,'no-compatible-host');
+  assert.equal(diagnoseQueuedJob(job,'eutelic/a',[p],
+    [{poolId:'p1',state:'ready'}],[{poolId:'p1',healthy:true,onlineHosts:1,activeWorkers:1}]).code,'capacity');
+  assert.equal(diagnoseQueuedJob(job,'eutelic/a',[p],
+    [{poolId:'p1',state:'ready'}],[{poolId:'p1',healthy:true,onlineHosts:1,activeWorkers:0}]).code,'unknown');
+});
+
+test('missing GitHub job labels never imply the job requests another runner',()=>{
+  const result=diagnoseQueuedJob({labels:[]},'eutelic/a',[],[],[]);
+  assert.equal(result.code,'labels-unavailable');
 });

@@ -33,6 +33,8 @@ const els={
 let csrf='';
 let auth={enabled:false,authenticated:false};
 let lastRepoRenderArgs=null;
+const bulkSelected=new Set();
+let bulkConnecting=false;
 let hiddenRepoAccounts=loadHiddenRepoAccounts();
 const hostDrafts=new Map();
 const snapshot={};
@@ -130,6 +132,12 @@ const vercelWorkflowTemplate=[
 els.token.value=sessionStorage.getItem('runnerhub-token')||'';
 els.token.addEventListener('input',()=>{sessionStorage.setItem('runnerhub-token',els.token.value);refresh()});
 bind('create','click',createPool);
+bind('bulk-select-visible','click',()=>{
+  els.repos.querySelectorAll('input[data-bulk-repo]:not(:disabled)').forEach(box=>bulkSelected.add(box.dataset.bulkRepo.toLowerCase()));
+  rerenderRepositories();
+});
+bind('bulk-clear','click',()=>{bulkSelected.clear();rerenderRepositories()});
+bind('bulk-connect','click',bulkConnectRepositories);
 bind('machine-scan-fingerprint','click',scanMachineHostKey);
 bind('machine-mode','change',chooseMachineMode); bind('add-machine','click',addMachine);
 bind('machine-name','input',()=>renderMachineDuplicateWarning());
@@ -266,6 +274,13 @@ els.repos.addEventListener('click',e=>{
   if(button)saveRepositoryResources(button);
 });
 els.repos.addEventListener('change',e=>{
+  const bulk=e.target.closest('input[data-bulk-repo]');
+  if(bulk){
+    const name=bulk.dataset.bulkRepo.toLowerCase();
+    if(bulk.checked)bulkSelected.add(name);else bulkSelected.delete(name);
+    updateBulkCount();
+    return;
+  }
   const account=e.target.closest('input[data-repo-account-toggle]');
   if(!account)return;
   setRepoAccountVisibility(account.dataset.repoAccountToggle,account.checked);
@@ -286,6 +301,12 @@ function setRepoAccountVisibility(account,visible){
   localStorage.setItem('runnerhub-hidden-repo-accounts',JSON.stringify([...hiddenRepoAccounts].sort()));
 }
 function rerenderRepositories(){if(lastRepoRenderArgs)renderRepos(...lastRepoRenderArgs)}
+function updateBulkCount(){
+  const count=document.getElementById('bulk-count');
+  const button=document.getElementById('bulk-connect');
+  if(count)count.textContent=bulkSelected.size+' selected';
+  if(button)button.disabled=bulkConnecting||bulkSelected.size===0;
+}
 function esc(value){return String(value??'').replace(/[&<>"']/g,ch=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]))}
 function show(el,on){el.classList.toggle('hidden',!on)}
 function bind(id,event,handler){const el=document.getElementById(id);if(el)el.addEventListener(event,handler)}
@@ -1688,6 +1709,7 @@ function renderRepos(repos,pools,statuses,runtimeHealth,hosts,installations){
 
     return '<article class="repo'+(pool?' connected':'')+'">'+
       '<div class="repo-row">'+
+        (repo.private?'<label class="check-row"><input type="checkbox" data-bulk-repo="'+esc(repo.fullName)+'"'+(bulkSelected.has(repo.fullName.toLowerCase())?' checked':'')+'> Select for bulk onboarding</label>':'')+
         '<div class="repo-title"><div><div class="repo-name">'+esc(repo.fullName)+'</div><div class="repo-meta muted">'+esc(privacy)+' · '+esc(repo.defaultBranch||'')+'</div></div></div>'+
         statusHtml+detail+
         (learningPoolIds.length?'<button class="secondary compact" data-repo-learning-reset="'+esc(learningPoolIds.join(','))+'" data-repo-name="'+esc(repo.fullName)+'">Reset all learning</button>':'')+
@@ -1721,6 +1743,7 @@ function renderRepos(repos,pools,statuses,runtimeHealth,hosts,installations){
   const count='<div class="repo-filter-summary muted small">Showing '+visibleRepos.length+' of '+repos.length+' repositories</div>';
   const empty=visibleRepos.length?'':'<div class="empty">No repositories match the current search and visibility filters.</div>';
   els.repos.innerHTML=accountHint+count+groups+empty;
+  updateBulkCount();
 }
 function loadMachineBootstrap(){
   try{
@@ -2148,6 +2171,59 @@ async function saveRunnerProfile(button){
     panel.open=false;
     await refresh();
   }catch(e){message(e.message,'error');button.disabled=false}
+}
+
+
+async function bulkConnectRepositories(){
+  if(bulkConnecting||!lastRepoRenderArgs||!bulkSelected.size)return;
+  const [repos,pools,, ,hosts]=lastRepoRenderArgs;
+  const options={
+    publisher:document.getElementById('bulk-publisher').checked,
+    fast:document.getElementById('bulk-fast').checked
+  };
+  const plan=window.RunnerHubQueueDiagnostics.planOnboarding(
+    [...bulkSelected],repos,pools,hosts,options);
+  const output=document.getElementById('bulk-results');
+  if(!plan.operations.length){
+    output.textContent='Nothing to change. '+plan.skipped.map(x=>x.repository+': '+x.reason).join('; ');
+    return;
+  }
+  const summary=plan.operations.map(o=>o.repository+' · '+o.kind).join('\\n');
+  if(!window.confirm('Connect '+plan.operations.length+' repository-scoped runner pools?\\n\\n'+summary+
+    '\\n\\nNo public or unselected repository will be changed.'))return;
+  bulkConnecting=true;
+  updateBulkCount();
+  const outcomes=[];
+  const failedRepos=new Set();
+  try{
+    for(const operation of plan.operations){
+      const key=operation.repository.toLowerCase();
+      if(failedRepos.has(key)){
+        outcomes.push(operation.repository+' '+operation.kind+': skipped because an earlier operation failed.');
+        continue;
+      }
+      output.textContent='Applying '+operation.repository+' · '+operation.kind+'…';
+      try{
+        await j(operation.endpoint,{method:'POST',headers:{'content-type':'application/json'},
+          body:JSON.stringify(operation.payload)});
+        outcomes.push(operation.repository+' '+operation.kind+': configuration accepted; listener readiness pending.');
+      }catch(error){
+        outcomes.push(operation.repository+' '+operation.kind+': FAILED — '+String(error?.message||error));
+        failedRepos.add(key);
+      }
+    }
+    for(const item of plan.skipped)outcomes.push(item.repository+': skipped — '+item.reason);
+    for(const repo of bulkSelected){
+      if(!failedRepos.has(repo)&&!plan.skipped.some(x=>x.repository.toLowerCase()===repo))bulkSelected.delete(repo);
+    }
+    output.textContent=outcomes.join('\\n')+
+      '\\nRefresh the Diagnostics page for actual listener and host readiness. Configuration is not job acceptance.';
+    message('Bulk onboarding finished. Check the per-repository results and listener status.',failedRepos.size?'error':'success');
+  }finally{
+    bulkConnecting=false;
+    updateBulkCount();
+    await refresh();
+  }
 }
 
 async function saveRepositoryResources(button){

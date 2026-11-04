@@ -218,6 +218,21 @@
         </label>
         <label class="check-row repo-public-toggle"><input id="repo-show-public" type="checkbox" checked> Show public unsupported repositories</label>
       </div>
+      <details id="bulk-onboarding" class="advanced-details">
+        <summary>Bulk connect selected private repositories</summary>
+        <div class="advanced-body">
+          <p class="muted">Select repositories below. RunnerHub creates separate, repository-scoped pools only where the requested label is missing. Public repositories cannot be selected. A confirmation shows the exact operations before any change.</p>
+          <div class="actions">
+            <button id="bulk-select-visible" type="button" class="secondary compact">Select visible private repositories</button>
+            <button id="bulk-clear" type="button" class="secondary compact">Clear selection</button>
+            <strong id="bulk-count" aria-live="polite">0 selected</strong>
+          </div>
+          <label class="check-row"><input id="bulk-publisher" type="checkbox"> Also connect missing publisher pools (requires an online Docker-capable host; privileged DinD)</label>
+          <label class="check-row"><input id="bulk-fast" type="checkbox"> Also connect missing runnerhub-fast pools (requires an online host tagged fast)</label>
+          <button id="bulk-connect" type="button" disabled>Review and connect selected repositories</button>
+          <pre id="bulk-results" class="status-message" aria-live="polite"></pre>
+        </div>
+      </details>
       <div id="repos" class="repo-grid"></div>
       <details id="legacy-auth" class="advanced-details">
         <summary>Advanced: API token</summary>
@@ -320,6 +335,7 @@
       </details>
     </section>
   </main>
+  <script src="/queue-diagnostics.js" defer></script>
   <script src="/app.js" defer></script>
 </body>
 </html>

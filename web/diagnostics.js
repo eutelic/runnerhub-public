@@ -158,13 +158,145 @@ function showReadiness(pools, statuses, runtime) {
   }
 }
 
+
+
+async function inspectQueuedJobs(repository, output, pools, statuses, runtime) {
+  output.replaceChildren();
+  const loading=document.createElement('p');
+  loading.textContent='Inspecting GitHub job labels and live RunnerHub pool status…';
+  output.append(loading);
+  try {
+    const parts=repository.split('/');
+    if(parts.length!==2 || !parts.every(part=>/^[A-Za-z0-9_.-]+$/.test(part)))throw new Error('Invalid GitHub repository name.');
+    const path='/api/v1/github/repositories/'+parts.map(encodeURIComponent).join('/')+'/queued-jobs';
+    const report=await request(path);
+    output.replaceChildren();
+    const summary=document.createElement('p');
+    summary.textContent='Checked '+report.checkedRuns+' recent queued/in-progress runs. '+
+      (report.truncated?'Results are incomplete because GitHub returned more runs/jobs than the per-request cap. ':'')+
+      'This is a point-in-time snapshot, not proof of job acceptance.';
+    output.append(summary);
+    const relevant=(Array.isArray(report.jobs)?report.jobs:[]).filter(job=>
+      !Array.isArray(job.labels)||!job.labels.length||job.labels.some(label=>String(label).toLowerCase().startsWith('runnerhub')));
+    if(!relevant.length){
+      const note=document.createElement('p');
+      note.textContent='No pending jobs requesting a RunnerHub label or missing label data were found in the inspected runs.';
+      output.append(note);
+      return;
+    }
+    for(const job of relevant){
+      const diagnosis=window.RunnerHubQueueDiagnostics.diagnoseQueuedJob(job,repository,pools,statuses,runtime);
+      const card=document.createElement('div');
+      card.className='resource-note';
+      const name=document.createElement('strong');
+      name.textContent=job.name+' · '+job.status;
+      const labels=document.createElement('p');
+      labels.textContent='Requested: '+(job.labels?.length?job.labels.join(', '):'labels unavailable')+' · Blocker: '+diagnosis.code;
+      const reason=document.createElement('p');
+      reason.textContent=diagnosis.detail;
+      card.append(name,labels,reason);
+      const url=job.url||job.runUrl;
+      try{
+        const u=new URL(url);
+        if(u.protocol==='https:'&&u.hostname==='github.com'&&u.pathname.startsWith('/')){
+          const link=document.createElement('a');
+          link.href=u.href;
+          link.target='_blank';
+          link.rel='noopener noreferrer';
+          link.textContent='Open GitHub job';
+          card.append(link);
+        }
+      }catch{}
+      output.append(card);
+    }
+  }catch(error){
+    output.replaceChildren();
+    const note=document.createElement('p');
+    note.className='error';
+    note.textContent='GitHub job inspection unavailable: '+String(error?.message||error)+
+      '. Verify GitHub Actions read permission and authentication; no queue diagnosis was inferred.';
+    output.append(note);
+  }
+}
+
+function showRepositoryAudit(repositories, pools, statuses, runtime) {
+  const container=document.getElementById('repository-audit');
+  if(!container)return;
+  container.replaceChildren();
+  const note=document.createElement('p');
+  if(!repositories.ok){
+    note.textContent='Repository inventory unavailable: sign in with GitHub or check App installation access. Pool readiness above may still be available.';
+    container.append(note);
+    return;
+  }
+  if(!pools.ok||!statuses.ok||!runtime.ok){
+    note.textContent='Repository audit unavailable: pool or runtime API status could not be retrieved.';
+    container.append(note);
+    return;
+  }
+  const report=window.RunnerHubQueueDiagnostics.auditRepositories(
+    repositories.value,pools.value,statuses.value,runtime.value);
+  const privateRepos=report.filter(r=>r.private);
+  const disconnected=privateRepos.filter(r=>r.code==='no-standard-pool');
+  const healthy=privateRepos.filter(r=>r.code==='ready');
+  note.textContent=privateRepos.length+' eligible private repositories visible · '+
+    disconnected.length+' missing standard pools · '+
+    healthy.length+' reporting ready. Optional publisher/fast labels are listed only when configured.';
+  container.append(note);
+  if(!report.length){
+    const empty=document.createElement('p');
+    empty.textContent='No repositories exposed to the signed-in identity by the RunnerHub GitHub App.';
+    container.append(empty);
+  }
+  for(const entry of report){
+    const article=document.createElement('article');
+    article.className='card';
+    article.style.marginBottom='12px';
+    const heading=document.createElement('h3');
+    // Repository names come from GitHub, not a user-authored URL.
+    // Validate owner/repo components anyway before making an external link.
+    const parts=entry.name.split('/');
+    if(parts.length===2&&parts.every(part=>/^[A-Za-z0-9_.-]+$/.test(part))){
+      const link=document.createElement('a');
+      link.href='https://github.com/'+parts.map(encodeURIComponent).join('/')+'/actions';
+      link.target='_blank';
+      link.rel='noopener noreferrer';
+      link.textContent=entry.name+' · Actions';
+      heading.append(link);
+    }else{
+      heading.textContent=entry.name;
+    }
+    const status=document.createElement('p');
+    status.textContent='Audit status: '+entry.code+' · configured labels: '+
+      (entry.labels.length?entry.labels.join(', '):'none');
+    const detail=document.createElement('p');
+    detail.textContent=entry.explanation;
+    if(entry.code!=='ready')detail.className='muted';
+    article.append(heading,status,detail);
+    if(entry.private){
+      const button=document.createElement('button');
+      button.className='secondary compact';
+      button.type='button';
+      button.textContent='Inspect pending GitHub jobs';
+      const result=document.createElement('div');
+      button.addEventListener('click',()=>{
+        button.disabled=true;
+        inspectQueuedJobs(entry.name,result,pools.value,statuses.value,runtime.value)
+          .finally(()=>{button.disabled=false});
+      });
+      article.append(button,result);
+    }
+    container.append(article);
+  }
+}
+
 async function buildBundle(){
   refreshButton.disabled=true;
   copyButton.disabled=true;
   statusEl.className='';
   statusEl.textContent='Collecting diagnostics…';
   try{
-    const [auth,hosts,pools,workers,audit,scalesets,runtime,versions,metrics]=await Promise.all([
+    const [auth,hosts,pools,workers,audit,scalesets,runtime,versions,metrics,repositories]=await Promise.all([
       collect('auth','/auth/github/status'),
       collect('hosts','/api/v1/hosts'),
       collect('pools','/api/v1/pools'),
@@ -173,11 +305,13 @@ async function buildBundle(){
       collect('scalesets','/api/v1/scalesets/status'),
       collect('runtime','/api/v1/runtime-health'),
       collect('versions','/api/v1/fleet/versions'),
-      collect('metrics','/api/v1/metrics')
+      collect('metrics','/api/v1/metrics'),
+      collect('repositories','/api/v1/github/connected-repositories')
     ]);
     const fullWorkerEvidence=workers.ok?{ok:true,value:workers.value}:workers;
     if(workers.ok)workers.value=sortWorkers(workers.value);
     showReadiness(pools,scalesets,runtime);
+    showRepositoryAudit(repositories,pools,scalesets,runtime);
     incidentSnapshot=[fullWorkerEvidence,pools,hosts,scalesets,runtime];
     renderIncidents();
     if(auth.ok&&auth.value&&typeof auth.value==='object'){
