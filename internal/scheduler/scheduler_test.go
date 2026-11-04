@@ -327,3 +327,32 @@ func TestDinDAggregateBudgetDoesNotRetroactivelyChangeLegacyWorker(t *testing.T)
 		t.Fatalf("legacy worker reservation=%+v, want conservative double envelope", used)
 	}
 }
+
+
+type liveSnapshotSchedulerStore struct {
+	store.Store
+	workers []core.Worker
+}
+
+func (s liveSnapshotSchedulerStore) ListWorkers(context.Context) ([]core.Worker, error) {
+	return nil, errors.New("full worker ledger should not be read")
+}
+
+func (s liveSnapshotSchedulerStore) ListNonDeletedWorkers(context.Context) ([]core.Worker, error) {
+	return s.workers, nil
+}
+
+func TestSelectHostUsesNonDeletedWorkerSnapshot(t *testing.T) {
+	base, err := store.OpenSQLite(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer base.Close()
+	putHost(t, base, "a")
+
+	filtered := liveSnapshotSchedulerStore{Store: base}
+	decision, err := (Scheduler{Store: filtered}).SelectHost(context.Background(), testPool())
+	if err != nil || decision.Host.ID != "a" {
+		t.Fatalf("decision=%+v err=%v", decision, err)
+	}
+}

@@ -132,29 +132,39 @@ func (r *Reconciler) Once(ctx context.Context) (resultErr error) {
 	}
 	cutoff := now.Add(-lookback)
 
-	workers, err := r.Store.ListWorkers(ctx)
+	var candidates []core.Worker
+	var err error
+	if candidateReader, ok := r.Store.(store.CIWorkerCandidateReader); ok {
+		candidates, err = candidateReader.ListCIWorkerCandidates(ctx, cutoff, now)
+	} else {
+		// Keep compatibility with stores that do not offer a filtered snapshot.
+		var workers []core.Worker
+		workers, err = r.Store.ListWorkers(ctx)
+		if err == nil {
+			candidates = make([]core.Worker, 0, len(workers))
+			for _, worker := range workers {
+				if strings.TrimSpace(worker.Repository) == "" || worker.WorkflowRunID <= 0 {
+					continue
+				}
+				if worker.StartedAt.IsZero() {
+					continue
+				}
+				terminalAt := worker.CompletedAt
+				if terminalAt.IsZero() {
+					terminalAt = worker.FailedAt
+				}
+				if terminalAt.IsZero() || !worker.StartedAt.Before(terminalAt) {
+					continue
+				}
+				if !terminalAt.After(cutoff) || worker.StartedAt.After(now) {
+					continue
+				}
+				candidates = append(candidates, worker)
+			}
+		}
+	}
 	if err != nil {
 		return err
-	}
-	candidates := make([]core.Worker, 0, len(workers))
-	for _, worker := range workers {
-		if strings.TrimSpace(worker.Repository) == "" || worker.WorkflowRunID <= 0 {
-			continue
-		}
-		if worker.StartedAt.IsZero() {
-			continue
-		}
-		terminalAt := worker.CompletedAt
-		if terminalAt.IsZero() {
-			terminalAt = worker.FailedAt
-		}
-		if terminalAt.IsZero() || !worker.StartedAt.Before(terminalAt) {
-			continue
-		}
-		if !terminalAt.After(cutoff) || worker.StartedAt.After(now) {
-			continue
-		}
-		candidates = append(candidates, worker)
 	}
 	sortWorkersByCompletion(candidates)
 

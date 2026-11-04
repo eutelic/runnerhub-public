@@ -1153,7 +1153,7 @@ async function refresh(force=false){
     const requests=[
       collect('hosts','/api/v1/hosts',[]),
       collect('pools','/api/v1/pools',[]),
-      collect('workers','/api/v1/workers',[]),
+      collect('workers','/api/v1/workers?excludeDeleted=true',[]),
       collect('progress','/api/v1/workers/progress',[]),
       collect('audit','/api/v1/audit?limit=12',[]),
       collect('scalesets','/api/v1/scalesets/status',[]),

@@ -22,7 +22,12 @@ type CommandRecord struct {
 // NonDeletedWorkerReader is an optional optimized live-worker snapshot.
 // The full Store.ListWorkers ledger remains available for history and CI analytics.
 type NonDeletedWorkerReader interface {
-    ListNonDeletedWorkers(context.Context) ([]core.Worker, error)
+	ListNonDeletedWorkers(context.Context) ([]core.Worker, error)
+}
+
+// CIWorkerCandidateReader returns only workers that can contribute to recent CI findings.
+type CIWorkerCandidateReader interface {
+	ListCIWorkerCandidates(context.Context, time.Time, time.Time) ([]core.Worker, error)
 }
 
 type Store interface {

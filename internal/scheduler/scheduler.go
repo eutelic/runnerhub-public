@@ -39,7 +39,12 @@ func (s Scheduler) SelectHost(ctx context.Context, pool core.RunnerPool) (Decisi
 	if err != nil {
 		return Decision{}, err
 	}
-	workers, err := s.Store.ListWorkers(ctx)
+	var workers []core.Worker
+	if live, ok := s.Store.(store.NonDeletedWorkerReader); ok {
+		workers, err = live.ListNonDeletedWorkers(ctx)
+	} else {
+		workers, err = s.Store.ListWorkers(ctx)
+	}
 	if err != nil {
 		return Decision{}, err
 	}
