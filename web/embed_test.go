@@ -138,3 +138,23 @@ func TestIncidentWorkbenchJavaScript(t *testing.T) {
     output, err := command.CombinedOutput()
     if err != nil { t.Fatalf("incident workbench tests failed: %s: %v", string(output), err) }
 }
+
+
+func TestOperationsHistoryPageAndJavaScript(t *testing.T) {
+	page, err := content.ReadFile("operations.html")
+	if err != nil { t.Fatal(err) }
+	logic, err := content.ReadFile("operations.js")
+	if err != nil { t.Fatal(err) }
+	index, err := content.ReadFile("index.html")
+	if err != nil { t.Fatal(err) }
+	if !strings.Contains(string(index), `href="/operations.html"`) ||
+		!strings.Contains(string(page), `src="/operations.js"`) ||
+		!strings.Contains(string(logic), "Last confirmed progress") {
+		t.Fatal("durable operations history is not linked and embedded")
+	}
+	node, err := exec.LookPath("node")
+	if err != nil { t.Skip("node is unavailable") }
+	command := exec.Command(node, "--test", "operations.test.cjs")
+	output, err := command.CombinedOutput()
+	if err != nil { t.Fatalf("operation history tests failed: %s: %v", string(output), err) }
+}

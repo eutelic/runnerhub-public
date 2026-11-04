@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>RunnerHub Operations</title>
+  <link rel="icon" type="image/png" href="/runnerhub-logo.png">
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header>
+    <div class="brand-lockup">
+      <img class="brand-mark" src="/runnerhub-logo.png" alt="" aria-hidden="true">
+      <div>
+        <h1>RunnerHub Operations</h1>
+        <div class="muted">Durable progress and outcomes for tracked host enrollment</div>
+      </div>
+    </div>
+    <div class="actions">
+      <a class="button secondary" href="/">Dashboard</a>
+      <button id="operations-refresh" type="button">Refresh operations</button>
+    </div>
+  </header>
+  <main>
+    <section class="card">
+      <h2>Recent operations</h2>
+      <p class="muted">Status comes from persisted RunnerHub operation records. Last confirmed progress is a recorded stage transition, not a live heartbeat or a guarantee that remote work continues.</p>
+      <div id="operations-status" role="status" aria-live="polite">Loading operation history…</div>
+      <div id="operations-list" class="machine-operations"></div>
+    </section>
+  </main>
+  <script src="/operations.js" defer></script>
+</body>
+</html>
