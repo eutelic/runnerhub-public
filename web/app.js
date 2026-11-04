@@ -820,6 +820,7 @@ async function installDeployer(){
   const button=document.getElementById('install-deployer');
   const body={
     endpoint:document.getElementById('deployer-endpoint').value.trim(),
+    port:Number(document.getElementById('deployer-port').value),
     username:document.getElementById('deployer-username').value.trim(),
     apiKey:document.getElementById('deployer-api-key').value.trim(),
     hostDataPath:document.getElementById('deployer-host-data-path').value.trim(),

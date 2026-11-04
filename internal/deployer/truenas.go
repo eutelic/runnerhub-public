@@ -21,6 +21,11 @@ type TrueNAS interface {
 	RedeployAndWait(context.Context, string) error
 }
 
+// ErrAppInstallMayBeInProgress means a TrueNAS app create/update was submitted,
+// but its eventual completion is uncertain. Do not delete file-backed secrets
+// while TrueNAS may still try to bind mount them.
+var ErrAppInstallMayBeInProgress = errors.New("TrueNAS app install may still be in progress")
+
 type TrueNASConfig struct {
 	Endpoint           string
 	Username           string
@@ -30,11 +35,13 @@ type TrueNASConfig struct {
 }
 
 type TrueNASClient struct {
-	endpoint string
-	username string
-	apiKey   string
-	dialer   websocket.Dialer
-	nextID   atomic.Uint64
+	endpoint        string
+	username        string
+	apiKey          string
+	dialer          websocket.Dialer
+	nextID          atomic.Uint64
+	appPollInterval time.Duration // test override; defaults to two seconds
+	appWaitTimeout  time.Duration // test override; defaults to two minutes
 }
 
 type rpcError struct {
@@ -289,7 +296,7 @@ func (c *TrueNASClient) EnsureCustomApp(ctx context.Context, app, compose string
 			app,
 			map[string]any{"custom_compose_config_string": compose},
 		}, nil); err != nil {
-			return fmt.Errorf("update TrueNAS custom app %q: %w", app, err)
+			return fmt.Errorf("%w: update TrueNAS custom app %q: %w", ErrAppInstallMayBeInProgress, app, err)
 		}
 	} else {
 		if err := c.call(ctx, conn, "app.create", []any{
@@ -299,29 +306,51 @@ func (c *TrueNASClient) EnsureCustomApp(ctx context.Context, app, compose string
 				"custom_compose_config_string": compose,
 			},
 		}, nil); err != nil {
-			return fmt.Errorf("create TrueNAS custom app %q: %w", app, err)
+			return fmt.Errorf("%w: create TrueNAS custom app %q: %w", ErrAppInstallMayBeInProgress, app, err)
 		}
 	}
 
-	ticker := time.NewTicker(2 * time.Second)
+	// Creating a TrueNAS app is asynchronous. Querying get_instance before
+	// it has registered produces Invalid params, which would cause bootstrap
+	// rollback to remove the API-key file while TrueNAS is still starting it.
+	// app.query tolerates a not-yet-created app and lets us wait for RUNNING.
+	pollInterval := c.appPollInterval
+	if pollInterval <= 0 {
+		pollInterval = 2 * time.Second
+	}
+	waitTimeout := c.appWaitTimeout
+	if waitTimeout <= 0 {
+		waitTimeout = 2 * time.Minute
+	}
+	ticker := time.NewTicker(pollInterval)
 	defer ticker.Stop()
+	deadline := time.NewTimer(waitTimeout)
+	defer deadline.Stop()
 	for {
-		var state struct {
-			State string `json:"state"`
+		var instances []trueNASAppInfo
+		if err := c.call(ctx, conn, "app.query", []any{[]any{}, map[string]any{}}, &instances); err != nil {
+			return fmt.Errorf("%w: inspect TrueNAS app %q: %w", ErrAppInstallMayBeInProgress, app, err)
 		}
-		if err := c.call(ctx, conn, "app.get_instance", []any{app, map[string]any{}}, &state); err != nil {
-			return fmt.Errorf("inspect TrueNAS app %q: %w", app, err)
-		}
-		switch state.State {
-		case "RUNNING":
-			return nil
-		case "CRASHED", "STOPPED":
-			return fmt.Errorf("TrueNAS app %q entered state %s", app, state.State)
+		for _, instance := range instances {
+			if instance.Name != app && instance.ID != app {
+				continue
+			}
+			switch instance.State {
+			case "RUNNING":
+				return nil
+			case "CRASHED", "STOPPED", "ERROR":
+				// TrueNAS reports a terminal state, so creation is no longer
+				// pending; the caller can safely restore previous bootstrap files.
+				return fmt.Errorf("TrueNAS app %q entered state %s", app, instance.State)
+			}
+			break
 		}
 
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			return fmt.Errorf("%w: waiting for app %q: %w", ErrAppInstallMayBeInProgress, app, ctx.Err())
+		case <-deadline.C:
+			return fmt.Errorf("%w: app %q did not reach RUNNING within %s; check TrueNAS app lifecycle logs", ErrAppInstallMayBeInProgress, app, waitTimeout)
 		case <-ticker.C:
 		}
 	}

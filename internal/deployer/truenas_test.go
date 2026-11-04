@@ -3,9 +3,11 @@ package deployer
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -214,11 +216,11 @@ func TestTrueNASEnsureCustomAppCreatesAndUpdates(t *testing.T) {
 						}
 						_ = conn.WriteJSON(map[string]any{"jsonrpc": "2.0", "id": req.ID, "result": nil})
 					case 3:
-						if req.Method != "app.get_instance" {
+						if req.Method != "app.query" {
 							t.Errorf("unexpected status method %q", req.Method)
 							return
 						}
-						_ = conn.WriteJSON(map[string]any{"jsonrpc": "2.0", "id": req.ID, "result": map[string]any{"state": "RUNNING"}})
+						_ = conn.WriteJSON(map[string]any{"jsonrpc": "2.0", "id": req.ID, "result": []map[string]any{{"name": "runnerhub-deployer", "id": "runnerhub-deployer", "state": "RUNNING"}}})
 					}
 				}
 			}))
@@ -251,5 +253,109 @@ func TestTrueNASClientRejectsInsecureWebSocket(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("expected insecure WebSocket endpoint to be rejected")
+	}
+}
+
+func TestTrueNASInstallWaitsForDelayedAppRegistration(t *testing.T) {
+	var queries atomic.Int32
+	upgrader := websocket.Upgrader{}
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade: %v", err)
+			return
+		}
+		defer conn.Close()
+		for {
+			var req struct {
+				ID     uint64 `json:"id"`
+				Method string `json:"method"`
+			}
+			if err := conn.ReadJSON(&req); err != nil {
+				return
+			}
+			var result any
+			switch req.Method {
+			case "auth.login_ex":
+				result = map[string]any{"response_type": "SUCCESS"}
+			case "app.query":
+				n := queries.Add(1)
+				switch n {
+				case 1, 2: // discovery and first poll: app absent
+					result = []any{}
+				case 3:
+					result = []map[string]any{{"name": "runnerhub-deployer", "state": "DEPLOYING"}}
+				default:
+					result = []map[string]any{{"name": "runnerhub-deployer", "state": "RUNNING"}}
+				}
+			case "app.create":
+				result = nil
+			default:
+				t.Errorf("unexpected method %s", req.Method)
+				return
+			}
+			if err := conn.WriteJSON(map[string]any{"jsonrpc": "2.0", "id": req.ID, "result": result}); err != nil {
+				return
+			}
+		}
+	}))
+	defer server.Close()
+	client, err := NewTrueNASClient(TrueNASConfig{
+		Endpoint: "wss" + strings.TrimPrefix(server.URL, "https"),
+		Username: "deployer", APIKey: "secret", InsecureSkipVerify: true,
+	})
+	if err != nil { t.Fatal(err) }
+	client.appPollInterval = time.Millisecond
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := client.EnsureCustomApp(ctx, "runnerhub-deployer", "services:\n  deployer: {}"); err != nil {
+		t.Fatal(err)
+	}
+	if queries.Load() < 4 {
+		t.Fatalf("returned success before app reached RUNNING: %d queries", queries.Load())
+	}
+}
+
+func TestTrueNASInstallTimeoutRetainsPendingClassification(t *testing.T) {
+	var queries atomic.Int32
+	upgrader := websocket.Upgrader{}
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil { t.Errorf("upgrade: %v", err); return }
+		defer conn.Close()
+		for {
+			var req struct {
+				ID uint64 `json:"id"`
+				Method string `json:"method"`
+			}
+			if err := conn.ReadJSON(&req); err != nil { return }
+			var result any
+			switch req.Method {
+			case "auth.login_ex": result = map[string]any{"response_type": "SUCCESS"}
+			case "app.query":
+				queries.Add(1)
+				result = []any{} // TrueNAS has not yet registered its async app
+			case "app.create": result = nil
+			default: t.Errorf("unexpected method: %s", req.Method); return
+			}
+			if err := conn.WriteJSON(map[string]any{"jsonrpc": "2.0", "id": req.ID, "result": result}); err != nil { return }
+		}
+	}))
+	defer server.Close()
+	client, err := NewTrueNASClient(TrueNASConfig{
+		Endpoint: "wss" + strings.TrimPrefix(server.URL, "https"),
+		Username: "deployer", APIKey: "secret", InsecureSkipVerify: true,
+	})
+	if err != nil { t.Fatal(err) }
+	client.appPollInterval = time.Millisecond
+	client.appWaitTimeout = 30 * time.Millisecond
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	err = client.EnsureCustomApp(ctx, "runnerhub-deployer", "services:\n  deployer: {}")
+	if !errors.Is(err, ErrAppInstallMayBeInProgress) {
+		t.Fatalf("expected pending-install error on timeout, got %v", err)
+	}
+	if queries.Load() < 2 {
+		t.Fatal("installation did not poll for readiness before timing out")
 	}
 }

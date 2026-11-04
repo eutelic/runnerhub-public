@@ -43,6 +43,7 @@ type BootstrapManager struct {
 
 type BootstrapRequest struct {
 	Endpoint           string `json:"endpoint"`
+	Port               int    `json:"port,omitempty"`
 	Username           string `json:"username"`
 	APIKey             string `json:"apiKey"`
 	HostDataPath       string `json:"hostDataPath"`
@@ -143,6 +144,12 @@ func (m *BootstrapManager) Install(ctx context.Context, req BootstrapRequest) (B
 	if !appNamePattern.MatchString(req.RunnerHubApp) || len(req.RunnerHubApp) > 40 {
 		return BootstrapResult{}, errors.New("RunnerHub TrueNAS app name is invalid")
 	}
+	if req.Port == 0 {
+		req.Port = defaultDeployPort
+	}
+	if req.Port < 1024 || req.Port > 65535 {
+		return BootstrapResult{}, errors.New("redeployer port must be between 1024 and 65535")
+	}
 	endpoint, err := url.Parse(req.Endpoint)
 	if err != nil || endpoint.Scheme != "wss" || endpoint.Host == "" {
 		return BootstrapResult{}, errors.New("TrueNAS URL must be an absolute wss:// URL")
@@ -214,7 +221,7 @@ func (m *BootstrapManager) Install(ctx context.Context, req BootstrapRequest) (B
 	}
 	policyBytes = append(policyBytes, '\n')
 
-	deployerURL := deployerHTTPURL(endpoint)
+	deployerURL := deployerHTTPURL(endpoint, req.Port)
 	state := bootstrapState{
 		DeployerApp:  defaultDeployerApp,
 		DeployerURL:  deployerURL,
@@ -255,8 +262,15 @@ func (m *BootstrapManager) Install(ctx context.Context, req BootstrapRequest) (B
 		return rollback(err)
 	}
 
-	compose := bootstrapCompose(hostRoot, req.Endpoint, req.Username, req.InsecureSkipVerify)
+	compose := bootstrapCompose(hostRoot, req.Endpoint, req.Username, req.InsecureSkipVerify, req.Port)
 	if err := client.EnsureCustomApp(ctx, defaultDeployerApp, compose); err != nil {
+		if errors.Is(err, ErrAppInstallMayBeInProgress) {
+			// TrueNAS can still be creating the app asynchronously. The new
+			// Custom App may mount this API-key path after this request returns;
+			// removing the file here would cause a second, misleading failure.
+			// Retain the private key, policy and bootstrap state for a later retry.
+			return BootstrapResult{}, fmt.Errorf("install standalone deployer: %w (bootstrap files retained while TrueNAS may still be starting)", err)
+		}
 		return rollback(fmt.Errorf("install standalone deployer: %w", err))
 	}
 
@@ -340,11 +354,11 @@ func validateHostDataPath(path string) error {
 	return nil
 }
 
-func deployerHTTPURL(endpoint *url.URL) string {
-	return "http://" + net.JoinHostPort(endpoint.Hostname(), strconv.Itoa(defaultDeployPort))
+func deployerHTTPURL(endpoint *url.URL, port int) string {
+	return "http://" + net.JoinHostPort(endpoint.Hostname(), strconv.Itoa(port))
 }
 
-func bootstrapCompose(hostRoot, endpoint, username string, insecure bool) string {
+func bootstrapCompose(hostRoot, endpoint, username string, insecure bool, port int) string {
 	q := func(v string) string { return strconv.Quote(v) }
 	return fmt.Sprintf(`services:
   init-data:
@@ -368,7 +382,7 @@ func bootstrapCompose(hostRoot, endpoint, username string, insecure bool) string
         condition: service_completed_successfully
     ports:
       - target: 8080
-        published: "8789"
+        published: %s
         protocol: tcp
     environment:
       RUNNERHUB_DEPLOY_HTTP_ADDR: 0.0.0.0:8080
@@ -400,6 +414,7 @@ secrets:
     file: %s
 `,
 		q(filepath.Join(hostRoot, "data")),
+		q(strconv.Itoa(port)),
 		q(endpoint),
 		q(username),
 		q(strconv.FormatBool(insecure)),

@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -24,6 +25,16 @@ func (f *fakeAppInstaller) EnsureCustomApp(_ context.Context, app, compose strin
 }
 
 func (f *fakeAppInstaller) FindAppMount(context.Context, string, string) (string, error) {
+	return "/mnt/tank/runnerhub/data", nil
+}
+
+type pendingAppInstaller struct{}
+
+func (pendingAppInstaller) EnsureCustomApp(context.Context, string, string) error {
+	return fmt.Errorf("%w: TrueNAS is still creating the app", ErrAppInstallMayBeInProgress)
+}
+
+func (pendingAppInstaller) FindAppMount(context.Context, string, string) (string, error) {
 	return "/mnt/tank/runnerhub/data", nil
 }
 
@@ -63,6 +74,9 @@ func TestBootstrapManagerInstallWritesPrivateConfigAndInstallsApp(t *testing.T) 
 	}
 	if len(result.WorkflowToken) != 64 {
 		t.Fatalf("expected 64-char workflow token, got %d", len(result.WorkflowToken))
+	}
+	if !strings.Contains(fake.compose, `published: "8789"`) {
+		t.Fatal("default deployment port missing from generated Compose")
 	}
 	if fake.app != "runnerhub-deployer" {
 		t.Fatalf("unexpected installed app %q", fake.app)
@@ -203,5 +217,89 @@ func TestBootstrapStatusWithoutState(t *testing.T) {
 	status := manager.Status(context.Background())
 	if !status.Available || status.Configured || status.Healthy {
 		t.Fatalf("unexpected status: %#v", status)
+	}
+}
+
+func TestBootstrapManagerCustomPort(t *testing.T) {
+	root := t.TempDir()
+	fake := &fakeAppInstaller{}
+	manager := &BootstrapManager{
+		Root: root,
+		NewClient: func(TrueNASConfig) (TrueNASBootstrapClient, error) { return fake, nil },
+	}
+	result, err := manager.Install(context.Background(), BootstrapRequest{
+		Endpoint:     "wss://truenas.example:8423/api/current",
+		Port:         8790,
+		Username:     "runnerhub_deployer",
+		APIKey:       "secret-api-key",
+		HostDataPath: "/mnt/tank/runnerhub/data",
+		RunnerHubApp: "runnerhub",
+		HealthURL:    "http://truenas.example:8788/healthz",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(fake.compose, `published: "8790"`) {
+		t.Fatal("custom port not propagated to compose")
+	}
+	if result.DeployerURL != "http://truenas.example:8790" {
+		t.Fatalf("unexpected deployer URL %q", result.DeployerURL)
+	}
+}
+
+func TestBootstrapManagerRejectsInvalidDeployerPortsBeforeWritingSecrets(t *testing.T) {
+	for _, port := range []int{-1, 1, 1023, 65536} {
+		t.Run(fmt.Sprintf("port_%d", port), func(t *testing.T) {
+			root := t.TempDir()
+			manager := &BootstrapManager{Root: root}
+			_, err := manager.Install(context.Background(), BootstrapRequest{
+				Endpoint: "wss://truenas.example/api/current",
+				Port: port,
+				Username: "runnerhub_deployer",
+				APIKey: "test-api-key",
+				HostDataPath: "/mnt/tank/runnerhub/data",
+				RunnerHubApp: "runnerhub",
+				HealthURL: "http://truenas.example:8788/healthz",
+			})
+			if err == nil || !strings.Contains(err.Error(), "redeployer port") {
+				t.Fatalf("expected port validation error, got %v", err)
+			}
+			if _, statErr := os.Stat(filepath.Join(root, "secrets", "truenas-api-key")); !os.IsNotExist(statErr) {
+				t.Fatalf("invalid port must not create a secret file: %v", statErr)
+			}
+		})
+	}
+}
+
+func TestBootstrapManagerRetainsSecretWhenTrueNASInstallStillPending(t *testing.T) {
+	root := t.TempDir()
+	manager := &BootstrapManager{
+		Root: root,
+		NewClient: func(TrueNASConfig) (TrueNASBootstrapClient, error) {
+			return pendingAppInstaller{}, nil
+		},
+	}
+	_, err := manager.Install(context.Background(), BootstrapRequest{
+		Endpoint:     "wss://truenas.example/api/current",
+		Username:     "runnerhub_deployer",
+		APIKey:       "test-api-key",
+		HostDataPath: "/mnt/tank/runnerhub/data",
+		RunnerHubApp: "runnerhub",
+		HealthURL:    "http://truenas.example:8788/healthz",
+	})
+	if !errors.Is(err, ErrAppInstallMayBeInProgress) {
+		t.Fatalf("expected pending-install error, got %v", err)
+	}
+	for _, path := range []string{"secrets/truenas-api-key", "config/deployments.json", "state.json"} {
+		if _, statErr := os.Stat(filepath.Join(root, path)); statErr != nil {
+			t.Fatalf("lost %s while TrueNAS may still mount it: %v", path, statErr)
+		}
+	}
+	key, err := os.ReadFile(filepath.Join(root, "secrets", "truenas-api-key"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(key) != "test-api-key\n" {
+		t.Fatal("pending installation did not retain the correct API key")
 	}
 }
