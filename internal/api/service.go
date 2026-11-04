@@ -414,13 +414,22 @@ func(s *Service)HandleAgentResult(ctx context.Context,hostID string,res agent.Co
 			if res.State.ExitCode!=nil{wk.FailureReason=truncate(fmt.Sprintf("%s (exit code %d)",wk.FailureReason,*res.State.ExitCode))}
 			terminal=true
 		case core.WorkerDeleted:
-			if wk.State==core.WorkerCleanupPending||wk.State==core.WorkerDeleting{wk.State=core.WorkerDeleted;wk.ProviderHandle=""}else{wk.State=core.WorkerFailed;wk.FailureReason="provider worker disappeared before cleanup";wk.FailedAt=now;terminal=true}
+			if wk.State==core.WorkerCleanupPending||wk.State==core.WorkerDeleting{wk.State=core.WorkerDeleted;wk.ProviderHandle=""}else if wk.State==core.WorkerCompleted&&successfulJobResult(wk.JobResult){
+				// GitHub completion can race provider inspection before terminal cleanup is queued.
+				// Preserve the successful job result and queue idempotent deletion so providers
+				// can still remove dependent resources (for example a DinD sidecar).
+				wk.State=core.WorkerCleanupPending
+				terminal=true
+			}else{wk.State=core.WorkerFailed;wk.FailureReason="provider worker disappeared before cleanup";wk.FailedAt=now;terminal=true}
 		}
 	}
 	if res.Handle==nil&&res.State==nil&&wk.State==core.WorkerCleanupPending{wk.State=core.WorkerDeleted;wk.ProviderHandle=""}
 	if err:=s.Store.UpsertWorker(ctx,wk);err!=nil{return err}
 	if terminal{_ = s.maybeAutoTunePool(ctx,wk.PoolID);return s.enqueueTerminalCleanup(ctx,&wk)}
 	return nil
+}
+func successfulJobResult(result string)bool{
+	switch strings.ToLower(strings.TrimSpace(result)){case "success","succeeded":return true;default:return false}
 }
 func normalizeCompletionTime(started,completed,observed time.Time)time.Time{
 	if completed.IsZero()||started.IsZero()||!completed.Before(started){return completed}

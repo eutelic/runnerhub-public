@@ -157,6 +157,67 @@ func TestProviderCompletedDuringCleanupDoesNotOverwriteSuccessfulJob(t *testing.
 	}
 }
 
+func TestProviderDisappearedAfterSuccessfulJobQueuesCleanup(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.OpenSQLite(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	hub, err := agenthub.New(st, "enrollment-secret", "agent-secret-that-is-at-least-thirty-two-bytes")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	now := time.Now().UTC()
+	worker := core.Worker{
+		ID:             "worker-successful-disappeared",
+		HostID:         "host-1",
+		ProviderID:     "docker",
+		ProviderHandle: "container-successful-disappeared",
+		State:          core.WorkerCompleted,
+		StartedAt:      now.Add(-time.Minute),
+		CompletedAt:    now.Add(-30 * time.Second),
+		JobResult:      "succeeded",
+		UpdatedAt:      now,
+	}
+	if err := st.UpsertWorker(ctx, worker); err != nil {
+		t.Fatal(err)
+	}
+
+	svc := &Service{Store: st, Hub: hub}
+	if err := svc.HandleAgentResult(ctx, "host-1", agent.CommandResult{
+		WorkerID: worker.ID,
+		OK:       true,
+		State:    &provider.WorkerState{State: core.WorkerDeleted},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := st.GetWorker(ctx, worker.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.State != core.WorkerCleanupPending {
+		t.Fatalf("state=%s, want cleanup_pending so provider cleanup remains retryable", got.State)
+	}
+	if got.JobResult != "succeeded" || !got.FailedAt.IsZero() || got.FailureReason != "" {
+		t.Fatalf("confirmed successful job was rewritten as failed: %+v", got)
+	}
+	if got.ProviderHandle != worker.ProviderHandle {
+		t.Fatalf("provider handle=%q, want %q retained for idempotent cleanup", got.ProviderHandle, worker.ProviderHandle)
+	}
+
+	cmds := hub.Next("host-1")
+	if len(cmds) != 1 || cmds[0].Type != agent.CommandDelete {
+		t.Fatalf("expected cleanup delete command, got %+v", cmds)
+	}
+	if cmds[0].Handle == nil || cmds[0].Handle.ProviderID != worker.ProviderHandle {
+		t.Fatalf("delete command handle=%+v", cmds[0].Handle)
+	}
+}
+
 func TestProviderCompletedBeforeRunnableStillFails(t *testing.T) {
 	ctx := context.Background()
 	st, err := store.OpenSQLite(":memory:")
