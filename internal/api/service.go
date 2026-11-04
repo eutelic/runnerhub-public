@@ -195,7 +195,28 @@ func(s *Service)cacheGet(w http.ResponseWriter,r *http.Request){if s.Cache==nil{
 func(s *Service)cacheDelete(w http.ResponseWriter,r *http.Request){if s.Cache==nil{problem(w,503,errors.New("cache is not configured"));return};if err:=s.Cache.Remove(r.PathValue("key"));err!=nil{problem(w,400,err);return};w.WriteHeader(204)}
 func(s *Service)pools(w http.ResponseWriter,r *http.Request){v,err:=s.Store.ListPools(r.Context());if err!=nil{problem(w,500,err);return};writeJSON(w,200,v)}
 func(s *Service)createPool(w http.ResponseWriter,r *http.Request){var p core.RunnerPool;if !decode(w,r,&p){return};if p.ID==""{p.ID="pool-"+randomID()};if err:=core.ValidateRunnerPool(p);err!=nil{problem(w,400,err);return};if err:=s.Policy.ValidatePool(p);err!=nil{problem(w,403,err);return};if s.Catalog!=nil{posture,err:=githubrunner.InspectPoolSecurity(r.Context(),s.Catalog,p);if err!=nil{problem(w,502,err);return};if !posture.Safe{problem(w,409,errors.New(strings.Join(posture.Reasons,"; ")));return}};if err:=s.Store.UpsertPool(r.Context(),p);err!=nil{problem(w,500,err);return};_=s.Store.AppendAudit(r.Context(),core.AuditEvent{Actor:actor(r.Context()),Action:"create_pool",ResourceType:"pool",ResourceID:p.ID,Result:"ok"});writeJSON(w,201,p)}
-func(s *Service)workers(w http.ResponseWriter,r *http.Request){v,err:=s.Store.ListWorkers(r.Context());if err!=nil{problem(w,500,err);return};if auth.PrincipalFrom(r.Context()).Role==auth.RoleScaler{for i:=range v{v[i].ProviderDiagnostics=""}};writeJSON(w,200,v)}
+func(s *Service)workers(w http.ResponseWriter,r *http.Request){
+    var v []core.Worker
+    var err error
+    if r.URL.Query().Get("excludeDeleted")=="true" {
+        if live,ok:=s.Store.(store.NonDeletedWorkerReader);ok {
+            v,err=live.ListNonDeletedWorkers(r.Context())
+        } else {
+            // Compatibility for non-SQLite implementations of Store.
+            v,err=s.Store.ListWorkers(r.Context())
+            if err==nil {
+                filtered:=make([]core.Worker,0,len(v))
+                for _,worker:=range v {if worker.State!=core.WorkerDeleted {filtered=append(filtered,worker)}}
+                v=filtered
+            }
+        }
+    } else {
+        v,err=s.Store.ListWorkers(r.Context())
+    }
+    if err!=nil{problem(w,500,err);return}
+    if auth.PrincipalFrom(r.Context()).Role==auth.RoleScaler{for i:=range v{v[i].ProviderDiagnostics=""}}
+    writeJSON(w,200,v)
+}
 type workflowJobsCacheEntry struct{Jobs []githubrunner.WorkflowJob;ExpiresAt time.Time}
 type workflowJobsFlight struct{done chan struct{};Jobs []githubrunner.WorkflowJob;Err error}
 type workerProgressResponse struct{WorkerID string `json:"workerId"`;WorkflowRunID int64 `json:"workflowRunId"`;GitHubJobID int64 `json:"githubJobId,omitempty"`;Status string `json:"status,omitempty"`;Conclusion string `json:"conclusion,omitempty"`;CompletedSteps int `json:"completedSteps"`;TotalSteps int `json:"totalSteps"`;Percent int `json:"percent"`;CurrentStep string `json:"currentStep,omitempty"`;Available bool `json:"available"`}

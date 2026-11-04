@@ -365,7 +365,7 @@ func (c runnerHubClient) event(ctx context.Context, e scaleEvent) error {
 
 func (c runnerHubClient) activeWorkers(ctx context.Context) (map[string]string, error) {
 	var workers []workerResponse
-	if err := c.do(ctx, http.MethodGet, "/api/v1/workers", nil, &workers); err != nil {
+	if err := c.do(ctx, http.MethodGet, "/api/v1/workers?excludeDeleted=true", nil, &workers); err != nil {
 		return nil, err
 	}
 	out := map[string]string{}

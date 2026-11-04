@@ -106,7 +106,16 @@ func (r *Reconciler) Once(ctx context.Context) error {
 		_ = r.Hub.MarkStale(ctx, stale)
 	}
 
-	workers, err := r.Store.ListWorkers(ctx)
+	// Reconciliation only needs workers that have not reached the deleted
+	// terminal state. SQLite uses a partial index, avoiding repeated decoding
+	// of the full historical ledger on every 15-second tick.
+	var workers []core.Worker
+	var err error
+	if live, ok := r.Store.(store.NonDeletedWorkerReader); ok {
+		workers, err = live.ListNonDeletedWorkers(ctx)
+	} else {
+		workers, err = r.Store.ListWorkers(ctx)
+	}
 	if err != nil {
 		return err
 	}

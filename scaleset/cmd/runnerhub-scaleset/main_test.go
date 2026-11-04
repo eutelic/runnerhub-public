@@ -101,6 +101,9 @@ func TestSyncActiveWorkersDropsFailedAndRecoversLiveWorkers(t *testing.T) {
 			http.NotFound(w, r)
 			return
 		}
+		if got := r.URL.Query().Get("excludeDeleted"); got != "true" {
+			t.Fatalf("scale-set worker recovery did not request the indexed snapshot: %q",got)
+		}
 		if got := r.Header.Get("Authorization"); got != "Bearer admin" {
 			t.Fatalf("authorization=%q", got)
 		}

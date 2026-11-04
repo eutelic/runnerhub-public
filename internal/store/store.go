@@ -19,6 +19,12 @@ type CommandRecord struct {
 	AckedAt    time.Time
 }
 
+// NonDeletedWorkerReader is an optional optimized live-worker snapshot.
+// The full Store.ListWorkers ledger remains available for history and CI analytics.
+type NonDeletedWorkerReader interface {
+    ListNonDeletedWorkers(context.Context) ([]core.Worker, error)
+}
+
 type Store interface {
 	UpsertHost(context.Context, core.Host) error
 	GetHost(context.Context, string) (core.Host, error)

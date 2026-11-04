@@ -11,6 +11,8 @@ CREATE TABLE IF NOT EXISTS hosts(id TEXT PRIMARY KEY, data BLOB NOT NULL, update
 CREATE TABLE IF NOT EXISTS pools(id TEXT PRIMARY KEY, data BLOB NOT NULL, updated_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS workers(id TEXT PRIMARY KEY, data BLOB NOT NULL, updated_at TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS idx_workers_updated_history ON workers(updated_at DESC,id DESC);
+-- Live control-plane paths must never scan historical deleted workers.
+CREATE INDEX IF NOT EXISTS idx_workers_non_deleted ON workers(updated_at DESC,id DESC) WHERE COALESCE(json_extract(data,'$.state'),'') != 'deleted';
 CREATE TABLE IF NOT EXISTS audit_events(id INTEGER PRIMARY KEY AUTOINCREMENT, actor TEXT NOT NULL, action TEXT NOT NULL, resource_type TEXT NOT NULL, resource_id TEXT NOT NULL, result TEXT NOT NULL, safe_detail TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS idx_audit_created_at ON audit_events(created_at DESC);
 CREATE TABLE IF NOT EXISTS agent_commands(id TEXT PRIMARY KEY, host_id TEXT NOT NULL, worker_id TEXT NOT NULL, command_type TEXT NOT NULL, payload BLOB NOT NULL, created_at TEXT NOT NULL, lease_until TEXT, attempts INTEGER NOT NULL DEFAULT 0, acked_at TEXT);
@@ -39,6 +41,24 @@ func(s *SQLite)ListPools(ctx context.Context)([]core.RunnerPool,error){return li
 func(s *SQLite)UpsertWorker(ctx context.Context,v core.Worker)error{return upsert(ctx,s.db,"workers",v.ID,v)}
 func(s *SQLite)GetWorker(ctx context.Context,id string)(core.Worker,error){return get[core.Worker](ctx,s.db,"workers",id)}
 func(s *SQLite)ListWorkers(ctx context.Context)([]core.Worker,error){return list[core.Worker](ctx,s.db,"workers")}
+const nonDeletedWorkersQuery = "SELECT data FROM workers WHERE COALESCE(json_extract(data,'$.state'),'') != 'deleted' ORDER BY updated_at DESC,id DESC"
+
+// ListNonDeletedWorkers is the indexed snapshot for live reconciliation and
+// scale-set recovery. ListWorkers still includes the full historical ledger.
+func(s *SQLite)ListNonDeletedWorkers(ctx context.Context)([]core.Worker,error){
+    rows,err:=s.db.QueryContext(ctx,nonDeletedWorkersQuery)
+    if err!=nil{return nil,err}
+    defer rows.Close()
+    out:=[]core.Worker{}
+    for rows.Next(){
+        var raw []byte
+        if err:=rows.Scan(&raw);err!=nil{return nil,err}
+        worker,err:=decode[core.Worker](raw)
+        if err!=nil{return nil,err}
+        out=append(out,worker)
+    }
+    return out,rows.Err()
+}
 func(s *SQLite)AppendAudit(ctx context.Context,e core.AuditEvent)error{if e.CreatedAt.IsZero(){e.CreatedAt=time.Now().UTC()};_,err:=s.db.ExecContext(ctx,"INSERT INTO audit_events(actor,action,resource_type,resource_id,result,safe_detail,created_at) VALUES(?,?,?,?,?,?,?)",e.Actor,e.Action,e.ResourceType,e.ResourceID,e.Result,e.SafeDetail,e.CreatedAt.Format(time.RFC3339Nano));return err}
 func(s *SQLite)ListAudit(ctx context.Context,limit int)([]core.AuditEvent,error){if limit<=0||limit>1000{limit=100};rows,err:=s.db.QueryContext(ctx,"SELECT id,actor,action,resource_type,resource_id,result,safe_detail,created_at FROM audit_events ORDER BY id DESC LIMIT ?",limit);if err!=nil{return nil,err};defer rows.Close();var out []core.AuditEvent;for rows.Next(){var e core.AuditEvent;var created string;if err:=rows.Scan(&e.ID,&e.Actor,&e.Action,&e.ResourceType,&e.ResourceID,&e.Result,&e.SafeDetail,&created);err!=nil{return nil,err};e.CreatedAt,_=time.Parse(time.RFC3339Nano,created);out=append(out,e)};return out,rows.Err()}
 func(s *SQLite)EnqueueCommand(ctx context.Context,hostID string,c agent.Command)error{if hostID==""||c.ID==""||c.WorkerID==""||c.Type==""{return errors.New("command host, id, worker and type are required")};b,err:=json.Marshal(c);if err!=nil{return err};_,err=s.db.ExecContext(ctx,`INSERT OR IGNORE INTO agent_commands(id,host_id,worker_id,command_type,payload,created_at) VALUES(?,?,?,?,?,?)`,c.ID,hostID,c.WorkerID,string(c.Type),b,c.CreatedAt.UTC().Format(time.RFC3339Nano));return err}
