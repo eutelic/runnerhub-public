@@ -419,6 +419,33 @@ func TestDinDSidecarFailureMarksWorkerFailed(t *testing.T) {
 	}
 }
 
+// Image-declared anonymous volumes must be removed with the trusted worker.
+func TestDeleteTrustedWorkerRemovesAnonymousVolumes(t *testing.T) {
+	f := &fakeRunner{fn: func(_ string, a ...string) (string, error) {
+		joined := strings.Join(a, " ")
+		if strings.HasPrefix(joined, "inspect runner123 --format") {
+			return "w1\n", nil
+		}
+		return "", nil
+	}}
+	p, err := newWithRunner(Config{StateDir: t.TempDir(), AllowedImages: []string{"img"}}, f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Delete(context.Background(), provider.WorkerHandle{ProviderID: "runner123"}); err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, call := range f.calls {
+		if strings.Join(call[1:], " ") == "rm -f -v runner123" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("trusted worker removal did not reclaim anonymous volumes: %+v", f.calls)
+	}
+}
+
 func TestDeleteRemovesDinDSidecarBeforeRunner(t *testing.T) {
 	sidecarRemoved := false
 	f := &fakeRunner{fn: func(_ string, a ...string) (string, error) {
@@ -428,10 +455,10 @@ func TestDeleteRemovesDinDSidecarBeforeRunner(t *testing.T) {
 			return "w1\n", nil
 		case len(a) > 0 && a[0] == "ps" && strings.Contains(joined, "label=io.runnerhub.parent=runner123"):
 			return "dind123\n", nil
-		case joined == "rm -f dind123":
+		case joined == "rm -f -v dind123":
 			sidecarRemoved = true
 			return "", nil
-		case joined == "rm -f runner123":
+		case joined == "rm -f -v runner123":
 			if !sidecarRemoved {
 				return "", errors.New("conflict: container shares runner network namespace")
 			}
@@ -451,10 +478,10 @@ func TestDeleteRemovesDinDSidecarBeforeRunner(t *testing.T) {
 	sidecarIndex, runnerIndex := -1, -1
 	for i, call := range f.calls {
 		joined := strings.Join(call[1:], " ")
-		if joined == "rm -f dind123" {
+		if joined == "rm -f -v dind123" {
 			sidecarIndex = i
 		}
-		if joined == "rm -f runner123" {
+		if joined == "rm -f -v runner123" {
 			runnerIndex = i
 		}
 	}
@@ -518,7 +545,7 @@ func TestDeleteRecoversDinDSidecarByParentWithoutLocalWorkerState(t *testing.T) 
 	if !strings.Contains(joined, "label=io.runnerhub.parent=runner123") {
 		t.Fatalf("sidecar parent lookup was not attempted: %s", joined)
 	}
-	if !strings.Contains(joined, "rm -f dind123") {
+	if !strings.Contains(joined, "rm -f -v dind123") {
 		t.Fatalf("recovered sidecar was not removed: %s", joined)
 	}
 }

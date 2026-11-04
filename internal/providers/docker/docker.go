@@ -252,9 +252,9 @@ func (p *Provider) Create(ctx context.Context, s provider.WorkerSpec) (provider.
 		return provider.WorkerHandle{}, err
 	}
 	if err := os.WriteFile(filepath.Join(secretDir, "provider-id"), []byte(id), 0o600); err != nil {
-		_, _ = p.run.Run(ctx, p.cfg.DockerBinary, "rm", "-f", id)
+		_, _ = p.run.Run(ctx, p.cfg.DockerBinary, "rm", "-f", "-v", id)
 		if s.Isolation == core.IsolationContainerDinD {
-			_, _ = p.run.Run(ctx, p.cfg.DockerBinary, "rm", "-f", workerContainerName(s.WorkerID)+"-dind")
+			_, _ = p.run.Run(ctx, p.cfg.DockerBinary, "rm", "-f", "-v", workerContainerName(s.WorkerID)+"-dind")
 		}
 		_ = os.RemoveAll(secretDir)
 		return provider.WorkerHandle{}, err
@@ -284,7 +284,7 @@ func (p *Provider) createTrustedWorker(ctx context.Context, s provider.WorkerSpe
 	}
 	id, resolveErr := p.resolveRunContainerID(ctx, name, out)
 	if resolveErr != nil {
-		_, _ = p.run.Run(ctx, p.cfg.DockerBinary, "rm", "-f", name)
+		_, _ = p.run.Run(ctx, p.cfg.DockerBinary, "rm", "-f", "-v", name)
 		_ = os.RemoveAll(secretDir)
 		return "", resolveErr
 	}
@@ -417,7 +417,7 @@ exit 1`
 	}
 	runnerID, resolveErr := p.resolveRunContainerID(ctx, name, runnerOut)
 	if resolveErr != nil {
-		_, _ = p.run.Run(ctx, p.cfg.DockerBinary, "rm", "-f", name)
+		_, _ = p.run.Run(ctx, p.cfg.DockerBinary, "rm", "-f", "-v", name)
 		_ = os.RemoveAll(secretDir)
 		return "", resolveErr
 	}
@@ -455,7 +455,7 @@ exit 1`
 	)
 	if _, err := p.run.Run(ctx, p.cfg.DockerBinary, dindArgs...); err != nil {
 		if existing, findErr := p.findExact(ctx, dindName); findErr != nil || existing == "" {
-			_, _ = p.run.Run(ctx, p.cfg.DockerBinary, "rm", "-f", runnerID)
+			_, _ = p.run.Run(ctx, p.cfg.DockerBinary, "rm", "-f", "-v", runnerID)
 			_ = os.RemoveAll(secretDir)
 			return "", fmt.Errorf("start Docker-in-Docker sidecar: %w", err)
 		}
@@ -466,15 +466,15 @@ exit 1`
 	// starting run.sh. This validates the exact UID/GID/supplementary-group context
 	// that will execute workflow steps instead of relying on a separate docker exec.
 	if err := os.WriteFile(filepath.Join(runDir, "ready"), []byte("ready\n"), 0o644); err != nil {
-		_, _ = p.run.Run(ctx, p.cfg.DockerBinary, "rm", "-f", dindName)
-		_, _ = p.run.Run(ctx, p.cfg.DockerBinary, "rm", "-f", runnerID)
+		_, _ = p.run.Run(ctx, p.cfg.DockerBinary, "rm", "-f", "-v", dindName)
+		_, _ = p.run.Run(ctx, p.cfg.DockerBinary, "rm", "-f", "-v", runnerID)
 		_ = os.RemoveAll(secretDir)
 		return "", fmt.Errorf("release Docker-in-Docker runner gate: %w", err)
 	}
 
 	if err := os.WriteFile(filepath.Join(secretDir, "dind-mode"), []byte(p.cfg.DinDImage), 0o600); err != nil {
-		_, _ = p.run.Run(ctx, p.cfg.DockerBinary, "rm", "-f", dindName)
-		_, _ = p.run.Run(ctx, p.cfg.DockerBinary, "rm", "-f", runnerID)
+		_, _ = p.run.Run(ctx, p.cfg.DockerBinary, "rm", "-f", "-v", dindName)
+		_, _ = p.run.Run(ctx, p.cfg.DockerBinary, "rm", "-f", "-v", runnerID)
 		_ = os.RemoveAll(secretDir)
 		return "", err
 	}
@@ -790,19 +790,23 @@ func (p *Provider) Delete(ctx context.Context, h provider.WorkerHandle) error {
 	// A DinD sidecar joins the runner's network namespace with
 	// --network container:<runner>. Docker can reject removal of the runner
 	// while that dependent sidecar still exists, so always remove it first.
+	// Also remove anonymous volumes when deleting each container. The DinD
+	// image defines /var/lib/docker as an anonymous volume, and plain rm -f
+	// otherwise leaves behind the nested daemon's build data after each job.
+	// Docker -v preserves explicitly named volumes.
 	sidecarTarget := sidecarID
 	if sidecarTarget == "" && workerID != "" {
 		sidecarTarget = workerContainerName(workerID) + "-dind"
 	}
 	if sidecarTarget != "" {
-		_, err := p.run.Run(ctx, p.cfg.DockerBinary, "rm", "-f", sidecarTarget)
+		_, err := p.run.Run(ctx, p.cfg.DockerBinary, "rm", "-f", "-v", sidecarTarget)
 		if err != nil && !strings.Contains(strings.ToLower(err.Error()), "no such") {
 			return err
 		}
 	}
 
 	if h.ProviderID != "" {
-		_, err := p.run.Run(ctx, p.cfg.DockerBinary, "rm", "-f", h.ProviderID)
+		_, err := p.run.Run(ctx, p.cfg.DockerBinary, "rm", "-f", "-v", h.ProviderID)
 		if err != nil && !strings.Contains(strings.ToLower(err.Error()), "no such") {
 			return err
 		}
