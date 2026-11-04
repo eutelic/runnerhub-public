@@ -84,6 +84,10 @@ evidence="$tmp/evidence"
 status=0
 env PATH="$tmp/bin:$PATH" MOCK_DOCKER_STATUS=1 MOCK_DNS_FAILURE=ghcr bash "$script" --output "$evidence" >"$tmp/evidence-console.log" 2>&1 || status=$?
 [[ "$status" -eq 1 ]] || { echo 'evidence run must preserve blocker exit status' >&2; exit 1; }
+for attempt in 1 2 3 4 5 6 7 8 9 10; do
+  [[ -f "$evidence/preflight.txt" ]] && break
+  sleep 0.1
+done
 [[ -f "$evidence/preflight.txt" ]] || { echo 'missing evidence file' >&2; exit 1; }
 for attempt in 1 2 3 4 5 6 7 8 9 10; do
   grep -q 'Readiness blockers: 2' "$evidence/preflight.txt" && break
