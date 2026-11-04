@@ -98,3 +98,44 @@ func TestNativeExitFileIsWrittenAtomically(t *testing.T) {
     if err!=nil{t.Fatal(err)}
     if string(b)!="17"{t.Fatalf("exit code=%q, want 17",b)}
 }
+
+func TestNativeRunnerExitedBeforeExitCodePersistDoesNotReportUnknownFailure(t *testing.T) {
+    runnerDir:=t.TempDir()
+    stateDir:=t.TempDir()
+    if err:=os.WriteFile(filepath.Join(runnerDir,"run.sh"),[]byte("#!/bin/sh\nexit 17\n"),0700);err!=nil {t.Fatal(err)}
+    p,err:=New(Config{RunnerDir:runnerDir,StateDir:stateDir,HostID:"test"})
+    if err!=nil {t.Fatal(err)}
+    reaped:=make(chan struct{})
+    resume:=make(chan struct{})
+    t.Cleanup(func(){select{case <-resume:default:close(resume)}})
+    p.persistExitCode=func(dir string,code int)error{
+        close(reaped) // cmd.Wait has finished; no exit-code file exists yet
+        <-resume
+        return writeNativeExitCode(dir,code)
+    }
+    h,err:=p.Create(context.Background(),provider.WorkerSpec{
+        WorkerID:"delayed-exit",PoolID:"test",RunnerName:"test",
+        JITConfig:"dummy-config",Labels:[]string{"runnerhub"},
+        Isolation:core.IsolationHostPersistent,
+    })
+    if err!=nil {t.Fatal(err)}
+    select {
+    case <-reaped:
+    case <-time.After(5*time.Second):t.Fatal("native runner did not exit")
+    }
+    pending,err:=p.Inspect(context.Background(),h)
+    if err!=nil {t.Fatal(err)}
+    if pending.State!=core.WorkerReady || pending.ExitCode!=nil {
+        t.Fatalf("must not declare failure before reaped exit code is persisted: %+v",pending)
+    }
+    close(resume)
+    deadline:=time.Now().Add(5*time.Second)
+    for time.Now().Before(deadline){
+        got,err:=p.Inspect(context.Background(),h)
+        if err!=nil{t.Fatal(err)}
+        if got.State==core.WorkerFailed && got.ExitCode!=nil && *got.ExitCode==17{return}
+        if got.State==core.WorkerFailed && got.ExitCode==nil{t.Fatalf("lost exit code during persistence: %+v",got)}
+        time.Sleep(10*time.Millisecond)
+    }
+    t.Fatal("runner did not report persisted failure exit code")
+}

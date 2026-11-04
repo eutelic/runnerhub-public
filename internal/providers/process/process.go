@@ -1,8 +1,21 @@
 package process
 
-import("context";"errors";"os";"os/exec";"path/filepath";"runtime";"strconv";"strings";"syscall";"time";"github.com/eutelic/runnerhub/internal/core";"github.com/eutelic/runnerhub/internal/hostinfo";"github.com/eutelic/runnerhub/internal/provider")
-type Config struct{RunnerDir,StateDir,HostID string;AndroidEmulatorOnly bool};type Provider struct{cfg Config;kvmReady func()bool;availableResources func()core.Resources}
-func New(c Config)(*Provider,error){if c.RunnerDir==""{return nil,errors.New("runner directory required")};if c.StateDir==""{c.StateDir="/var/lib/runnerhub/process"};return &Provider{cfg:c,kvmReady:hostinfo.KVMUsable,availableResources:func()core.Resources{return hostinfo.AvailableCapacity(c.StateDir)}},nil}
+import("context";"errors";"os";"os/exec";"path/filepath";"runtime";"strconv";"strings";"syscall";"sync";"time";"github.com/eutelic/runnerhub/internal/core";"github.com/eutelic/runnerhub/internal/hostinfo";"github.com/eutelic/runnerhub/internal/provider")
+type Config struct{RunnerDir,StateDir,HostID string;AndroidEmulatorOnly bool}
+type nativeRun struct {
+    pid int
+    done chan struct{}
+    exitCode int
+    persistErr error
+}
+type Provider struct{
+    cfg Config
+    kvmReady func()bool
+    availableResources func()core.Resources
+    activeRuns sync.Map // key: worker provider ID; value: *nativeRun
+    persistExitCode func(string,int)error
+}
+func New(c Config)(*Provider,error){if c.RunnerDir==""{return nil,errors.New("runner directory required")};if c.StateDir==""{c.StateDir="/var/lib/runnerhub/process"};return &Provider{cfg:c,kvmReady:hostinfo.KVMUsable,availableResources:func()core.Resources{return hostinfo.AvailableCapacity(c.StateDir)},persistExitCode:writeNativeExitCode},nil}
 func (p *Provider) Capabilities(context.Context) (provider.Capabilities, error) {
   features := map[string]bool{"specialHardware": true}
   labels := map[string]string{"os": runtime.GOOS, "arch": runtime.GOARCH, "isolation.host-persistent": "true"}
@@ -65,7 +78,13 @@ func(p *Provider)Create(ctx context.Context,s provider.WorkerSpec)(provider.Work
   // Without Wait, a completed child can remain a zombie. On Linux kill(pid,0)
   // succeeds for zombies and Inspect would incorrectly report Ready forever.
   // The exit status survives subsequent process-provider inspections.
+  // Register the child before Wait can finish: Inspect must not report a
+  // definitive unknown exit in the interval between reaping the process
+  // and persisting its exit code.
+  run:=&nativeRun{pid:cmd.Process.Pid,done:make(chan struct{})}
+  p.activeRuns.Store(h.ProviderID,run)
   go func() {
+    defer close(run.done)
     err:=cmd.Wait()
     code:=0
     if err!=nil {
@@ -73,7 +92,8 @@ func(p *Provider)Create(ctx context.Context,s provider.WorkerSpec)(provider.Work
       var exitErr *exec.ExitError
       if errors.As(err,&exitErr) {code=exitErr.ExitCode()}
     }
-    _ = writeNativeExitCode(dir,code)
+    run.exitCode=code
+    run.persistErr=p.persistExitCode(dir,code)
     _=logf.Close()
   }()
   return h,nil}
@@ -84,8 +104,35 @@ func(p *Provider)Inspect(_ context.Context,h provider.WorkerHandle)(provider.Wor
     if code==0 {return provider.WorkerState{State:core.WorkerCompleted,ExitCode:&code,SafeDetail:"native runner exited successfully"},nil}
     return provider.WorkerState{State:core.WorkerFailed,ExitCode:&code,SafeDetail:"native runner process exited unsuccessfully"},nil
   }else if !os.IsNotExist(err){return provider.WorkerState{},err}
-  pid,err:=p.pid(h);if err!=nil{if os.IsNotExist(err){return provider.WorkerState{State:core.WorkerDeleted},nil};return provider.WorkerState{},err};proc,err:=os.FindProcess(pid);if err!=nil{return provider.WorkerState{},err};if proc.Signal(syscall.Signal(0))==nil{return provider.WorkerState{State:core.WorkerReady,SafeDetail:"runner process active"},nil};// No persisted exit code means the agent might have restarted or crashed.
-  // Never report such an unknown exit as a successful job.
+  pid,err:=p.pid(h)
+  if err!=nil{
+    if os.IsNotExist(err){return provider.WorkerState{State:core.WorkerDeleted},nil}
+    return provider.WorkerState{},err
+  }
+  // A child can already be reaped by cmd.Wait before its exit-code file is
+  // renamed into place. While the owning provider still tracks that child,
+  // keep it nonterminal until the wait/persist goroutine completes.
+  if active,ok:=p.activeRuns.Load(safe(h.ProviderID));ok {
+    run:=active.(*nativeRun)
+    if run.pid==pid {
+      select {
+      case <-run.done:
+        code:=run.exitCode
+        if run.persistErr!=nil {
+          return provider.WorkerState{State:core.WorkerFailed,ExitCode:&code,SafeDetail:"native runner exit code could not be persisted"},nil
+        }
+        if code==0 {return provider.WorkerState{State:core.WorkerCompleted,ExitCode:&code,SafeDetail:"native runner exited successfully"},nil}
+        return provider.WorkerState{State:core.WorkerFailed,ExitCode:&code,SafeDetail:"native runner process exited unsuccessfully"},nil
+      default:
+        return provider.WorkerState{State:core.WorkerReady,SafeDetail:"native runner active or exit status pending"},nil
+      }
+    }
+  }
+  proc,err:=os.FindProcess(pid)
+  if err!=nil{return provider.WorkerState{},err}
+  if proc.Signal(syscall.Signal(0))==nil{return provider.WorkerState{State:core.WorkerReady,SafeDetail:"runner process active"},nil}
+  // After an agent restart the local wait goroutine is unknown. Never
+  // report an unconfirmed exit as success.
   return provider.WorkerState{State:core.WorkerFailed,SafeDetail:"native runner disappeared without a confirmed exit code"},nil}
 func(p *Provider)Stop(_ context.Context,h provider.WorkerHandle)error{pid,err:=p.pid(h);if err!=nil{return nil};proc,_:=os.FindProcess(pid);return proc.Signal(os.Interrupt)}
 func (p *Provider) Delete(ctx context.Context, h provider.WorkerHandle) error {
@@ -118,7 +165,9 @@ func (p *Provider) Delete(ctx context.Context, h provider.WorkerHandle) error {
       }
     }
   }
-  return os.RemoveAll(filepath.Join(p.cfg.StateDir,key))
+  if err:=os.RemoveAll(filepath.Join(p.cfg.StateDir,key));err!=nil{return err}
+  p.activeRuns.Delete(key)
+  return nil
 }
 // Write atomically so Inspect never parses a partially written exit code.
 func writeNativeExitCode(dir string, code int) error {
