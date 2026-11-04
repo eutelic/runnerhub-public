@@ -479,12 +479,13 @@ func TestCanceledPublisherExitQueuesExactCleanupAndHoldsReservationUntilDelete(t
 		t.Fatalf("canceled scale-set completion state/result=%s/%q, want cleanup_pending/Canceled", got.State, got.JobResult)
 	}
 	summary := scheduler.SummarizeCapacity(pool, []core.Host{host}, []core.Worker{got})
-	if summary.Reserved.CPUMillis != 5000 { t.Fatalf("canceled job released host reservation before provider delete: %+v", summary) }
+	if summary.Reserved.CPUMillis != 5000 || summary.Reserved.MemoryBytes != 16<<30 { t.Fatalf("canceled job released host reservation before provider delete: %+v", summary) }
 
 	commands := hub.Next(host.ID)
 	if len(commands) != 1 || commands[0].Type != agent.CommandDelete {
 		t.Fatalf("expected exact-owned runner delete after cancellation, got %+v", commands)
 	}
+	if commands[0].WorkerID != worker.ID { t.Fatalf("delete command worker=%q, want %q", commands[0].WorkerID, worker.ID) }
 	if commands[0].Handle == nil || commands[0].Handle.HostID != host.ID || commands[0].Handle.ProviderID != worker.ProviderHandle {
 		t.Fatalf("delete handle=%+v, want host=%s runner=%s", commands[0].Handle, host.ID, worker.ProviderHandle)
 	}
@@ -500,7 +501,7 @@ func TestCanceledPublisherExitQueuesExactCleanupAndHoldsReservationUntilDelete(t
 		t.Fatalf("runner exit overwrote cancellation or cleanup state: %+v", got)
 	}
 	summary = scheduler.SummarizeCapacity(pool, []core.Host{host}, []core.Worker{got})
-	if summary.Reserved.CPUMillis != 5000 { t.Fatalf("reservation released before delete completed: %+v", summary) }
+	if summary.Reserved.CPUMillis != 5000 || summary.Reserved.MemoryBytes != 16<<30 { t.Fatalf("reservation released before delete completed: %+v", summary) }
 
 	if err := svc.HandleAgentResult(ctx, host.ID, agent.CommandResult{CommandID: commands[0].ID, WorkerID: worker.ID, OK: true}); err != nil {
 		t.Fatal(err)
@@ -511,7 +512,7 @@ func TestCanceledPublisherExitQueuesExactCleanupAndHoldsReservationUntilDelete(t
 		t.Fatalf("successful delete did not finish canceled worker cleanly: %+v", got)
 	}
 	summary = scheduler.SummarizeCapacity(pool, []core.Host{host}, []core.Worker{got})
-	if summary.Reserved.CPUMillis != 0 || summary.AdditionalWorkers != 2 {
+	if summary.Reserved.CPUMillis != 0 || summary.Reserved.MemoryBytes != 0 || summary.AdditionalWorkers != 2 {
 		t.Fatalf("reservation did not release after delete: %+v", summary)
 	}
 }
