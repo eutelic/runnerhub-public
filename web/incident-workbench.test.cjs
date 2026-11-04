@@ -43,3 +43,18 @@ test('matching by failure and repository remains safe',()=>{
   assert.equal(summarize([base],pools,hosts,listeners,runtimes,'unrelated').length,0);
   assert.equal(summarize([base],pools,hosts,listeners,runtimes,'eutelic/runnerhub').length,1);
 });
+
+
+test('matches complete GitHub run URLs and runner identity labels',()=>{
+  const worker={...base,runnerName:'runner-linux-7',workflowRef:'refs/pull/42/merge'};
+  const pool={...pools[0],labels:['runnerhub','linux-x64']};
+  const report=(query)=>summarize([worker],[pool],hosts,listeners,runtimes,query);
+  for(const query of [
+    'https://github.com/eutelic/runnerhub/actions/runs/41159246771',
+    'runner-linux-7',
+    'refs/pull/42/merge',
+    'linux-x64'
+  ]){
+    assert.equal(report(query).length,1,'should match '+query);
+  }
+});

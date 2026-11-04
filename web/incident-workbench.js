@@ -57,20 +57,23 @@
       if(runtime?.reasons?.length)evidence.push('Current host eligibility: '+runtime.reasons.join('; '));
       const online=host?String(host.state).toLowerCase()==='online':false;
       if(host&&!online)evidence.push('Assigned host is currently '+clean(host.state));
+      const githubURL=runURL(repository,runId);
+      const runnerLabels=[...list(worker.runnerLabels),...list(worker.labels),...list(pool?.labels),worker.runnerLabel].filter(Boolean);
       return {
         id:clean(worker.id),repository,runId,job:clean(worker.jobName)||clean(worker.jobId)||'unassigned',
         pool:clean(pool?.scaleSetName)||clean(pool?.name)||clean(worker.poolId),
         host:clean(host?.name)||clean(worker.hostId)||'not assigned',
         state,result:clean(worker.jobResult)||state,
         failure:clean(worker.failureReason),events:timeline(worker),
-        evidence,githubURL:runURL(repository,runId),
+        evidence,githubURL,
         updatedAt:clean(worker.updatedAt)||clean(worker.createdAt),
         listenerState:clean(listener?.state)||'unknown',
         listenerUpdatedAt:clean(listener?.updatedAt),
         runtimeState:clean(runtime?.state)||'unknown',
         lastFailureReason:clean(runtime?.lastFailureReason),
-        searchText:[repository,runId,worker.id,worker.jobName,worker.jobId,
-          pool?.scaleSetName,worker.failureReason,host?.name,worker.state].join(' ').toLowerCase()
+        searchText:[repository,runId,githubURL,worker.id,worker.jobName,worker.jobId,
+          worker.runnerName,worker.workflowRef,runnerLabels.join(' '),pool?.scaleSetName,
+          worker.failureReason,worker.jobResult,host?.name,worker.state].join(' ').toLowerCase()
       };
     }).filter(row=>!search||row.searchText.includes(search))
       .sort((a,b)=>time(b.updatedAt)-time(a.updatedAt)).slice(0,30)

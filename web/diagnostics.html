@@ -35,12 +35,12 @@
       <div class="section-head">
         <div>
           <h2>Investigate a workflow run</h2>
-          <div class="muted">Search recorded workers by repository, GitHub run ID, runner, or failure reason. Queued GitHub jobs without a created RunnerHub worker may not appear.</div>
+          <div class="muted">Search recorded workers by repository, GitHub run URL or ID, runner label or name, workflow ref, or failure reason. Queued GitHub jobs without a created RunnerHub worker may not appear.</div>
         </div>
       </div>
       <div class="repo-toolbar">
         <label class="repo-search-label"><span class="muted small">Repository, run ID, or error</span>
-          <input type="search" id="incident-search" autocomplete="off" placeholder="eutelic/runnerhub or 41159246771">
+          <input type="search" id="incident-search" autocomplete="off" placeholder="repository, run URL/ID, runner label, or error">
         </label>
         <button type="button" id="incident-clear" class="secondary compact">Clear</button>
       </div>
