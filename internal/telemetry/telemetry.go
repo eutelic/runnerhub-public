@@ -134,6 +134,8 @@ func RecommendConcurrency(avgQueue time.Duration, utilization float64, current i
 const (
 	resourceHistoryJobs = 50
 	resourceMinimumJobs = 5
+	resourceMinimumWellSampledJobs = 5
+	resourceHistoryMaxAge = 90 * 24 * time.Hour
 	cpuStepMillis int64 = 250
 	memoryStepBytes int64 = 512 << 20
 	minimumCPUMillis int64 = 500
@@ -144,11 +146,13 @@ type ResourceRecommendation struct {
 	Jobs int `json:"jobs"`
 	WellSampledJobs int `json:"wellSampledJobs,omitempty"`
 	RejectedJobs int `json:"rejectedJobs,omitempty"`
+	StaleJobs int `json:"staleJobs,omitempty"`
 	Ready bool `json:"ready"`
 	Confidence string `json:"confidence"`
 	Current core.Resources `json:"current"`
 	Recommended core.Resources `json:"recommended"`
 	CPUPeakP95Millis int64 `json:"cpuPeakP95Millis,omitempty"`
+	CPUPeakMaxMillis int64 `json:"cpuPeakMaxMillis,omitempty"`
 	MemoryPeakP95Bytes int64 `json:"memoryPeakP95Bytes,omitempty"`
 	MemoryPeakMaxBytes int64 `json:"memoryPeakMaxBytes,omitempty"`
 	ResetAt *time.Time `json:"resetAt,omitempty"`
@@ -245,6 +249,7 @@ func RecommendResources(pool core.RunnerPool, workers []core.Worker) ResourceRec
 		out.ResetAt = &reset
 	}
 	points := make([]usagePoint, 0, len(workers))
+	now := time.Now().UTC()
 	for _, worker := range workers {
 		if worker.PoolID != pool.ID || worker.Usage.Samples == 0 || worker.StartedAt.IsZero() {
 			continue
@@ -276,6 +281,14 @@ func RecommendResources(pool core.RunnerPool, workers []core.Worker) ResourceRec
 				continue
 			}
 		}
+		observedAt := worker.Usage.UpdatedAt
+		if observedAt.IsZero() {
+			observedAt = workerTerminalAt(worker)
+		}
+		if observedAt.IsZero() || now.Sub(observedAt) > resourceHistoryMaxAge {
+			out.StaleJobs++
+			continue
+		}
 		cpu, memory, valid := workerUsageForSizing(pool, worker)
 		if !valid {
 			out.RejectedJobs++
@@ -293,19 +306,27 @@ func RecommendResources(pool core.RunnerPool, workers []core.Worker) ResourceRec
 			out.WellSampledJobs++
 		}
 	}
+	if out.Jobs < resourceMinimumJobs || out.WellSampledJobs < resourceMinimumWellSampledJobs {
+		out.Confidence = "collecting"
+		out.Reason = fmt.Sprintf(
+			"collecting well-sampled completed-job usage history; %d valid jobs and %d with at least 2 usage samples (need %d)",
+			out.Jobs, out.WellSampledJobs, resourceMinimumWellSampledJobs,
+		)
+		if out.RejectedJobs > 0 {
+			out.Reason += fmt.Sprintf("; %d incompatible or legacy samples ignored", out.RejectedJobs)
+		}
+		if out.StaleJobs > 0 {
+			out.Reason += fmt.Sprintf("; %d stale telemetry samples ignored (older than 90 days)", out.StaleJobs)
+		}
+		return out
+	}
 	switch {
 	case out.Jobs >= 25:
 		out.Confidence = "high"
 	case out.Jobs >= 10:
 		out.Confidence = "medium"
-	case out.Jobs >= resourceMinimumJobs:
-		out.Confidence = "low"
 	default:
-		out.Confidence = "collecting"
-		if out.RejectedJobs > 0 {
-			out.Reason = fmt.Sprintf("collecting valid completed-job usage samples; %d incompatible or legacy samples ignored", out.RejectedJobs)
-		}
-		return out
+		out.Confidence = "low"
 	}
 	cpus := make([]int64, 0, len(points))
 	memories := make([]int64, 0, len(points))
@@ -318,6 +339,11 @@ func RecommendResources(pool core.RunnerPool, workers []core.Worker) ResourceRec
 		}
 	}
 	out.CPUPeakP95Millis = percentile95(cpus)
+	for _, cpu := range cpus {
+		if cpu > out.CPUPeakMaxMillis {
+			out.CPUPeakMaxMillis = cpu
+		}
+	}
 	out.MemoryPeakP95Bytes = percentile95(memories)
 	for _, memory := range memories {
 		if memory > out.MemoryPeakMaxBytes {
@@ -344,6 +370,13 @@ func RecommendResources(pool core.RunnerPool, workers []core.Worker) ResourceRec
 	if !canDownsize && cpuTarget < pool.Resources.CPUMillis {
 		cpuTarget = pool.Resources.CPUMillis
 	}
+	cpuP95Target := cpuTarget
+	cpuTailHeldDownsize := canDownsize && cpuP95Target < pool.Resources.CPUMillis && out.CPUPeakMaxMillis > cpuP95Target
+	if cpuTailHeldDownsize {
+		// Keep the current reservation while a recent, valid high-CPU job remains
+		// in the learning window; p95 alone would hide this workload class.
+		cpuTarget = pool.Resources.CPUMillis
+	}
 	if !canDownsize && memoryTarget < pool.Resources.MemoryBytes {
 		memoryTarget = pool.Resources.MemoryBytes
 	}
@@ -357,6 +390,12 @@ func RecommendResources(pool core.RunnerPool, workers []core.Worker) ResourceRec
 	}
 	if oomMemoryFloor > out.MemoryPeakMaxBytes {
 		out.Reason += "; recent OOM pressure raises the memory floor"
+	}
+	if cpuTailHeldDownsize {
+		out.Reason += fmt.Sprintf("; CPU downsize held because recent max peak %dm exceeds p95-based target %dm", out.CPUPeakMaxMillis, cpuP95Target)
+	}
+	if out.StaleJobs > 0 {
+		out.Reason += fmt.Sprintf("; %d stale telemetry samples ignored (older than 90 days)", out.StaleJobs)
 	}
 	if out.Jobs >= 25 && out.WellSampledJobs < 25 {
 		out.Reason += fmt.Sprintf("; downsize held because only %d jobs are well-sampled", out.WellSampledJobs)

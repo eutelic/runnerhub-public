@@ -678,3 +678,12 @@ test('Docker hosts expose advertised free disk separately from CPU/RAM reservati
   assert.match(html,/Publisher\/DinD runners also reserve their configured disk budget/);
   assert.match(html,/Disk available: unknown/);
 });
+
+
+test('resource learning shows recent maximum CPU peak and stale sample counts',()=>{
+  const {ctx}=createDashboard();
+  const observed=vm.runInContext("observedText({resourceSizing:{ready:true,cpuPeakP95Millis:2253,cpuPeakMaxMillis:10823,memoryPeakMaxBytes:2*1073741824}})",ctx);
+  assert.match(observed,/2\.25 cores p95 \/ 10\.82 max \/ 2 GiB/);
+  const learning=vm.runInContext("learningText({resourceSizing:{jobs:5,confidence:'low',staleJobs:30}})",ctx);
+  assert.match(learning,/30 stale ignored/);
+});

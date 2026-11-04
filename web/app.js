@@ -362,13 +362,14 @@ function currentUsage(usage,field){
   return field==='cpu'?usageCPU(usage.currentCpuMillis):usageRAM(usage.currentMemoryBytes);
 }
 function sizingText(rec){const s=rec?.resourceSizing;if(!s?.ready)return s?.jobs?('learning ('+s.jobs+' jobs)'):'learning';return cpuCores(s.recommended?.cpuMillis)+' cores / '+gib(s.recommended?.memoryBytes)+' GiB'}
-function observedText(rec){const s=rec?.resourceSizing;if(!s?.ready)return s?.jobs?('learning ('+s.jobs+' jobs)'):'—';return cpuCores(s.cpuPeakP95Millis)+' cores / '+gib(s.memoryPeakMaxBytes||s.memoryPeakP95Bytes)+' GiB'}
+function observedText(rec){const s=rec?.resourceSizing;if(!s?.ready)return s?.jobs?('learning ('+s.jobs+' jobs)'):'—';const maxCpu=Number(s.cpuPeakMaxMillis||s.cpuPeakP95Millis);return cpuCores(s.cpuPeakP95Millis)+' cores p95 / '+cpuCores(maxCpu)+' max / '+gib(s.memoryPeakMaxBytes||s.memoryPeakP95Bytes)+' GiB'}
 function learningText(rec){
   const s=rec?.resourceSizing;
   if(!s)return '—';
   let text=(s.jobs||0)+' valid job'+((s.jobs||0)===1?'':'s')+' · '+(s.confidence||'collecting');
   if(s.wellSampledJobs)text+=' · '+s.wellSampledJobs+' well-sampled';
-  if(s.rejectedJobs)text+=' · '+s.rejectedJobs+' ignored';
+  if(s.rejectedJobs)text+=' · '+s.rejectedJobs+' incompatible ignored';
+  if(s.staleJobs)text+=' · '+s.staleJobs+' stale ignored';
   if(s.resetAt)text+=' · reset '+fmtTime(s.resetAt);
   return text;
 }

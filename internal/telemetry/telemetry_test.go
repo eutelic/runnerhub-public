@@ -2,6 +2,7 @@ package telemetry
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -343,8 +344,11 @@ func TestRecommendResourcesDoesNotDownsizeSparseHistory(t *testing.T) {
 		})
 	}
 	got := RecommendResources(pool, workers)
-	if !got.Ready || got.Jobs != 30 || got.WellSampledJobs != 0 {
-		t.Fatalf("sparse recommendation metadata=%+v", got)
+	if got.Ready || got.Jobs != 30 || got.WellSampledJobs != 0 {
+		t.Fatalf("sparse history should remain in learning: %+v", got)
+	}
+	if !strings.Contains(got.Reason, "30 valid jobs and 0 with at least 2 usage samples") {
+		t.Fatalf("sparse evidence was not explained: %s", got.Reason)
 	}
 	if got.Recommended.CPUMillis != pool.Resources.CPUMillis || got.Recommended.MemoryBytes != pool.Resources.MemoryBytes {
 		t.Fatalf("sparse history downsized pool: %+v", got)
@@ -418,5 +422,120 @@ func TestRecommendResourcesRareMemoryHeavyJobCannotBeHiddenByP95(t *testing.T) {
 	}
 	if got.Recommended.MemoryBytes != 9<<29 { // 4.5 GiB after 25% headroom and 0.5 GiB rounding
 		t.Fatalf("rare memory-heavy job was hidden by p95: recommendation=%+v", got)
+	}
+}
+
+
+func TestRecommendResourcesRareCPUPeakCannotBeHiddenByP95(t *testing.T) {
+	pool := core.RunnerPool{
+		ID: "rare-cpu", Isolation: core.IsolationContainerTrusted,
+		Resources: core.Resources{CPUMillis: 12250, MemoryBytes: 8 << 30},
+	}
+	base := time.Now().UTC().Add(-time.Hour)
+	workers := make([]core.Worker, 0, 50)
+	for i := 0; i < 50; i++ {
+		cpu := int64(2253)
+		if i == 49 {
+			cpu = 10823
+		}
+		at := base.Add(time.Duration(i) * time.Minute)
+		workers = append(workers, core.Worker{
+			ID: fmt.Sprintf("rare-cpu-%d", i), PoolID: pool.ID, Isolation: pool.Isolation,
+			State: core.WorkerDeleted, StartedAt: at.Add(-time.Minute), CompletedAt: at,
+			JobResult: "succeeded", Resources: pool.Resources,
+			Usage: core.ResourceUsageSummary{
+				PeakCPUMillis: cpu, PeakMemoryBytes: 2 << 30,
+				PeakEnvelopeCPUMillis: cpu, PeakEnvelopeMemoryBytes: 2 << 30,
+				Samples: 2, UpdatedAt: at,
+			},
+		})
+	}
+	got := RecommendResources(pool, workers)
+	if !got.Ready || got.Jobs != 50 || got.CPUPeakP95Millis != 2253 || got.CPUPeakMaxMillis != 10823 {
+		t.Fatalf("unexpected CPU peak summary: %+v", got)
+	}
+	if got.Recommended.CPUMillis != pool.Resources.CPUMillis {
+		t.Fatalf("rare recent CPU peak was hidden by p95 downsize: %+v", got)
+	}
+	if !strings.Contains(got.Reason, "recent max peak 10823m exceeds p95-based target 3000m") {
+		t.Fatalf("CPU tail guard reason missing: %s", got.Reason)
+	}
+}
+
+func TestRecommendResourcesDropsCPUOutlierOutsideRecentHistory(t *testing.T) {
+	pool := core.RunnerPool{
+		ID: "cpu-history", Isolation: core.IsolationContainerTrusted,
+		Resources: core.Resources{CPUMillis: 12250, MemoryBytes: 8 << 30},
+	}
+	base := time.Now().UTC().Add(-2 * time.Hour)
+	workers := make([]core.Worker, 0, 51)
+	for i := 0; i < 51; i++ {
+		cpu := int64(2253)
+		if i == 0 {
+			cpu = 10823
+		}
+		at := base.Add(time.Duration(i) * time.Minute)
+		workers = append(workers, core.Worker{
+			ID: fmt.Sprintf("cpu-history-%d", i), PoolID: pool.ID, Isolation: pool.Isolation,
+			State: core.WorkerDeleted, StartedAt: at.Add(-time.Minute), CompletedAt: at,
+			JobResult: "succeeded", Resources: pool.Resources,
+			Usage: core.ResourceUsageSummary{
+				PeakCPUMillis: cpu, PeakMemoryBytes: 2 << 30,
+				PeakEnvelopeCPUMillis: cpu, PeakEnvelopeMemoryBytes: 2 << 30,
+				Samples: 2, UpdatedAt: at,
+			},
+		})
+	}
+	got := RecommendResources(pool, workers)
+	if !got.Ready || got.Jobs != 50 || got.CPUPeakMaxMillis != 2253 {
+		t.Fatalf("older CPU outlier remained in recent history: %+v", got)
+	}
+	if got.Recommended.CPUMillis >= pool.Resources.CPUMillis {
+		t.Fatalf("outlier outside the recent history blocked a downsize: %+v", got)
+	}
+}
+
+func TestRecommendResourcesReportsStaleSamplesAndWaitsForWellSampledHistory(t *testing.T) {
+	pool := core.RunnerPool{
+		ID: "stale-history", Isolation: core.IsolationContainerTrusted,
+		Resources: core.Resources{CPUMillis: 12250, MemoryBytes: 8 << 30},
+	}
+	now := time.Now().UTC()
+	workers := make([]core.Worker, 0, 35)
+	for i := 0; i < 30; i++ {
+		at := now.Add(-120 * 24 * time.Hour).Add(time.Duration(i) * time.Minute)
+		workers = append(workers, core.Worker{
+			ID: fmt.Sprintf("stale-%d", i), PoolID: pool.ID, Isolation: pool.Isolation,
+			State: core.WorkerDeleted, StartedAt: at.Add(-time.Minute), CompletedAt: at,
+			JobResult: "succeeded", Resources: pool.Resources,
+			Usage: core.ResourceUsageSummary{
+				PeakCPUMillis: 10823, PeakMemoryBytes: 2 << 30,
+				PeakEnvelopeCPUMillis: 10823, PeakEnvelopeMemoryBytes: 2 << 30,
+				Samples: 2, UpdatedAt: at,
+			},
+		})
+	}
+	for i := 0; i < 5; i++ {
+		at := now.Add(-time.Duration(5-i) * time.Minute)
+		workers = append(workers, core.Worker{
+			ID: fmt.Sprintf("short-%d", i), PoolID: pool.ID, Isolation: pool.Isolation,
+			State: core.WorkerDeleted, StartedAt: at.Add(-time.Minute), CompletedAt: at,
+			JobResult: "succeeded", Resources: pool.Resources,
+			Usage: core.ResourceUsageSummary{
+				PeakCPUMillis: 2253, PeakMemoryBytes: 2 << 30,
+				PeakEnvelopeCPUMillis: 2253, PeakEnvelopeMemoryBytes: 2 << 30,
+				Samples: 1, UpdatedAt: at,
+			},
+		})
+	}
+	got := RecommendResources(pool, workers)
+	if got.Ready || got.Jobs != 5 || got.StaleJobs != 30 || got.WellSampledJobs != 0 {
+		t.Fatalf("stale or short history treated as ready: %+v", got)
+	}
+	if got.Recommended.CPUMillis != pool.Resources.CPUMillis || got.Recommended.MemoryBytes != pool.Resources.MemoryBytes {
+		t.Fatalf("stale or short history changed the reservation: %+v", got)
+	}
+	if !strings.Contains(got.Reason, "30 stale telemetry samples ignored (older than 90 days)") {
+		t.Fatalf("stale evidence disclosure missing: %s", got.Reason)
 	}
 }
