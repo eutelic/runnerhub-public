@@ -194,6 +194,8 @@ func (r *Reconciler) Once(ctx context.Context) (resultErr error) {
 	attemptRuns := map[string]store.CIWorkflowRun{}
 	jobsByAttempt := map[string][]githubrunner.WorkflowJob{}
 	prs := map[string]store.CIPullRequest{}
+	checkedQuarantines := map[runKey]bool{}
+	quarantinedRuns := map[runKey]bool{}
 	var errs []error
 
 	for i := range candidates {
@@ -215,11 +217,39 @@ func (r *Reconciler) Once(ctx context.Context) (resultErr error) {
 		var matchedJob *githubrunner.WorkflowJob
 		if storedRun.RunID == 0 || strings.TrimSpace(storedRun.HeadTreeSHA) == "" {
 			key := runKey{repository: repository, runID: worker.WorkflowRunID}
+			if quarantinedRuns[key] {
+				continue
+			}
+			if !checkedQuarantines[key] {
+				checkedQuarantines[key] = true
+				quarantine, quarantineErr := metadataStore.GetCIWorkflowRunQuarantine(ctx, repository, worker.WorkflowRunID)
+				if quarantineErr != nil && !errors.Is(quarantineErr, store.ErrNotFound) {
+					errs = append(errs, quarantineErr)
+					continue
+				}
+				if quarantineErr == nil && now.Before(quarantine.RetryAfter) {
+					quarantinedRuns[key] = true
+					continue
+				}
+			}
 			latest, ok := latestRuns[key]
 			if !ok {
 				latest, err = r.GitHub.GetWorkflowRun(ctx, scope, worker.WorkflowRunID)
 				if err != nil {
+					quarantined, quarantineErr := r.quarantineWorkflowRun(ctx, metadataStore, repository, worker.WorkflowRunID, err, now)
+					if quarantineErr != nil {
+						errs = append(errs, quarantineErr)
+						continue
+					}
+					if quarantined {
+						quarantinedRuns[key] = true
+						continue
+					}
 					errs = append(errs, fmt.Errorf("%s run %d: %w", repository, worker.WorkflowRunID, err))
+					continue
+				}
+				if err := metadataStore.DeleteCIWorkflowRunQuarantine(ctx, repository, worker.WorkflowRunID); err != nil {
+					errs = append(errs, err)
 					continue
 				}
 				latestRuns[key] = latest
@@ -227,6 +257,15 @@ func (r *Reconciler) Once(ctx context.Context) (resultErr error) {
 			if attempt <= 0 {
 				attempt, matchedJob, err = r.findWorkerAttempt(ctx, scope, *worker, latest, jobsByAttempt)
 				if err != nil {
+					quarantined, quarantineErr := r.quarantineWorkflowRun(ctx, metadataStore, repository, worker.WorkflowRunID, err, now)
+					if quarantineErr != nil {
+						errs = append(errs, quarantineErr)
+						continue
+					}
+					if quarantined {
+						quarantinedRuns[key] = true
+						continue
+					}
 					errs = append(errs, fmt.Errorf("%s worker %s attempt: %w", repository, worker.ID, err))
 					continue
 				}
@@ -242,6 +281,15 @@ func (r *Reconciler) Once(ctx context.Context) (resultErr error) {
 				if latest.Attempt != attempt {
 					run, err = r.GitHub.GetWorkflowRunAttempt(ctx, scope, worker.WorkflowRunID, attempt)
 					if err != nil {
+						quarantined, quarantineErr := r.quarantineWorkflowRun(ctx, metadataStore, repository, worker.WorkflowRunID, err, now)
+						if quarantineErr != nil {
+							errs = append(errs, quarantineErr)
+							continue
+						}
+						if quarantined {
+						quarantinedRuns[key] = true
+							continue
+						}
 						errs = append(errs, fmt.Errorf("%s run %d attempt %d: %w", repository, worker.WorkflowRunID, attempt, err))
 						continue
 					}
