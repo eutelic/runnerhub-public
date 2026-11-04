@@ -1,27 +1,11 @@
 name: publish-images
 
 on:
+  # CI still runs on main merges; publishing is an explicit operation.
+  # Tags are another deliberate, versioned release action.
   push:
-    branches:
-      - main
     tags:
       - 'v*'
-    paths:
-      - '.dockerignore'
-      - '.github/workflows/publish-images.yml'
-      - 'deploy/docker/**'
-      - 'deploy/truenas/compose.yaml'
-      - 'deploy/truenas/prepare-compose.sh'
-      - 'deploy/truenas/check-images.sh'
-      - 'deploy/truenas/verify-image-set.sh'
-      - 'cmd/**'
-      - 'internal/**'
-      - 'migrations/**'
-      - 'web/**'
-      - 'go.mod'
-      - 'go.sum'
-      - 'scaleset/**'
-      - 'scripts/jit-acceptance-host.sh'
   workflow_dispatch:
 
 permissions:
@@ -29,12 +13,11 @@ permissions:
   actions: read
   packages: write
 
-# Serialize publication per ref. Branch snapshots are supersedable, so a newer
-# main commit cancels obsolete publication work. Immutable tag releases must
-# finish independently and are never canceled merely because main advanced.
+# A requested publication is deliberate and should finish without being
+# cancelled by a subsequent merge or another publish request.
 concurrency:
   group: publish-images-${{ github.ref }}
-  cancel-in-progress: ${{ github.ref_type == 'branch' }}
+  cancel-in-progress: false
 
 # All publication jobs use RunnerHub. Out-of-band outage recovery is tracked
 # separately; no workflow redirects to GitHub-hosted runners.

@@ -35,10 +35,18 @@ for workflow in "${scoped_workflows[@]}"; do
   require_fixed "$workflow" '${{ github.event.pull_request.number || github.ref }}'
 done
 
-# Branch snapshot publication is supersedable, but immutable tag publication
-# must finish. Keep that distinction explicit in the workflow policy.
-require_fixed "$workflow_dir/publish-images.yml" "cancel-in-progress:"
-require_fixed "$workflow_dir/publish-images.yml" "github.ref_type == 'branch'"
+# Publication is explicit (manual dispatch or version tag), and manual
+# publication runs must finish rather than be canceled by another push.
+publish="$workflow_dir/publish-images.yml"
+require_fixed "$publish" "workflow_dispatch:"
+require_fixed "$publish" "push:"
+require_fixed "$publish" "tags:"
+require_fixed "$publish" "cancel-in-progress: false"
+require_fixed "$publish" "if: github.ref_type == 'tag'"
+if grep -Eq '^[[:space:]]+branches:' "$publish"; then
+  echo "publish-images must not publish automatically from branch pushes" >&2
+  exit 1
+fi
 
 # Merged PRs use a different concurrency group from their resulting main push.
 # The cleanup workflow must cancel only ordinary PR validation and must never
