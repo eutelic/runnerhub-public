@@ -11,6 +11,7 @@ type EnrollRequest struct {
 	Provider     string                `json:"provider"`
 	Capabilities provider.Capabilities `json:"capabilities"`
 	AgentVersion string                `json:"agentVersion"`
+	PlacementDomainID string `json:"placementDomainId,omitempty"`
 }
 type EnrollResponse struct {
 	HostID              string `json:"hostId"`

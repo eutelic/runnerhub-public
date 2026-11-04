@@ -356,3 +356,66 @@ func TestSelectHostUsesNonDeletedWorkerSnapshot(t *testing.T) {
 		t.Fatalf("decision=%+v err=%v", decision, err)
 	}
 }
+
+func TestPlacementDomainSharesCapacityAcrossProviders(t *testing.T) {
+	st, _ := store.OpenSQLite(":memory:")
+	defer st.Close()
+	ctx := context.Background()
+	capacity := core.Resources{CPUMillis: 32000, MemoryBytes: 60 << 30, DiskBytes: 100 << 30}
+	for _, h := range []core.Host{
+		{ID: "docker-agent", Name: "compute", Provider: "docker", State: core.HostOnline, PlacementDomainID: "machine-01", Tags: map[string]string{"isolation.container-trusted": "true"}, Capacity: capacity},
+		{ID: "process-agent", Name: "compute-android", Provider: "process", State: core.HostOnline, PlacementDomainID: "machine-01", Tags: map[string]string{"isolation.container-trusted": "true"}, Capacity: capacity},
+	} {
+		if err := st.UpsertHost(ctx, h); err != nil { t.Fatal(err) }
+	}
+	if err := st.UpsertWorker(ctx, core.Worker{ID: "existing", HostID: "docker-agent", PoolID: "other", ProviderID: "docker", State: core.WorkerBusy, Resources: core.Resources{CPUMillis: 20000, MemoryBytes: 30 << 30}}); err != nil { t.Fatal(err) }
+
+	p := testPool()
+	p.Resources = core.Resources{CPUMillis: 16000, MemoryBytes: 1 << 30}
+	if decision, err := (Scheduler{Store: st}).SelectHost(ctx, p); !errors.Is(err, ErrNoCapacity) {
+		t.Fatalf("cross-provider shared reservations allowed a second worker: decision=%+v err=%v", decision, err)
+	}
+
+	p.Resources = core.Resources{CPUMillis: 12000, MemoryBytes: 1 << 30}
+	decision, err := (Scheduler{Store: st}).SelectHost(ctx, p)
+	if err != nil || decision.Used.CPUMillis != 20000 {
+		t.Fatalf("a worker that fits in remaining shared capacity was not admitted: decision=%+v err=%v", decision, err)
+	}
+	summary := SummarizeCapacity(p, []core.Host{
+		{ID: "docker-agent", Provider: "docker", State: core.HostOnline, PlacementDomainID: "machine-01", Tags: map[string]string{"isolation.container-trusted": "true"}, Capacity: capacity},
+		{ID: "process-agent", Provider: "process", State: core.HostOnline, PlacementDomainID: "machine-01", Tags: map[string]string{"isolation.container-trusted": "true"}, Capacity: capacity},
+	}, []core.Worker{{ID: "existing", HostID: "docker-agent", PoolID: "other", ProviderID: "docker", State: core.WorkerBusy, Resources: core.Resources{CPUMillis: 20000, MemoryBytes: 30 << 30}}})
+	if summary.CompatibleHosts != 2 || summary.PlacementDomains != 1 || summary.Capacity.CPUMillis != capacity.CPUMillis || summary.Reserved.CPUMillis != 20000 || summary.AdditionalWorkers != 1 {
+		t.Fatalf("shared physical capacity summary=%+v", summary)
+	}
+}
+
+
+func TestOfflinePlacementMemberDoesNotEraseLiveCapacityOrReservations(t *testing.T) {
+	st, _ := store.OpenSQLite(":memory:")
+	defer st.Close()
+	ctx := context.Background()
+	capacity := core.Resources{CPUMillis: 32000, MemoryBytes: 60 << 30, DiskBytes: 100 << 30}
+	for _, h := range []core.Host{
+		{ID: "docker-agent", Name: "compute", Provider: "docker", State: core.HostOnline, PlacementDomainID: "machine-01", Tags: map[string]string{"isolation.container-trusted": "true"}, Capacity: capacity},
+		{ID: "process-agent", Name: "compute-android", Provider: "process", State: core.HostOffline, PlacementDomainID: "machine-01", Tags: map[string]string{"isolation.container-trusted": "true"}, Capacity: core.Resources{}},
+		{ID: "stale-docker-agent", Name: "compute-old", Provider: "docker", State: core.HostDraining, PlacementDomainID: "machine-01", Capacity: core.Resources{CPUMillis: 1000, MemoryBytes: 1 << 30}},
+	} {
+		if err := st.UpsertHost(ctx, h); err != nil { t.Fatal(err) }
+	}
+	if err := st.UpsertWorker(ctx, core.Worker{ID: "offline-worker", HostID: "process-agent", PoolID: "other", ProviderID: "process", State: core.WorkerBusy, Resources: core.Resources{CPUMillis: 24000, MemoryBytes: 20 << 30}}); err != nil { t.Fatal(err) }
+	p := testPool()
+	p.Resources = core.Resources{CPUMillis: 8000, MemoryBytes: 1 << 30}
+	decision, err := (Scheduler{Store: st}).SelectHost(ctx, p)
+	if err != nil || decision.Host.ID != "docker-agent" || decision.Used.CPUMillis != 24000 {
+		t.Fatalf("offline member capacity or reservation mishandled: decision=%+v err=%v", decision, err)
+	}
+	summary := SummarizeCapacity(p, []core.Host{
+		{ID: "docker-agent", Name: "compute", Provider: "docker", State: core.HostOnline, PlacementDomainID: "machine-01", Tags: map[string]string{"isolation.container-trusted": "true"}, Capacity: capacity},
+		{ID: "process-agent", Name: "compute-android", Provider: "process", State: core.HostOffline, PlacementDomainID: "machine-01", Capacity: core.Resources{}},
+		{ID: "stale-docker-agent", Name: "compute-old", Provider: "docker", State: core.HostDraining, PlacementDomainID: "machine-01", Capacity: core.Resources{CPUMillis: 1000, MemoryBytes: 1 << 30}},
+	}, []core.Worker{{ID: "offline-worker", HostID: "process-agent", PoolID: "other", ProviderID: "process", State: core.WorkerBusy, Resources: core.Resources{CPUMillis: 24000, MemoryBytes: 20 << 30}}})
+	if summary.Capacity.CPUMillis != capacity.CPUMillis || summary.Reserved.CPUMillis != 24000 || summary.PlacementDomains != 1 || summary.AdditionalWorkers != 1 {
+		t.Fatalf("offline shared capacity summary=%+v", summary)
+	}
+}

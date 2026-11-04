@@ -21,6 +21,7 @@ type Decision struct {
 
 type CapacitySummary struct {
 	CompatibleHosts   int            `json:"compatibleHosts"`
+	PlacementDomains int            `json:"placementDomains"`
 	ActiveWorkers     int            `json:"activeWorkers"`
 	BusyWorkers       int            `json:"busyWorkers"`
 	Requested         core.Resources `json:"requested"`
@@ -48,11 +49,20 @@ func (s Scheduler) SelectHost(ctx context.Context, pool core.RunnerPool) (Decisi
 	if err != nil {
 		return Decision{}, err
 	}
+	byID := make(map[string]core.Host, len(hosts))
+	domainCapacity := make(map[string]core.Resources)
+	for _, h := range hosts {
+		byID[h.ID] = h
+		if h.State != core.HostOnline { continue }
+		key := placementDomainKey(h)
+		if cap, ok := domainCapacity[key]; ok { domainCapacity[key] = minimumResources(cap, h.Capacity) } else { domainCapacity[key] = h.Capacity }
+	}
 	used := map[string]core.Resources{}
 	poolActive := 0
 	for _, w := range workers {
 		if OccupiesHostResources(w) {
-			used[w.HostID] = core.Add(used[w.HostID], EffectiveWorkerResources(w))
+			key := PlacementDomainForWorker(byID, w.HostID)
+			used[key] = core.Add(used[key], EffectiveWorkerResources(w))
 		}
 		if w.PoolID == pool.ID && CountsTowardPoolConcurrency(w.State) {
 			poolActive++
@@ -70,14 +80,16 @@ func (s Scheduler) SelectHost(ctx context.Context, pool core.RunnerPool) (Decisi
 	var candidates []candidate
 	var rejects []string
 	for _, h := range hosts {
-		if reason := HostRejectionReason(h, pool, used[h.ID]); reason != "" {
+		key := placementDomainKey(h)
+		cap := domainCapacity[key]
+		if reason := hostRejectionReasonWithCapacity(h, pool, used[key], cap); reason != "" {
 			rejects = append(rejects, h.Name+": "+reason)
 			continue
 		}
-		u := used[h.ID]
+		u := used[key]
 		req := EffectivePoolResources(h, pool)
-		score := (h.Capacity.CPUMillis - u.CPUMillis - req.CPUMillis) +
-			(h.Capacity.MemoryBytes-u.MemoryBytes-req.MemoryBytes)/(1024*1024)
+		score := (cap.CPUMillis - u.CPUMillis - req.CPUMillis) +
+			(cap.MemoryBytes-u.MemoryBytes-req.MemoryBytes)/(1024*1024)
 		candidates = append(candidates, candidate{h: h, used: u, priority: h.Priority, score: score})
 	}
 	if len(candidates) == 0 {
@@ -94,11 +106,20 @@ func (s Scheduler) SelectHost(ctx context.Context, pool core.RunnerPool) (Decisi
 }
 
 func SummarizeCapacity(pool core.RunnerPool, hosts []core.Host, workers []core.Worker) CapacitySummary {
+	byID := make(map[string]core.Host, len(hosts))
+	domainCapacity := make(map[string]core.Resources)
+	for _, h := range hosts {
+		byID[h.ID] = h
+		if h.State != core.HostOnline { continue }
+		key := placementDomainKey(h)
+		if cap, ok := domainCapacity[key]; ok { domainCapacity[key] = minimumResources(cap, h.Capacity) } else { domainCapacity[key] = h.Capacity }
+	}
 	used := map[string]core.Resources{}
 	summary := CapacitySummary{Requested: pool.Resources}
 	for _, w := range workers {
 		if OccupiesHostResources(w) {
-			used[w.HostID] = core.Add(used[w.HostID], EffectiveWorkerResources(w))
+			key := PlacementDomainForWorker(byID, w.HostID)
+			used[key] = core.Add(used[key], EffectiveWorkerResources(w))
 		}
 		if w.PoolID == pool.ID && CountsTowardPoolConcurrency(w.State) {
 			summary.ActiveWorkers++
@@ -109,22 +130,20 @@ func SummarizeCapacity(pool core.RunnerPool, hosts []core.Host, workers []core.W
 	}
 
 	var capacityReasons []string
+	type eligibleDomain struct { capacity, used core.Resources; slots int; reason string; initialized bool }
+	domains := map[string]*eligibleDomain{}
 	for _, h := range hosts {
 		if h.State != core.HostOnline || !matchTags(h.Tags, pool.HostSelector) || !supportsIsolation(h, pool.Isolation) || specializedHostRejectionReason(h, pool) != "" {
 			continue
 		}
+		key := placementDomainKey(h)
 		summary.CompatibleHosts++
-		summary.Capacity = core.Add(summary.Capacity, h.Capacity)
-		summary.Reserved = core.Add(summary.Reserved, used[h.ID])
-		req := EffectivePoolResources(h, pool)
-		slots := resourceFitCount(h.Capacity, used[h.ID], req)
-		summary.AdditionalWorkers += slots
-		if slots == 0 {
-			if reason := resourceExhaustionReason(h.Capacity, used[h.ID], req); reason != "" {
-				capacityReasons = append(capacityReasons, h.Name+": "+reason)
-			}
-		}
+		d, ok := domains[key]
+		if !ok { d = &eligibleDomain{capacity:domainCapacity[key], used:used[key]}; domains[key] = d }
+		slots := resourceFitCount(d.capacity, d.used, EffectivePoolResources(h, pool))
+		if !d.initialized || slots > d.slots { d.slots = slots; d.reason = resourceExhaustionReason(d.capacity,d.used,EffectivePoolResources(h,pool)); d.initialized = true }
 	}
+	for _, d := range domains { summary.PlacementDomains++; summary.Capacity = core.Add(summary.Capacity,d.capacity); summary.Reserved = core.Add(summary.Reserved,d.used); summary.AdditionalWorkers += d.slots; if d.slots == 0 && d.reason != "" { capacityReasons = append(capacityReasons,d.reason) } }
 	summary.CapacityLimit = summary.ActiveWorkers + summary.AdditionalWorkers
 
 	switch {
@@ -195,6 +214,12 @@ func OccupiesHostResources(w core.Worker) bool {
 }
 
 func HostRejectionReason(h core.Host, pool core.RunnerPool, used core.Resources) string {
+	return hostRejectionReasonWithCapacity(h,pool,used,h.Capacity)
+}
+
+func HostRejectionReasonWithCapacity(h core.Host,pool core.RunnerPool,used,capacity core.Resources) string { return hostRejectionReasonWithCapacity(h,pool,used,capacity) }
+
+func hostRejectionReasonWithCapacity(h core.Host, pool core.RunnerPool, used, capacity core.Resources) string {
 	if h.State != core.HostOnline {
 		return "not online"
 	}
@@ -207,11 +232,16 @@ func HostRejectionReason(h core.Host, pool core.RunnerPool, used core.Resources)
 	if !supportsIsolation(h, pool.Isolation) {
 		return "isolation unsupported"
 	}
-	if reason := resourceExhaustionReason(h.Capacity, used, EffectivePoolResources(h, pool)); reason != "" {
+	if reason := resourceExhaustionReason(capacity, used, EffectivePoolResources(h, pool)); reason != "" {
 		return reason
 	}
 	return ""
 }
+
+func PlacementDomainKey(h core.Host) string { if id:=strings.TrimSpace(h.PlacementDomainID); id!="" { return "domain:"+id }; return "host:"+h.ID }
+func placementDomainKey(h core.Host) string { return PlacementDomainKey(h) }
+func PlacementDomainForWorker(hosts map[string]core.Host, hostID string) string { seen:=map[string]bool{}; for hostID!=""&&!seen[hostID] { seen[hostID]=true; h,ok:=hosts[hostID]; if !ok { return "host:"+hostID }; if h.State==core.HostArchived&&h.MergedIntoHostID!="" { hostID=h.MergedIntoHostID; continue }; return placementDomainKey(h) }; return "host:"+hostID }
+func minimumResources(a,b core.Resources) core.Resources { min:=func(x,y int64)int64{if x<y{return x};return y}; gpus:=a.GPUs;if b.GPUs<gpus{gpus=b.GPUs};return core.Resources{CPUMillis:min(a.CPUMillis,b.CPUMillis),MemoryBytes:min(a.MemoryBytes,b.MemoryBytes),DiskBytes:min(a.DiskBytes,b.DiskBytes),GPUs:gpus} }
 
 func specializedHostRejectionReason(h core.Host, pool core.RunnerPool) string {
   if h.SystemTags[core.AndroidEmulatorDedicatedTag]=="true" && !core.IsAndroidEmulatorPool(pool){

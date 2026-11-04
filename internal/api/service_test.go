@@ -345,3 +345,28 @@ func TestEnablingAutoTuneStartsFreshLearningWindow(t *testing.T){
 	resetLearningForConfigChange(&before,&after)
 	if after.LearningResetAt.IsZero(){t.Fatal("enabling auto-size should start a fresh learning window")}
 }
+func TestUpdateHostPlacementDomain(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.OpenSQLite(":memory:")
+	if err != nil { t.Fatal(err) }
+	defer st.Close()
+	host := core.Host{ID:"host-1", Name:"compute", Provider:"docker", State:core.HostOnline, Capacity:core.Resources{CPUMillis:32000}}
+	if err := st.UpsertHost(ctx, host); err != nil { t.Fatal(err) }
+	svc := &Service{Store:st}
+	request := httptest.NewRequest(http.MethodPatch, "/api/v1/hosts/host-1", bytes.NewBufferString(`{"placementDomainId":"machine-01"}`))
+	response := httptest.NewRecorder()
+	svc.Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusOK { t.Fatalf("status=%d body=%s",response.Code,response.Body.String()) }
+	updated, err := st.GetHost(ctx,"host-1")
+	if err != nil { t.Fatal(err) }
+	if updated.PlacementDomainID != "machine-01" { t.Fatalf("placement domain=%q",updated.PlacementDomainID) }
+
+	request = httptest.NewRequest(http.MethodPatch, "/api/v1/hosts/host-1", bytes.NewBufferString(`{"placementDomainId":""}`))
+	response = httptest.NewRecorder()
+	svc.Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusOK { t.Fatalf("clear status=%d body=%s",response.Code,response.Body.String()) }
+	updated, err = st.GetHost(ctx,"host-1")
+	if err != nil { t.Fatal(err) }
+	if updated.PlacementDomainID != "" { t.Fatalf("placement domain was not cleared: %q",updated.PlacementDomainID) }
+}
+

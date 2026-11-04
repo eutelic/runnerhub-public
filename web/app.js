@@ -242,12 +242,13 @@ els.hosts.addEventListener('click',e=>{
   if(save)saveHostTags(save);
 });
 els.hosts.addEventListener('input',e=>{
-  const field=e.target.closest('[data-host-priority-input],[data-host-tag-input]');
+  const field=e.target.closest('[data-host-priority-input],[data-host-tag-input],[data-host-placement-domain-input]');
   if(!field)return;
-  const id=field.dataset.hostPriorityInput||field.dataset.hostTagInput;
+  const id=field.dataset.hostPriorityInput||field.dataset.hostTagInput||field.dataset.hostPlacementDomainInput;
   const priority=els.hosts.querySelector('[data-host-priority-input="'+CSS.escape(id)+'"]');
   const tags=els.hosts.querySelector('[data-host-tag-input="'+CSS.escape(id)+'"]');
-  hostDrafts.set(id,{priority:priority?.value||'0',tags:tags?.value||''});
+  const placementDomain=els.hosts.querySelector('[data-host-placement-domain-input="'+CSS.escape(id)+'"]');
+  hostDrafts.set(id,{priority:priority?.value||'0',tags:tags?.value||'',placementDomain:placementDomain?.value||''});
   const save=els.hosts.querySelector('button[data-host-tags="'+CSS.escape(id)+'"]');
   if(save)save.textContent='Save changes';
 });
@@ -557,17 +558,20 @@ function hostStateRank(host){
   return ({online:0,draining:1,offline:2,archived:3})[String(host?.state||'').toLowerCase()]??3;
 }
 function renderHosts(hosts,workers=[],poolByID=new Map()){
+  const hostsByID=new Map((hosts||[]).map(h=>[h.id,h]));
+  const domainForHost=id=>{let current=id;const seen=new Set();while(current&&!seen.has(current)){seen.add(current);const host=hostsByID.get(current);if(!host)return 'host:'+current;if(String(host.state||'').toLowerCase()==='archived'&&host.mergedIntoHostId){current=host.mergedIntoHostId;continue}return host.placementDomainId?'domain:'+host.placementDomainId:'host:'+current}return 'host:'+id};
   const reservations=new Map();
   for(const w of workers||[]){
     if(['deleted','completed','failed'].includes(String(w.state||'').toLowerCase()))continue;
     if(!w.hostId)continue;
-    const entry=reservations.get(w.hostId)||{cpu:0,ram:0,active:0,busy:0};
+    const domain=domainForHost(w.hostId);
+    const entry=reservations.get(domain)||{cpu:0,ram:0,active:0,busy:0};
     const factor=resourceEnvelopeFactor(poolByID.get(w.poolId),w);
     entry.cpu+=Number(w.resources?.cpuMillis||0)*factor;
     entry.ram+=Number(w.resources?.memoryBytes||0)*factor;
     entry.active++;
     if(String(w.state||'').toLowerCase()==='busy')entry.busy++;
-    reservations.set(w.hostId,entry);
+    reservations.set(domain,entry);
   }
   renderMachineDuplicateWarning(hosts);
   // Leave edits and the caret alone during background refresh.
@@ -587,10 +591,17 @@ function renderHosts(hosts,workers=[],poolByID=new Map()){
       new Date(b.lastSeenAt||0)-new Date(a.lastSeenAt||0)||
       String(a.name||'').localeCompare(String(b.name||'')));
   const nameCounts=new Map();
+  const sharedCapacityCandidates=new Set();
   for(const h of hosts){
     if(String(h.state||'').toLowerCase()==='archived')continue;
     const name=String(h.name||'').trim().toLowerCase();
     if(name)nameCounts.set(name,(nameCounts.get(name)||0)+1);
+  }
+  for(let i=0;i<hosts.length;i++)for(let j=i+1;j<hosts.length;j++){
+    const a=hosts[i],b=hosts[j];
+    if(String(a.state||'').toLowerCase()==='archived'||String(b.state||'').toLowerCase()==='archived'||String(a.provider||'').toLowerCase()===String(b.provider||'').toLowerCase())continue;
+    const dimensions=['cpuMillis','memoryBytes','diskBytes','gpus'];
+    if(dimensions.every(k=>Number(a.capacity?.[k]||0)===Number(b.capacity?.[k]||0))&&Number(a.capacity?.cpuMillis||0)>0&&Number(a.capacity?.memoryBytes||0)>0){sharedCapacityCandidates.add(a.id);sharedCapacityCandidates.add(b.id)}
   }
   const versions=[...new Set(online.map(h=>String(h.agentVersion||'').trim()).filter(Boolean))];
   const warnings=[];
@@ -605,6 +616,8 @@ function renderHosts(hosts,workers=[],poolByID=new Map()){
     ' offline · '+archived.length+' archived · '+(hosts.length-archived.length)+' active records</div>';
   const previousByHost=new Map();
   const hostByID=new Map(hosts.map(h=>[h.id,h]));
+  const domainCapacity=new Map();
+  for(const h of hosts){if(String(h.state||'').toLowerCase()!=='online')continue;const key=domainForHost(h.id),old=domainCapacity.get(key);if(!old)domainCapacity.set(key,{...h.capacity});else for(const k of ['cpuMillis','memoryBytes','diskBytes','gpus']){if(Number(h.capacity?.[k]||0)<Number(old[k]||0))old[k]=Number(h.capacity?.[k]||0)}}
   const currentHostID=id=>{
     const visited=new Set();
     while(id&&!visited.has(id)){
@@ -635,10 +648,15 @@ function renderHosts(hosts,workers=[],poolByID=new Map()){
       esc(h.mergedIntoHostId)+'</code>. Historical workers retain this enrollment ID.</div>':'';
     const version=String(h.agentVersion||'').trim();
     const draft=hostDrafts.get(String(h.id));
-    const used=reservations.get(h.id)||{cpu:0,ram:0,active:0,busy:0};
+    const domain=domainForHost(h.id);
+    const capacity=domainCapacity.get(domain)||h.capacity||{};
+    const used=reservations.get(domain)||{cpu:0,ram:0,active:0,busy:0};
     const sameName=nameCounts.get(String(h.name||'').trim().toLowerCase())>1;
     const sameNameNote=sameName
       ? '<div class="host-identity-note">Other host IDs share this name. They may be previous enrollments or separate machines; verify identity before cleanup.</div>'
+      : '';
+    const sharedCapacityNote=sharedCapacityCandidates.has(h.id)
+      ? '<div class="host-identity-note">A different provider agent advertises the same CPU, RAM, disk, and GPU capacity. Verify whether it shares this physical machine, then set the same placement domain on both identities. Matching capacity alone does not merge or link hosts.</div>'
       : '';
     const offlineNote=state==='offline'
       ? '<div class="host-identity-note">Offline cause is not confirmed by heartbeat data. Check agent logs or use Repair / re-enroll.</div>'
@@ -652,21 +670,24 @@ function renderHosts(hosts,workers=[],poolByID=new Map()){
       (state==='offline'&&mergeTargets.length?'<button type="button" class="secondary compact" data-host-archive="'+esc(h.id)+'" data-host-merge="true">Merge into active host</button>':'')+
       (state==='online'&&String(h.provider||'').toLowerCase()==='docker'
        ? '<button type="button" class="secondary compact" data-host-android="'+esc(h.id)+'">Set up KVM</button>' : '')+'</div>'+
-      '<div class="host-meta">Last seen: '+esc(!isZeroTime(h.lastSeenAt)?fmtAge(h.lastSeenAt)+' ago':'unknown')+
+      '<div class="host-meta">Provider: '+esc(h.provider||'unknown')+' · Last seen: '+esc(!isZeroTime(h.lastSeenAt)?fmtAge(h.lastSeenAt)+' ago':'unknown')+
       ' · ID <code title="'+esc(h.id)+'">'+esc(h.id)+'</code></div>'+
+      (h.placementDomainId?'<div class="host-identity-note">Shared physical placement domain <code>'+esc(h.placementDomainId)+'</code>; reservations shown here include every agent in that domain.</div>':'')+
       '<div class="host-meta">Workers: '+used.busy+' busy / '+used.active+' active · Agent revision: '+
       '<code title="'+esc(version)+'">'+esc(version?version.slice(0,8):'unknown')+'</code></div>'+
-      sameNameNote+offlineNote+mergedNote+previousNote+
+      sameNameNote+sharedCapacityNote+offlineNote+mergedNote+previousNote+
       (state==='archived'?'':'<details class="host-settings" data-host-settings="'+esc(h.id)+'"><summary>Capacity and scheduling settings</summary>'+
-      '<div class="host-resources">CPU: '+esc(h.capacity?.cpuMillis?cpuCores(used.cpu)+' / '+cpuCores(h.capacity.cpuMillis)+' cores':'unknown')+
-      ' · RAM: '+esc(h.capacity?.memoryBytes?gib(used.ram)+' / '+gib(h.capacity.memoryBytes)+' GiB':'unknown')+
-      ' · Disk available: '+esc(h.capacity?.diskBytes?gib(h.capacity.diskBytes)+' GiB':'unknown')+
+      '<div class="host-resources">'+(h.placementDomainId?'Shared placement-domain resources':'Agent capacity')+' · CPU: '+esc(capacity?.cpuMillis?cpuCores(used.cpu)+' / '+cpuCores(capacity.cpuMillis)+' cores':'unknown')+
+      ' · RAM: '+esc(capacity?.memoryBytes?gib(used.ram)+' / '+gib(capacity.memoryBytes)+' GiB':'unknown')+
+      ' · Disk available: '+esc(capacity?.diskBytes?gib(capacity.diskBytes)+' GiB':'unknown')+
       ' · DinD budget: '+esc(hostDinDBudgetText(h))+'</div>'+
       (String(h.provider||'').toLowerCase()==='docker'
         ? '<div class="resource-note muted">Disk available is filesystem free space at the agent state directory, not total disk capacity. Publisher/DinD runners also reserve their configured disk budget when scheduling.</div>'
         : '')+
       '<div class="resource-grid"><label>Priority<input class="inline-tags" data-host-priority-input="'+esc(h.id)+
       '" type="number" min="-1000" max="1000" step="1" value="'+esc(draft?.priority??Number(h.priority||0))+'"></label>'+
+      '<label>Placement domain<input class="inline-tags" data-host-placement-domain-input="'+esc(h.id)+'" value="'+esc(draft?.placementDomain??h.placementDomainId??'')+'" placeholder="shared-machine-01"></label>'+
+      '<div class="resource-note muted">Use the same operator-chosen ID only for agent identities on the same verified physical machine. Set RUNNERHUB_PLACEMENT_DOMAIN_ID on each agent to keep the domain through re-enrollment; domain IDs never match by hostname automatically.</div>'+
       '<label>Tags<input class="inline-tags" data-host-tag-input="'+esc(h.id)+'" value="'+
       esc(draft?.tags??hostTagText(h))+'" placeholder="gpu, high-memory"></label></div>'+
       '<button type="button" class="secondary compact" data-host-tags="'+esc(h.id)+'">'+
@@ -1096,7 +1117,8 @@ function renderPools(pools,statuses,runtimeHealth,recommendationByPool,hosts=[],
     ['Repository',x=>repoName(x)],['Class',x=>runnerClass(x)],
     ['CPU / container',x=>cpuCores(x.resources?.cpuMillis)+' cores'],
     ['RAM / container',x=>gib(x.resources?.memoryBytes)+' GiB'],
-    ['Eligible hosts',x=>recommendationByPool.get(x.id)?.capacity?.compatibleHosts??'—'],
+    ['Eligible agents',x=>recommendationByPool.get(x.id)?.capacity?.compatibleHosts??'—'],
+    ['Placement domains',x=>recommendationByPool.get(x.id)?.capacity?.placementDomains??'—'],
     ['Provision',x=>fmtDuration(recommendationByPool.get(x.id)?.latencies?.provision)],
     ['Register',x=>fmtDuration(recommendationByPool.get(x.id)?.latencies?.registration)],
     ['Execute',x=>fmtDuration(recommendationByPool.get(x.id)?.latencies?.execution)],
@@ -2072,13 +2094,14 @@ async function saveHostTags(button){
   const id=button.dataset.hostTags;
   const input=els.hosts.querySelector('[data-host-tag-input="'+CSS.escape(id)+'"]');
   const priorityInput=els.hosts.querySelector('[data-host-priority-input="'+CSS.escape(id)+'"]');
+  const placementDomainInput=els.hosts.querySelector('[data-host-placement-domain-input="'+CSS.escape(id)+'"]');
   const priority=Number(priorityInput?.value||0);
   if(!Number.isInteger(priority)||priority < -1000||priority > 1000)return message('Host priority must be an integer between -1000 and 1000.','error');
   const tags={};
   (input?.value||'').split(',').map(x=>x.trim()).filter(Boolean).forEach(tag=>{tags[tag]='true'});
   button.disabled=true;
   try{
-    await j('/api/v1/hosts/'+encodeURIComponent(id),{method:'PATCH',headers:{'content-type':'application/json'},body:JSON.stringify({tags,priority})});
+    await j('/api/v1/hosts/'+encodeURIComponent(id),{method:'PATCH',headers:{'content-type':'application/json'},body:JSON.stringify({tags,priority,placementDomainId:placementDomainInput?.value||''})});
     hostDrafts.delete(id);
     message('Machine scheduling settings updated.','success');
     await refresh(true);

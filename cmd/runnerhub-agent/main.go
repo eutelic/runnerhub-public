@@ -108,6 +108,7 @@ func main() {
 		Name:              name,
 		Provider:          kind,
 		AgentVersion:      version,
+		PlacementDomainID: env("RUNNERHUB_PLACEMENT_DOMAIN_ID", ""),
 		AllowInsecureHTTP: boolEnv("RUNNERHUB_ALLOW_INSECURE_HTTP", false),
 	}, providers)
 	must(err)

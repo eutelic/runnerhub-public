@@ -30,6 +30,8 @@ The dashboard now supports **Hosts → Add machine → Runner type: Native Andro
    ```bash
    export RUNNERHUB_PROVIDER=process
    export RUNNERHUB_HOST_NAME=kinetic-android-host
+   # Set the same operator-chosen value on another agent only when both share hardware.
+   export RUNNERHUB_PLACEMENT_DOMAIN_ID=compute-machine-01
    export RUNNERHUB_RUNNER_DIR="$HOME/actions-runner"
    export RUNNERHUB_STATE_DIR="$HOME/.local/state/runnerhub"
    export RUNNERHUB_CONTROL_PLANE_URL="https://YOUR-PROTECTED-RUNNERHUB-URL"
