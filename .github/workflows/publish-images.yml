@@ -258,3 +258,51 @@ jobs:
 
             echo "[ ok ] published aliases for ${ref} -> ${source_digest}"
           done
+      - name: Verify release tags are anonymously pullable
+        if: github.ref_type == 'tag'
+        env:
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          crane="$(go env GOPATH)/bin/crane"
+          anonymous_docker_config="$(mktemp -d)"
+          trap 'rm -rf "$anonymous_docker_config"' EXIT
+          for image in runnerhub-control runnerhub-agent runnerhub-bootstrap runnerhub-scaleset runnerhub-deployer; do
+            ref="ghcr.io/eutelic/${image}:${REF_NAME}"
+            digest="$(DOCKER_CONFIG="$anonymous_docker_config" "$crane" digest "$ref")"
+            test -n "$digest"
+            echo "[ ok ] anonymous pull metadata available for ${ref} -> ${digest}"
+          done
+
+  github-release:
+    name: Create GitHub release after anonymous image verification
+    if: github.ref_type == 'tag'
+    needs: publish-tags
+    runs-on: runnerhub-fast
+    permissions:
+      contents: write
+    steps:
+      - name: Create versioned release if missing
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] || {
+            echo "Release tags must use vX.Y.Z[-prerelease]" >&2
+            exit 1
+          }
+          api="https://api.github.com/repos/${GITHUB_REPOSITORY}/releases"
+          auth_header="Authorization: Bearer ${GH_TOKEN}"
+          status="$(curl -sS -o "$RUNNER_TEMP/release-check.json" -w '%{http_code}' \
+            -H "$auth_header" -H 'Accept: application/vnd.github+json' \
+            "$api/tags/$GITHUB_REF_NAME")"
+          if [ "$status" = "200" ]; then
+            echo "[ ok ] release $GITHUB_REF_NAME already exists"
+            exit 0
+          fi
+          test "$status" = "404" || { echo "GitHub release lookup failed: HTTP $status" >&2; exit 1; }
+          payload="$(printf '{"tag_name":"%s","name":"%s","generate_release_notes":true}' "$GITHUB_REF_NAME" "$GITHUB_REF_NAME")"
+          curl --fail-with-body --show-error --silent \
+            -X POST -H "$auth_header" -H 'Accept: application/vnd.github+json' \
+            -H 'Content-Type: application/json' --data "$payload" "$api" > /dev/null
+          echo "[ ok ] created GitHub release $GITHUB_REF_NAME"

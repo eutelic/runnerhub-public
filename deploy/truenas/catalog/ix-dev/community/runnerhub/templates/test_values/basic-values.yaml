@@ -1,0 +1,49 @@
+runnerhub:
+  enable_scaleset: false
+  diagnostics_enabled: false
+
+github:
+  enabled: false
+  app_id: 1
+  client_id: disabled-for-catalog-ci
+  app_slug: disabled-for-catalog-ci
+  client_secret: disabled-for-catalog-ci
+  private_key: disabled-for-catalog-ci
+  public_url: http://127.0.0.1:30550
+
+network:
+  web_port:
+    bind_mode: published
+    port_number: 30550
+    host_ips:
+      - 127.0.0.1
+
+storage:
+  data:
+    type: ix_volume
+    ix_volume_config:
+      dataset_name: data
+      create_host_path: true
+      acl_enable: false
+  agent_state:
+    type: ix_volume
+    ix_volume_config:
+      dataset_name: agent-state
+      create_host_path: true
+      acl_enable: false
+  secrets:
+    type: ix_volume
+    ix_volume_config:
+      dataset_name: secrets
+      create_host_path: true
+      acl_enable: false
+
+resources:
+  limits:
+    cpus: 2
+    memory: 2048
+
+ix_volumes:
+  data: /opt/tests/mnt/runnerhub/data
+  agent-state: /opt/tests/mnt/runnerhub/agent-state
+  secrets: /opt/tests/mnt/runnerhub/secrets

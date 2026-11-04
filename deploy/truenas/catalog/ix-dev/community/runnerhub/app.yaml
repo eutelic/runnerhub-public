@@ -1,0 +1,52 @@
+app_version: v0.1.0
+capabilities:
+- description: Runnerhub Control, Runnerhub Scaleset are able to change file ownership arbitrarily
+  name: CHOWN
+- description: Runnerhub Control, Runnerhub Scaleset are able to change group ID of processes
+  name: SETGID
+- description: Runnerhub Control, Runnerhub Scaleset are able to change user ID of processes
+  name: SETUID
+categories:
+- development
+changelog_url: https://github.com/eutelic/runnerhub-public/releases
+date_added: '2026-10-05'
+description: Self-hosted GitHub Actions runner control plane for owned compute
+home: https://github.com/eutelic/runnerhub-public
+host_mounts:
+- description: Docker socket used by the RunnerHub agent to create and manage GitHub Actions worker containers
+  host_path: /var/run/docker.sock
+icon: https://media.sys.truenas.net/apps/runnerhub/icons/icon.webp
+keywords:
+- github
+- actions
+- ci
+- runners
+lib_version: 2.3.18
+lib_version_hash: ed9839f681342ae8ca5f8c4c860ae22d0845a0919f472ba780d6edbc838f2633
+maintainers:
+- email: dev@truenas.com
+  name: truenas
+  url: https://www.truenas.com/
+name: runnerhub
+run_as_context:
+- description: Container [runnerhub-agent] runs as root user and group.
+  gid: 0
+  group_name: Host group is [root]
+  uid: 0
+  user_name: Host user is [root]
+- description: Container [runnerhub-control] runs as root user and group.
+  gid: 0
+  group_name: Host group is [root]
+  uid: 0
+  user_name: Host user is [root]
+- description: Container [runnerhub-scaleset] runs as root user and group.
+  gid: 0
+  group_name: Host group is [root]
+  uid: 0
+  user_name: Host user is [root]
+screenshots: []
+sources:
+- https://github.com/eutelic/runnerhub-public
+title: RunnerHub
+train: community
+version: 1.0.0

@@ -17,7 +17,7 @@ If either secret is missing, the release workflow fails before release validatio
 
 For every deployment-facing release, `.github/workflows/publish-images.yml` runs two coordinated jobs:
 
-1. an Ubuntu GitHub-hosted job starts RunnerHub control + Docker agent **from locally built Go binaries**, using the proposed immutable Actions runner image;
+1. a `runnerhub-publisher` job starts RunnerHub control + Docker agent **from locally built Go binaries**, using the proposed immutable Actions runner image;
 2. a second job queues on the unique `runnerhub-release-acceptance` label.
 
 The acceptance host then:
@@ -33,6 +33,25 @@ The acceptance host then:
 - verifies the exact runner image reference matches the release pin.
 
 Only after both the self-hosted acceptance job and the host-side lifecycle assertion succeed does the release workflow run full release validation. Container image build/publish jobs depend on that validation.
+
+## Versioned releases and TrueNAS catalog publication
+
+Release tags use `vX.Y.Z`; all five runtime images (control, agent, bootstrap,
+scale-set and deployer) must share the same release tag.
+
+A tagged build first verifies every GHCR image can be read without registry
+credentials; only then does a `runnerhub-fast` job create the GitHub Release.
+All CI and publication jobs use RunnerHub, never GitHub-hosted workers.
+
+The TrueNAS Community catalog package:
+
+1. uses only `RUNNERHUB_PROVIDER=docker`, without the TrueNAS middleware API;
+2. leaves privileged DinD worker support disabled;
+3. pins images to a release version and digest before submission;
+4. renders test scenarios against the current `truenas/apps` library;
+5. requires live clean-install, persistence/upgrade, GitHub sign-in, and
+   real `runs-on: runnerhub` acceptance testing.
+
 
 ## Runner image upgrades
 

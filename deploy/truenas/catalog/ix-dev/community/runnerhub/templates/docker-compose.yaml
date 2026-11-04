@@ -1,0 +1,98 @@
+{% set tpl = ix_lib.base.render.Render(values) %}
+
+{% set init = tpl.add_container(values.consts.init_container_name, "bootstrap_image") %}
+{% set control = tpl.add_container(values.consts.control_container_name, "control_image") %}
+{% set agent = tpl.add_container(values.consts.agent_container_name, "agent_image") %}
+{% set scaleset = namespace(x=None) %}
+
+{# One-shot credential and internal-token initialization. #}
+{% do init.setup_as_helper() %}
+{% do init.set_entrypoint(["/usr/local/bin/runnerhub-init-secrets"]) %}
+{% do init.environment.add_env("RUNNERHUB_SECRETS_DIR", "/secrets") %}
+{% do init.environment.add_env("RUNNERHUB_REQUIRE_GITHUB_APP_KEY", "true" if values.github.enabled else "false") %}
+{% if values.github.enabled %}
+  {% do init.environment.add_env("RUNNERHUB_GITHUB_APP_PRIVATE_KEY", values.github.private_key) %}
+  {% do init.environment.add_env("RUNNERHUB_GITHUB_CLIENT_SECRET", values.github.client_secret) %}
+{% endif %}
+{% do init.add_storage("/secrets", values.storage.secrets) %}
+
+{# Control plane. The image entrypoint performs root-only setup, then drops to UID/GID 10001. #}
+{% do control.add_caps(["CHOWN", "SETGID", "SETUID"]) %}
+{% do control.depends.add_dependency(values.consts.init_container_name, "service_completed_successfully") %}
+{% do control.healthcheck.set_test("curl", {"port": values.consts.internal_web_port, "path": "/healthz"}) %}
+{% do control.healthcheck.set_interval(5) %}
+{% do control.healthcheck.set_timeout(3) %}
+{% do control.healthcheck.set_retries(20) %}
+{% do control.healthcheck.set_start_period(5) %}
+{% do control.environment.add_env("RUNNERHUB_HTTP_ADDR", "0.0.0.0:%d"|format(values.consts.internal_web_port)) %}
+{% do control.environment.add_env("RUNNERHUB_ALLOW_INSECURE_HTTP", "true") %}
+{% do control.environment.add_env("RUNNERHUB_DB", "/data/runnerhub.db") %}
+{% do control.environment.add_env("RUNNERHUB_ENROLLMENT_TOKEN_FILE", "/run/runnerhub-secrets/enrollment-token") %}
+{% do control.environment.add_env("RUNNERHUB_AGENT_SECRET_FILE", "/run/runnerhub-secrets/agent-secret") %}
+{% do control.environment.add_env("RUNNERHUB_ADMIN_KEY_FILE", "/run/runnerhub-secrets/admin-key") %}
+{% do control.environment.add_env("RUNNERHUB_SCALESET_KEY_FILE", "/run/runnerhub-secrets/scaleset-key") %}
+{% do control.environment.add_env("RUNNERHUB_ALLOW_PRIVILEGED_WORKERS", "false") %}
+{% if values.github.enabled %}
+  {% do control.environment.add_env("RUNNERHUB_GITHUB_APP_ID", values.github.app_id) %}
+  {% do control.environment.add_env("RUNNERHUB_GITHUB_APP_CLIENT_ID", values.github.client_id) %}
+  {% do control.environment.add_env("RUNNERHUB_GITHUB_CLIENT_SECRET_FILE", "/run/runnerhub-secrets/github-client-secret") %}
+  {% do control.environment.add_env("RUNNERHUB_GITHUB_APP_SLUG", values.github.app_slug) %}
+  {% do control.environment.add_env("RUNNERHUB_PUBLIC_URL", values.github.public_url) %}
+  {% do control.environment.add_env("RUNNERHUB_GITHUB_APP_PRIVATE_KEY_FILE", "/run/runnerhub-secrets/github-app.pem") %}
+  {% do control.environment.add_env("RUNNERHUB_GITHUB_API_URL", "https://api.github.com") %}
+{% endif %}
+{% do control.environment.add_env("RUNNERHUB_ALLOWED_IMAGES", values.consts.runner_image) %}
+{% do control.environment.add_env("RUNNERHUB_REQUIRE_PINNED_IMAGES", "true") %}
+{% do control.environment.add_env("RUNNERHUB_MACHINE_AGENT_IMAGE", "%s:%s"|format(values.images.agent_image.repository, values.images.agent_image.tag)) %}
+{% do control.add_port(values.network.web_port, {"container_port": values.consts.internal_web_port}) %}
+{% do control.add_storage("/data", values.storage.data) %}
+{% do control.add_storage("/run/runnerhub-secrets", dict(values.storage.secrets, **{"read_only": true})) %}
+
+{# Docker-backed host agent. Catalog builds use the Docker provider only. #}
+{% do agent.depends.add_dependency(values.consts.init_container_name, "service_completed_successfully") %}
+{% do agent.depends.add_dependency(values.consts.control_container_name, "service_healthy") %}
+{% do agent.healthcheck.set_custom_test(["CMD", "docker", "version"]) %}
+{% do agent.healthcheck.set_interval(5) %}
+{% do agent.healthcheck.set_timeout(5) %}
+{% do agent.healthcheck.set_retries(20) %}
+{% do agent.healthcheck.set_start_period(5) %}
+{% do agent.environment.add_env("RUNNERHUB_CONTROL_PLANE_URL", "http://%s:%d"|format(values.consts.control_container_name, values.consts.internal_web_port)) %}
+{% do agent.environment.add_env("RUNNERHUB_ALLOW_INSECURE_HTTP", "true") %}
+{% do agent.environment.add_env("RUNNERHUB_ENROLLMENT_TOKEN_FILE", "/run/runnerhub-secrets/enrollment-token") %}
+{% do agent.environment.add_env("RUNNERHUB_PROVIDER", "docker") %}
+{% do agent.environment.add_env("RUNNERHUB_STATE_DIR", "/state") %}
+{% do agent.environment.add_env("RUNNERHUB_HOST_NAME", "truenas-host") %}
+{% do agent.environment.add_env("RUNNERHUB_RUNNER_IMAGE", values.consts.runner_image) %}
+{% do agent.environment.add_env("RUNNERHUB_DOCKER_PULL_POLICY", "always") %}
+{% do agent.environment.add_env("RUNNERHUB_DIND_IMAGE", values.consts.dind_image) %}
+{% do agent.environment.add_env("RUNNERHUB_ALLOW_PRIVILEGED_WORKERS", "false") %}
+{% do agent.environment.add_env("RUNNERHUB_DIAGNOSTICS_ENABLED", values.runnerhub.diagnostics_enabled) %}
+{% do agent.add_docker_socket() %}
+{% do agent.add_storage("/state", values.storage.agent_state) %}
+{% do agent.add_storage("/run/runnerhub-secrets", dict(values.storage.secrets, **{"read_only": true})) %}
+
+{# Optional GitHub scale-set listener. #}
+{% if values.github.enabled and values.runnerhub.enable_scaleset %}
+  {% set scaleset.x = tpl.add_container(values.consts.scaleset_container_name, "scaleset_image") %}
+  {% do scaleset.x.add_caps(["CHOWN", "SETGID", "SETUID"]) %}
+  {% do scaleset.x.depends.add_dependency(values.consts.control_container_name, "service_healthy") %}
+  {% do scaleset.x.depends.add_dependency(values.consts.agent_container_name, "service_healthy") %}
+  {% do scaleset.x.labels.add_label("io.runnerhub.component", "scaleset") %}
+  {% do scaleset.x.healthcheck.set_custom_test(["CMD-SHELL", "test -s /run/runnerhub/scaleset-ready"]) %}
+  {% do scaleset.x.healthcheck.set_interval(5) %}
+  {% do scaleset.x.healthcheck.set_timeout(2) %}
+  {% do scaleset.x.healthcheck.set_retries(24) %}
+  {% do scaleset.x.healthcheck.set_start_period(5) %}
+  {% do scaleset.x.environment.add_env("RUNNERHUB_DYNAMIC_CONFIG", "true") %}
+  {% do scaleset.x.environment.add_env("RUNNERHUB_CONTROL_URL", "http://%s:%d"|format(values.consts.control_container_name, values.consts.internal_web_port)) %}
+  {% do scaleset.x.environment.add_env("RUNNERHUB_CONTROL_TOKEN_FILE", "/run/runnerhub-secrets/scaleset-key") %}
+  {% do scaleset.x.environment.add_env("RUNNERHUB_GITHUB_APP_CLIENT_ID", values.github.client_id) %}
+  {% do scaleset.x.environment.add_env("RUNNERHUB_GITHUB_APP_PRIVATE_KEY_FILE", "/run/runnerhub-secrets/github-app.pem") %}
+  {% do scaleset.x.environment.add_env("RUNNERHUB_ALLOW_INSECURE_HTTP", "true") %}
+  {% do scaleset.x.add_storage("/run/runnerhub-secrets", dict(values.storage.secrets, **{"read_only": true})) %}
+{% endif %}
+
+{% do tpl.portals.add(values.network.web_port) %}
+{% do tpl.notes.set_body(values.consts.notes_body) %}
+
+{{ tpl.render() | tojson }}

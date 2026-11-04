@@ -1,0 +1,39 @@
+images:
+  # TrueNAS upstream metadata uses images.image.tag as the catalog app_version.
+  # Keep this canonical primary image in sync with control_image below.
+  image:
+    repository: ghcr.io/eutelic/runnerhub-control
+    tag: "v0.1.0"
+  control_image:
+    repository: ghcr.io/eutelic/runnerhub-control
+    tag: "v0.1.0"
+  agent_image:
+    repository: ghcr.io/eutelic/runnerhub-agent
+    tag: "v0.1.0"
+  bootstrap_image:
+    repository: ghcr.io/eutelic/runnerhub-bootstrap
+    tag: "v0.1.0"
+  scaleset_image:
+    repository: ghcr.io/eutelic/runnerhub-scaleset
+    tag: "v0.1.0"
+
+consts:
+  init_container_name: runnerhub-init
+  control_container_name: runnerhub-control
+  agent_container_name: runnerhub-agent
+  scaleset_container_name: runnerhub-scaleset
+  internal_web_port: 8080
+  runner_image: "ghcr.io/actions/actions-runner:2.337.0@sha256:e5496277be5d09bc968b3d64911b74e219ac4a3f2edce956a3ecf9271bea1ef4"
+  dind_image: "docker:29.8.1-dind@sha256:3f3c01aaaebf7cce837356b688b7c059a4749f10bd7660dec7c58fc454a283f0"
+  notes_body: |
+    RunnerHub manages GitHub Actions worker containers through the host Docker socket.
+
+    Security notes:
+    - Docker socket access is host-level authority. Only install RunnerHub if you trust it with this TrueNAS host.
+    - The catalog build fixes RUNNERHUB_PROVIDER=docker and does not use the TrueNAS middleware/midclt provider.
+    - Privileged worker/DinD mode is disabled in the catalog build.
+    - The app's CPU and memory limits apply to the RunnerHub services, not to worker containers created through Docker. Configure per-pool worker limits in RunnerHub.
+
+    GitHub App setup:
+    - Set the GitHub App callback URL to <Public URL>/auth/github/callback.
+    - Keep the GitHub App private key and client secret private.

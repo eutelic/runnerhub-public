@@ -111,6 +111,58 @@ jobs:
           docker compose -f deploy/truenas/compose.yaml config >/dev/null
           docker compose -f deploy/truenas/deployer.compose.yaml config >/dev/null
 
+
+      - name: Validate TrueNAS Community catalog policy
+        run: bash deploy/truenas/catalog/validate.sh
+
+      - name: Provision isolated Python with pip for catalog rendering
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.12'
+
+      - name: Render staged TrueNAS catalog with upstream tooling
+        run: |
+          set -euo pipefail
+          tmp="$(mktemp -d "$RUNNER_TEMP/truenas-apps.XXXXXX")"
+          trap 'rm -rf "$tmp"' EXIT
+          git clone --depth 1 https://github.com/truenas/apps.git "$tmp/apps"
+          cp -a deploy/truenas/catalog/ix-dev/community/runnerhub "$tmp/apps/ix-dev/community/runnerhub"
+          # RunnerHub self-hosted CI may run on a TrueNAS kernel. The upstream
+          # apps_validation container inherits the host uname, so ix_lib thinks
+          # it runs on TrueNAS and tries the absent middleware UNIX socket even
+          # though upstream explicitly sets FAKE_ENV=1 for offline rendering.
+          # Change only this throwaway upstream checkout to honor FAKE_ENV and
+          # use ix_lib's *existing* off-system mock; never patch production code.
+          # Fail closed if upstream changes the function rather than silently
+          # skipping catalog rendering.
+          python3 - "$tmp/apps" <<'PY'
+          from pathlib import Path
+          import sys
+
+          root = Path(sys.argv[1])
+          libraries = sorted(root.glob("library/*/validations.py"))
+          if not libraries:
+              sys.exit("No upstream TrueNAS catalog validation libraries found")
+          old = 'return "truenas" in os.uname().release'
+          new = 'return os.environ.get("FAKE_ENV") != "1" and "truenas" in os.uname().release'
+          for path in libraries:
+              contents = path.read_text()
+              if contents.count(old) != 1:
+                  sys.exit(f"Unexpected TrueNAS platform detection in {path}")
+              path.write_text(contents.replace(old, new, 1))
+          print(f"Enabled existing off-system catalog mock in {len(libraries)} temporary libraries")
+          PY
+          cd "$tmp/apps"
+          python3 -c 'import yaml' 2>/dev/null || python3 -m pip install --user pyyaml
+          for test_file in basic-values.yaml github-host-path-values.yaml; do
+            echo "Rendering RunnerHub catalog scenario: $test_file"
+            python3 .github/scripts/ci.py --app runnerhub --train community --test-file "$test_file" --render-only=true >/dev/null
+          done
+          cp ix-dev/community/runnerhub/app.yaml "$RUNNER_TEMP/runnerhub-app-before.yaml"
+          python3 .github/scripts/generate_metadata.py --app runnerhub --train community
+          diff -u "$RUNNER_TEMP/runnerhub-app-before.yaml" ix-dev/community/runnerhub/app.yaml
+          python3 .github/scripts/port_validation.py
+
       - name: Build published image targets
         run: |
           set -euo pipefail

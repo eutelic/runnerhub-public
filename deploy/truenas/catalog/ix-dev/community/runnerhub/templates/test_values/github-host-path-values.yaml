@@ -1,0 +1,13 @@
+runnerhub:
+  enable_scaleset: true
+  diagnostics_enabled: true
+
+github:
+  enabled: true
+  app_id: 123456789
+  client_id: Iv1.catalog-ci
+  app_slug: runnerhub-catalog-ci
+  client_secret: catalog-ci-client-secret
+  # Placeholder only; CI never uses these values to authenticate with GitHub.
+  private_key: |
+    disabled-for-catalog-ci
