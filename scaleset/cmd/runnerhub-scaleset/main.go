@@ -592,7 +592,7 @@ func (s *scaler) HandleDesiredRunnerCount(ctx context.Context, count int) (int, 
 
 func (s *scaler) HandleJobStarted(ctx context.Context, info *scaleset.JobStarted) error {
 	started := time.Now().UTC()
-	return s.hub.event(ctx, scaleEvent{
+	err := s.hub.event(ctx, scaleEvent{
 		RunnerName:    info.RunnerName,
 		State:         "busy",
 		Repository:    repoName(info.OwnerName, info.RepositoryName),
@@ -603,6 +603,32 @@ func (s *scaler) HandleJobStarted(ctx context.Context, info *scaleset.JobStarted
 		QueuedAt:      info.QueueTime,
 		StartedAt:     started,
 	})
+	if err == nil {
+		return nil
+	}
+
+	// GitHub may replay JobStarted after the ephemeral runner was cleaned up.
+	// Never terminate the scale-set listener for a confirmed stale event.
+	// Preserve errors for still-active workers and failed lookups so genuine
+	// control-plane inconsistencies are not silently acknowledged.
+	var httpErr *runnerHubHTTPError
+	if !errors.As(err, &httpErr) || httpErr.Path != "/api/v1/scale-events" || httpErr.StatusCode != http.StatusNotFound {
+		return err
+	}
+	active, lookupErr := s.hub.activeWorkers(ctx)
+	if lookupErr != nil {
+		return fmt.Errorf("verify missing scale-set worker: %w (active lookup: %v)", err, lookupErr)
+	}
+	if _, exists := active[info.RunnerName]; exists {
+		return fmt.Errorf("started-job runner %q is active despite missing-worker response: %w", info.RunnerName, err)
+	}
+	s.mu.Lock()
+	delete(s.names, info.RunnerName)
+	s.mu.Unlock()
+	s.logger.Warn("ignoring stale started-job event for removed worker",
+		"pool", s.hub.poolID, "runner", info.RunnerName,
+		"workflowRunID", info.WorkflowRunID, "jobID", info.JobID)
+	return nil
 }
 
 func (s *scaler) HandleJobCompleted(ctx context.Context, info *scaleset.JobCompleted) error {

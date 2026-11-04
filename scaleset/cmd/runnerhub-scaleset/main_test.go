@@ -473,3 +473,95 @@ func TestGitHubCooldownWaitRespectsCancellation(t *testing.T) {
 		t.Fatal("cancelled request remained blocked by GitHub rate-limit cooldown")
 	}
 }
+
+
+func TestScaleLateStartedJobDoesNotCrashListener(t *testing.T) {
+	tests := []struct {
+		name string
+		eventStatus int
+		workerStatus int
+		activeWorkers []workerResponse
+		wantError bool
+		wantLookup bool
+		wantTracked bool
+	}{
+		{name: "stale missing worker", eventStatus: http.StatusNotFound, workerStatus: http.StatusOK, wantLookup: true},
+		{
+			name: "404 but worker still active",
+			eventStatus: http.StatusNotFound,
+			workerStatus: http.StatusOK,
+			activeWorkers: []workerResponse{{ID: "live", PoolID: "pool-docker", RunnerName: "runner-1", State: "busy"}},
+			wantError: true, wantLookup: true, wantTracked: true,
+		},
+		{
+			name: "404 and lookup unavailable",
+			eventStatus: http.StatusNotFound,
+			workerStatus: http.StatusInternalServerError,
+			wantError: true, wantLookup: true, wantTracked: true,
+		},
+		{name: "non 404 error", eventStatus: http.StatusInternalServerError, wantError: true, wantTracked: true},
+		{name: "normal started job", eventStatus: http.StatusOK, wantTracked: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var events, lookups int
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/api/v1/scale-events":
+					events++
+					if r.Method != http.MethodPost {
+						t.Errorf("wrong event method: %s", r.Method)
+					}
+					var ev scaleEvent
+					if err := json.NewDecoder(r.Body).Decode(&ev); err != nil {
+						t.Errorf("decode event: %v", err)
+					}
+					if ev.PoolID != "pool-docker" || ev.RunnerName != "runner-1" || ev.State != "busy" {
+						t.Errorf("wrong event: %+v", ev)
+					}
+					w.WriteHeader(tc.eventStatus)
+					if tc.eventStatus != http.StatusOK {
+						_, _ = w.Write([]byte(`{"detail":"scale-set worker not found"}`))
+					}
+				case "/api/v1/workers":
+					lookups++
+					if r.URL.Query().Get("excludeDeleted") != "true" {
+						t.Errorf("missing indexed active-worker filter")
+					}
+					if tc.workerStatus != http.StatusOK {
+						w.WriteHeader(tc.workerStatus)
+						return
+					}
+					_ = json.NewEncoder(w).Encode(tc.activeWorkers)
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			defer srv.Close()
+			sc := &scaler{
+				names: map[string]string{"runner-1": "old-worker"},
+				hub: runnerHubClient{base: srv.URL, poolID: "pool-docker", http: srv.Client()},
+				logger: slog.Default(),
+			}
+			message := &scaleset.RunnerScaleSetMessage{
+				JobStartedMessages: []*scaleset.JobStarted{{RunnerName: "runner-1", WorkflowRunID: 123}},
+			}
+			err := sc.Scale(context.Background(), message)
+			if (err != nil) != tc.wantError {
+				t.Fatalf("Scale err=%v, want error=%v", err, tc.wantError)
+			}
+			if events != 1 {
+				t.Errorf("event requests=%d, want 1", events)
+			}
+			if (lookups != 0) != tc.wantLookup {
+				t.Errorf("active-worker lookups=%d, want lookup=%v", lookups, tc.wantLookup)
+			}
+			sc.mu.Lock()
+			_, tracked := sc.names["runner-1"]
+			sc.mu.Unlock()
+			if tracked != tc.wantTracked {
+				t.Errorf("tracked=%v, want %v", tracked, tc.wantTracked)
+			}
+		})
+	}
+}
