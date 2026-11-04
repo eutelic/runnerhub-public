@@ -322,7 +322,7 @@ pull_agent_image
 docker_cmd rm -f runnerhub-agent >/dev/null 2>&1 || true
 args="run -d --name runnerhub-agent --restart unless-stopped -v /var/run/docker.sock:/var/run/docker.sock -v /var/lib/runnerhub:/var/lib/runnerhub -v $TOKEN_PATH:/run/runnerhub-enrollment-token:ro -e RUNNERHUB_CONTROL_PLANE_URL=$CONTROL -e RUNNERHUB_ENROLLMENT_TOKEN_FILE=/run/runnerhub-enrollment-token -e RUNNERHUB_HOST_NAME=$HOST_NAME -e RUNNERHUB_PROVIDER=docker"
 if [ "$INSECURE" = true ]; then args="$args -e RUNNERHUB_ALLOW_INSECURE_HTTP=true"; fi
-if [ "$PRIVILEGED" = true ]; then args="$args -e RUNNERHUB_ALLOW_PRIVILEGED_WORKERS=true"; fi
+if [ "$PRIVILEGED" = true ]; then args="$args -e RUNNERHUB_ALLOW_PRIVILEGED_WORKERS=true -e RUNNERHUB_CGROUP_ROOT=/sys/fs/cgroup-host --cgroupns=host --cap-add SYS_ADMIN -v /sys/fs/cgroup:/sys/fs/cgroup-host:rw"; fi
 if [ -n "$AGENT_DNS" ]; then args="$args --dns=$AGENT_DNS"; fi
 # Values are validated/quoted before reaching this shell; use positional expansion only for fixed option shapes.
 docker_cmd $args "$IMAGE" >/dev/null
@@ -337,7 +337,7 @@ func finalizeScript(req Request, tokenPath string) string {
 docker_cmd rm -f runnerhub-agent >/dev/null 2>&1 || true
 args="run -d --name runnerhub-agent --restart unless-stopped -v /var/run/docker.sock:/var/run/docker.sock -v /var/lib/runnerhub:/var/lib/runnerhub -e RUNNERHUB_CONTROL_PLANE_URL=$CONTROL -e RUNNERHUB_HOST_NAME=$HOST_NAME -e RUNNERHUB_PROVIDER=docker"
 if [ "$INSECURE" = true ]; then args="$args -e RUNNERHUB_ALLOW_INSECURE_HTTP=true"; fi
-if [ "$PRIVILEGED" = true ]; then args="$args -e RUNNERHUB_ALLOW_PRIVILEGED_WORKERS=true"; fi
+if [ "$PRIVILEGED" = true ]; then args="$args -e RUNNERHUB_ALLOW_PRIVILEGED_WORKERS=true -e RUNNERHUB_CGROUP_ROOT=/sys/fs/cgroup-host --cgroupns=host --cap-add SYS_ADMIN -v /sys/fs/cgroup:/sys/fs/cgroup-host:rw"; fi
 if [ -n "$AGENT_DNS" ]; then args="$args --dns=$AGENT_DNS"; fi
 docker_cmd $args "$IMAGE" >/dev/null
 rm -rf "$TOKEN_PATH"

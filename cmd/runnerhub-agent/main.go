@@ -36,6 +36,7 @@ func main() {
 		p, err := dockerprovider.New(dockerprovider.Config{
 			HostID:                 name,
 			StateDir:               stateDir,
+			CgroupRoot:             env("RUNNERHUB_CGROUP_ROOT", "/sys/fs/cgroup"),
 			AllowedImages:          []string{env("RUNNERHUB_RUNNER_IMAGE", images.DefaultRunnerImage)},
 			PullPolicy:             env("RUNNERHUB_DOCKER_PULL_POLICY", "always"),
 			DinDImage:              env("RUNNERHUB_DIND_IMAGE", images.DefaultDinDImage),

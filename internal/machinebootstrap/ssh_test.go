@@ -103,6 +103,11 @@ func TestBootstrapCanAdvertisePublisherSupport(t *testing.T) {
 		if !strings.Contains(script, `RUNNERHUB_ALLOW_PRIVILEGED_WORKERS=true`) {
 			t.Fatalf("%s script does not pass privileged worker support to agent:\n%s", name, script)
 		}
+		for _, want := range []string{`RUNNERHUB_CGROUP_ROOT=/sys/fs/cgroup-host`, `--cgroupns=host`, `--cap-add SYS_ADMIN`, `/sys/fs/cgroup:/sys/fs/cgroup-host:rw`} {
+			if !strings.Contains(script, want) {
+				t.Fatalf("%s script does not configure aggregate cgroup access %q:\n%s", name, want, script)
+			}
+		}
 	}
 }
 

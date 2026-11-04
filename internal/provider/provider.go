@@ -23,6 +23,7 @@ type WorkerSpec struct {
 	Labels []string `json:"labels"`
 	Isolation core.IsolationMode `json:"isolation"`
 	Resources core.Resources `json:"resources"`
+	AggregateResources bool `json:"aggregateResources,omitempty"`
 	Image string `json:"image,omitempty"`
 	Metadata map[string]string `json:"metadata,omitempty"`
 }
@@ -37,6 +38,7 @@ type WorkerUsage struct {
 	MemoryBytes int64 `json:"memoryBytes,omitempty"`
 	EnvelopeCPUMillis int64 `json:"envelopeCpuMillis,omitempty"`
 	EnvelopeMemoryBytes int64 `json:"envelopeMemoryBytes,omitempty"`
+	AggregateResources bool `json:"aggregateResources,omitempty"`
 }
 
 type WorkerState struct {

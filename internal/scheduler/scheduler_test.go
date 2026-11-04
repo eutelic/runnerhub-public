@@ -285,3 +285,45 @@ func TestSummarizeCapacityIdentifiesPoolLimit(t *testing.T) {
 		t.Fatalf("bottleneck=%q, want pool_concurrency", got.Bottleneck)
 	}
 }
+
+
+func TestDinDAggregateBudgetUsesSingleEnvelopeOnVerifiedHost(t *testing.T) {
+	resources := core.Resources{CPUMillis: 2500, MemoryBytes: 8 << 30, DiskBytes: 40 << 30}
+	host := core.Host{
+		Provider: "docker",
+		Tags: map[string]string{
+			"isolation.container-dind": "true",
+			"feature.aggregateResourceGroups": "true",
+		},
+	}
+	pool := core.RunnerPool{Isolation: core.IsolationContainerDinD, Resources: resources}
+	req := EffectivePoolResources(host, pool)
+	if req.CPUMillis != 2500 || req.MemoryBytes != 8<<30 || req.DiskBytes != 40<<30 {
+		t.Fatalf("aggregate DinD pool reservation=%+v", req)
+	}
+
+	worker := core.Worker{
+		ProviderID: "docker",
+		Isolation: core.IsolationContainerDinD,
+		AggregateResources: true,
+		Resources: resources,
+	}
+	used := EffectiveWorkerResources(worker)
+	if used.CPUMillis != 2500 || used.MemoryBytes != 8<<30 || used.DiskBytes != 40<<30 {
+		t.Fatalf("aggregate DinD worker reservation=%+v", used)
+	}
+}
+
+func TestDinDAggregateBudgetDoesNotRetroactivelyChangeLegacyWorker(t *testing.T) {
+	resources := core.Resources{CPUMillis: 2500, MemoryBytes: 8 << 30}
+	legacy := core.Worker{
+		ProviderID: "docker",
+		Isolation: core.IsolationContainerDinD,
+		AggregateResources: false,
+		Resources: resources,
+	}
+	used := EffectiveWorkerResources(legacy)
+	if used.CPUMillis != 5000 || used.MemoryBytes != 16<<30 {
+		t.Fatalf("legacy worker reservation=%+v, want conservative double envelope", used)
+	}
+}

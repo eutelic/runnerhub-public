@@ -183,16 +183,15 @@ func workerUsageForSizing(pool core.RunnerPool, worker core.Worker) (int64, int6
 		isolation = pool.Isolation
 	}
 	if isolation == core.IsolationContainerDinD {
-		// Pool CPU/RAM is a per-container ceiling, while ordinary Docker
-		// telemetry is the sum of the runner and DinD sidecar. Sizing from that
-		// aggregate would double-count publisher demand and can create a
-		// positive feedback loop. New agents report the maximum single-container
-		// envelope explicitly. Legacy DinD samples are intentionally ignored.
-		if worker.Usage.PeakEnvelopeCPUMillis <= 0 || worker.Usage.PeakEnvelopeMemoryBytes <= 0 {
+		// The DinD resource contract is now a total logical-worker budget.
+		// Historical/fallback jobs used independent per-container envelopes and
+		// cannot be converted safely, so never mix them into aggregate learning.
+		if !worker.AggregateResources || !worker.Usage.AggregateResources {
 			return 0, 0, false
 		}
-		cpu = worker.Usage.PeakEnvelopeCPUMillis
-		memory = worker.Usage.PeakEnvelopeMemoryBytes
+		if cpu <= 0 || memory <= 0 {
+			return 0, 0, false
+		}
 	} else {
 		// For single-container workers the envelope is equivalent to aggregate
 		// usage. Prefer it when available, while retaining compatibility with
@@ -231,10 +230,14 @@ func workerUsageForSizing(pool core.RunnerPool, worker core.Worker) (int64, int6
 }
 
 func RecommendResources(pool core.RunnerPool, workers []core.Worker) ResourceRecommendation {
+	usageBasis := "per-container-envelope"
+	if pool.Isolation == core.IsolationContainerDinD {
+		usageBasis = "logical-worker-aggregate"
+	}
 	out := ResourceRecommendation{
 		Current: pool.Resources,
 		Recommended: pool.Resources,
-		UsageBasis: "per-container-envelope",
+		UsageBasis: usageBasis,
 		Reason: "collecting completed-job usage samples",
 	}
 	if !pool.LearningResetAt.IsZero() {
@@ -347,7 +350,11 @@ func RecommendResources(pool core.RunnerPool, workers []core.Worker) ResourceRec
 	out.Recommended.CPUMillis = cpuTarget
 	out.Recommended.MemoryBytes = memoryTarget
 	out.Ready = true
-	out.Reason = "CPU p95 and RAM max per-container peaks plus 25% headroom; downsizing requires 25 jobs with at least 2 samples each"
+	if pool.Isolation == core.IsolationContainerDinD {
+		out.Reason = "CPU p95 and RAM max logical-worker aggregate peaks plus 25% headroom; downsizing requires 25 jobs with at least 2 samples each"
+	} else {
+		out.Reason = "CPU p95 and RAM max per-container peaks plus 25% headroom; downsizing requires 25 jobs with at least 2 samples each"
+	}
 	if oomMemoryFloor > out.MemoryPeakMaxBytes {
 		out.Reason += "; recent OOM pressure raises the memory floor"
 	}

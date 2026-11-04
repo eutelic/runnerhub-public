@@ -229,7 +229,7 @@ func EffectiveWorkerResources(w core.Worker) core.Resources {
 	if tmpfsWorkdir(w.ProviderID, w.Isolation) {
 		r.DiskBytes = 0
 	}
-	if dockerDinD(w.ProviderID, w.Isolation) {
+	if dockerDinD(w.ProviderID, w.Isolation) && !w.AggregateResources {
 		r = conservativeDinDReservation(r)
 	}
 	return r
@@ -240,7 +240,7 @@ func EffectivePoolResources(h core.Host, pool core.RunnerPool) core.Resources {
 	if tmpfsWorkdir(h.Provider, pool.Isolation) {
 		r.DiskBytes = 0
 	}
-	if dockerDinD(h.Provider, pool.Isolation) {
+	if dockerDinD(h.Provider, pool.Isolation) && !HostSupportsAggregateResourceGroups(h) {
 		r = conservativeDinDReservation(r)
 	}
 	return r
@@ -248,6 +248,10 @@ func EffectivePoolResources(h core.Host, pool core.RunnerPool) core.Resources {
 
 func dockerDinD(provider string, isolation core.IsolationMode) bool {
 	return provider == "docker" && isolation == core.IsolationContainerDinD
+}
+
+func HostSupportsAggregateResourceGroups(h core.Host) bool {
+	return h.Provider == "docker" && h.Tags != nil && h.Tags["feature.aggregateResourceGroups"] == "true"
 }
 
 func conservativeDinDReservation(r core.Resources) core.Resources {

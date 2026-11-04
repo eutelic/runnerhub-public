@@ -49,11 +49,28 @@ RUNNERHUB_DIND_IMAGE=docker:29.8.1-dind@sha256:3f3c01aaaebf7cce837356b688b7c059a
 
 For reproducible installations, pin this to a tested Docker DinD version/digest rather than relying indefinitely on the moving tag.
 
-### DinD resource-accounting limitation
+### Aggregate DinD resource budgets
 
-The current scheduler models `pool.Resources` as one worker envelope. In `container-dind`, those CPU/memory limits apply to the runner container, while the privileged sidecar and containers created by the inner Docker daemon are not yet placed under one scheduler-accounted aggregate cgroup/resource envelope. DinD work and daemon storage are also bind-backed rather than using the trusted worker's bounded tmpfs work directory.
+For `container-dind` workers, `RunnerPool.Resources` is the intended **total logical-worker CPU/RAM budget** when the Docker host passes RunnerHub's aggregate-cgroup capability probe.
 
-Pool concurrency and host capacity provide coarse bounds, but strict aggregate per-worker DinD CPU, memory, and disk accounting remains a hardening item. Do not use DinD for untrusted/adversarial workloads.
+On a verified cgroup-v2 host using Docker's `systemd` or `cgroupfs` driver, RunnerHub:
+
+- creates a bounded parent cgroup or transient systemd slice for the logical worker;
+- launches both the Actions runner and privileged DinD sidecar with the same Docker `--cgroup-parent`;
+- verifies both outer containers use that parent;
+- launches a disposable nested container through the private DinD daemon during capability probing and requires it to remain below the bounded hierarchy;
+- samples aggregate CPU/RAM, memory peak, and cgroup OOM evidence from the logical-worker parent;
+- reserves one configured CPU/RAM envelope in scheduler capacity.
+
+For example, a publisher configured for 2.5 CPU and 8 GiB reserves 2.5 CPU / 8 GiB for one active verified worker and 5 CPU / 16 GiB for two active verified workers.
+
+The capability is fail-closed. If RunnerHub cannot prove the supported cgroup-v2 hierarchy, cannot create/read the bounded parent, or cannot verify nested-container containment, the host does **not** advertise aggregate resource groups. DinD remains available there, but the scheduler keeps the legacy conservative two-envelope reservation. If an aggregate-marked running worker later loses access to its aggregate cgroup, RunnerHub fails that worker rather than silently falling back to unverified x1 accounting.
+
+Historical/fallback DinD jobs used independent per-container envelopes. RunnerHub therefore excludes those samples from the new DinD resource-learning cohort instead of attempting to reinterpret them as total-worker measurements.
+
+The Docker agent is trusted/root-equivalent infrastructure because it controls the host Docker socket. **Image-based deployments do not grant host-cgroup administration by default.** Aggregate enforcement requires an explicit, trusted agent configuration that makes the host cgroup-v2 hierarchy writable at `RUNNERHUB_CGROUP_ROOT`, shares the host cgroup namespace, and provides the required host-cgroup privileges. Without that setup, the probe must fail and the scheduler must keep the conservative two-envelope reservation. Do not enable a writable host-cgroup mount or `SYS_ADMIN` solely to make dashboard reservations look smaller; evaluate the added host privilege and verify the containment probe first. Workflow containers do not receive the host Docker socket or host cgroup mount.
+
+DinD work and daemon storage remain bind-backed and are reserved against host disk capacity; hard aggregate per-worker disk quotas are not part of this CPU/RAM change. This remains a trusted-workload compatibility mode, not an untrusted-code sandbox.
 
 ## Publisher runners
 

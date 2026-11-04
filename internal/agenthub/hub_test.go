@@ -24,3 +24,13 @@ func TestHeartbeatPreservesHostPriority(t *testing.T){
 	if err!=nil{t.Fatal(err)}
 	if got.Priority!=100{t.Fatalf("priority=%d, want 100 after heartbeat",got.Priority)}
 }
+
+
+func TestCapabilityTagsExposeVerifiedProviderFeatures(t *testing.T){
+	tags:=capabilityTags(provider.Capabilities{
+		Provider:"docker",
+		Features:map[string]bool{"aggregateResourceGroups":true,"disabled":false},
+	})
+	if tags["feature.aggregateResourceGroups"]!="true"{t.Fatalf("aggregate feature tag=%q",tags["feature.aggregateResourceGroups"])}
+	if _,ok:=tags["feature.disabled"];ok{t.Fatal("disabled provider feature was advertised")}
+}

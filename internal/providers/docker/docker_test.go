@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/eutelic/runnerhub/internal/core"
 	"github.com/eutelic/runnerhub/internal/images"
@@ -732,5 +733,155 @@ func TestContainerUsageReportsAggregateAndPerContainerEnvelope(t *testing.T) {
 	}
 	if usage.EnvelopeCPUMillis != 2500 || usage.EnvelopeMemoryBytes != 3<<30 {
 		t.Fatalf("per-container envelope=%+v", usage)
+	}
+}
+
+
+func TestAggregateUsageReadsLogicalWorkerCgroup(t *testing.T) {
+	stateDir := t.TempDir()
+	cgroupRoot := t.TempDir()
+	p, err := newWithRunner(Config{
+		StateDir: stateDir, CgroupRoot: cgroupRoot, AllowedImages: []string{"img"},
+	}, &fakeRunner{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	workerDir := filepath.Join(stateDir, "workers", "w1")
+	groupPath := filepath.Join(cgroupRoot, "runnerhub", "worker-w1")
+	if err := os.MkdirAll(workerDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(groupPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	marker := `{"driver":"cgroupfs","parent":"/runnerhub/worker-w1","relativePath":"runnerhub/worker-w1"}`
+	if err := os.WriteFile(filepath.Join(workerDir, "aggregate-cgroup.json"), []byte(marker), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	files := map[string]string{
+		"memory.current": "1073741824\n",
+		"memory.peak":    "2147483648\n",
+		"cpu.stat":       "usage_usec 350000\nuser_usec 200000\nsystem_usec 150000\n",
+		"memory.events":  "low 0\nhigh 0\nmax 1\noom 1\noom_kill 1\noom_group_kill 0\n",
+	}
+	for name, value := range files {
+		if err := os.WriteFile(filepath.Join(groupPath, name), []byte(value), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	p.aggregate.mu.Lock()
+	p.aggregate.cpu["w1"] = cpuUsageSample{usageUsec: 100000, at: time.Now().Add(-time.Second)}
+	p.aggregate.mu.Unlock()
+
+	usage, oom, err := p.aggregateUsage("w1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !oom {
+		t.Fatal("expected aggregate cgroup OOM evidence")
+	}
+	if !usage.AggregateResources {
+		t.Fatal("aggregate resource marker missing")
+	}
+	if usage.MemoryBytes != 1<<30 || usage.EnvelopeMemoryBytes != 2<<30 {
+		t.Fatalf("aggregate memory usage=%+v", usage)
+	}
+	if usage.CPUMillis < 240 || usage.CPUMillis > 260 {
+		t.Fatalf("aggregate cpu=%dm, want approximately 250m", usage.CPUMillis)
+	}
+}
+
+func TestHostSystemdHelperKeepsArgumentsOutOfShellInterpolation(t *testing.T) {
+	f := &fakeRunner{}
+	p, err := newWithRunner(Config{
+		StateDir: t.TempDir(), AllowedImages: []string{"img"}, DinDImage: images.DefaultDinDImage,
+	}, f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.hostSystemd(context.Background(), "systemctl", "set-property", "--runtime", "runnerhubw1.slice", "MemoryMax=123"); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.calls) != 1 {
+		t.Fatalf("calls=%d, want 1", len(f.calls))
+	}
+	call := f.calls[0]
+	joined := strings.Join(call, " ")
+	for _, want := range []string{
+		"run --rm", "--network none", "type=bind,src=/,dst=/host,readonly",
+		"program=\"$1\"; shift; exec chroot /host \"$program\" \"$@\"",
+		"/usr/bin/systemctl", "set-property", "--runtime", "runnerhubw1.slice", "MemoryMax=123",
+	} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("host systemd helper missing %q: %s", want, joined)
+		}
+	}
+}
+
+func TestFormatCPUQuota(t *testing.T) {
+	tests := map[int64]string{250: "25.000%", 1000: "100.000%", 2500: "250.000%"}
+	for input, want := range tests {
+		if got := formatCPUQuota(input); got != want {
+			t.Fatalf("formatCPUQuota(%d)=%q, want %q", input, got, want)
+		}
+	}
+}
+
+func TestUnifiedCgroupPath(t *testing.T) {
+	if got := unifiedCgroupPath("0::/docker/abc\n"); got != "/docker/abc" {
+		t.Fatalf("unified path=%q", got)
+	}
+	if got := unifiedCgroupPath("0::/\n"); got != "/" {
+		t.Fatalf("root unified path=%q", got)
+	}
+}
+
+
+func TestInspectFailsClosedWhenAggregateCgroupDisappears(t *testing.T) {
+	stateDir := t.TempDir()
+	cgroupRoot := t.TempDir()
+	f := &fakeRunner{fn: func(_ string, a ...string) (string, error) {
+		joined := strings.Join(a, " ")
+		switch {
+		case strings.Contains(joined, "inspect runner123 --format {{json .State}}"):
+			return `{"Running":true,"ExitCode":0,"Status":"running"}`, nil
+		case strings.Contains(joined, "inspect runner123 --format {{index .Config.Labels"):
+			return "w1\n", nil
+		default:
+			return "", nil
+		}
+	}}
+	p, err := newWithRunner(Config{
+		StateDir: stateDir, CgroupRoot: cgroupRoot, AllowedImages: []string{"img"},
+	}, f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	workerDir := filepath.Join(stateDir, "workers", "w1")
+	if err := os.MkdirAll(workerDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	marker := `{"driver":"cgroupfs","parent":"/runnerhub/worker-w1","relativePath":"runnerhub/worker-w1"}`
+	if err := os.WriteFile(filepath.Join(workerDir, "aggregate-cgroup.json"), []byte(marker), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	p.aggregate.mu.Lock()
+	p.aggregate.checked = true
+	p.aggregate.supported = true
+	p.aggregate.mu.Unlock()
+
+	got, err := p.Inspect(context.Background(), provider.WorkerHandle{ProviderID: "runner123"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.State != core.WorkerFailed || got.SafeDetail != "aggregate resource group unavailable" {
+		t.Fatalf("state=%+v", got)
+	}
+	p.aggregate.mu.Lock()
+	supported := p.aggregate.supported
+	p.aggregate.mu.Unlock()
+	if supported {
+		t.Fatal("aggregate capability remained advertised after cgroup disappearance")
 	}
 }

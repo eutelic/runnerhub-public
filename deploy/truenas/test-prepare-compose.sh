@@ -76,6 +76,15 @@ bash "$prepare" \
 grep -Fq 'published: "9876"' "$dind"
 grep -Fq 'pool-isolation: &pool-isolation container-dind' "$dind"
 grep -Fq 'allow-privileged-workers: &allow-privileged-workers "true"' "$dind"
+
+# Publisher support alone must not silently grant the agent host-cgroup
+# administration. Aggregate budgeting is opt-in and fails closed otherwise.
+for generated in "$trusted" "$publisher" "$dind"; do
+  if grep -Eq '(^[[:space:]]*cap_add:|SYS_ADMIN|cgroupns:|/sys/fs/cgroup)' "$generated"; then
+    echo "Generated RunnerHub YAML unexpectedly grants host-cgroup privileges: $generated" >&2
+    exit 1
+  fi
+done
 grep -Fq 'runner-image: &runner-image ghcr.io/actions/actions-runner:2.328.0' "$dind"
 grep -Fq 'dind-image: &dind-image docker:28-dind@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' "$dind"
 grep -Fq 'public-url: &public-url https://runnerhub.example.com' "$dind"

@@ -448,19 +448,25 @@ function isStandardPool(pool){const name=String(pool?.scaleSetName||'').toLowerC
 function runnerClass(pool){if(!pool)return 'standard';if(isPublisherPool(pool))return 'publisher';if(isStandardPool(pool))return 'standard';return pool.scaleSetName||'custom'}
 function resourceEnvelopeFactor(pool,worker){
   const isolation=String(worker?.isolation||pool?.isolation||'').toLowerCase();
-  return isolation==='container-dind'?2:1;
+  if(isolation!=='container-dind')return 1;
+  return worker?.aggregateResources===true?1:2;
+}
+function aggregateBudgetEnabled(worker,pool){
+  return String(worker?.isolation||pool?.isolation||'').toLowerCase()==='container-dind'&&worker?.aggregateResources===true;
 }
 function allocatedCPUText(worker,pool){
   const per=Number(worker?.resources?.cpuMillis||0);
   if(!per)return '—';
   const factor=resourceEnvelopeFactor(pool,worker);
-  return factor===2?cpuCores(per)+' each · '+cpuCores(per*2)+' reserved':cpuCores(per)+' cores';
+  if(aggregateBudgetEnabled(worker,pool))return cpuCores(per)+' cores total budget';
+  return factor===2?cpuCores(per)+' each · '+cpuCores(per*2)+' conservative reserve':cpuCores(per)+' cores';
 }
 function allocatedRAMText(worker,pool){
   const per=Number(worker?.resources?.memoryBytes||0);
   if(!per)return '—';
   const factor=resourceEnvelopeFactor(pool,worker);
-  return factor===2?gib(per)+' GiB each · '+gib(per*2)+' GiB reserved':gib(per)+' GiB';
+  if(aggregateBudgetEnabled(worker,pool))return gib(per)+' GiB total budget';
+  return factor===2?gib(per)+' GiB each · '+gib(per*2)+' conservative reserve':gib(per)+' GiB';
 }
 function isPublisherEnabled(pool){return Boolean(pool)&&Number(pool.githubInstallationId)>0}
 function isZeroTime(value){return !value||String(value).startsWith('0001-01-01')}
@@ -540,6 +546,12 @@ function renderPreservingTableScroll(container,html){
 }
 
 function hostTagText(host){return Object.keys(host?.userTags||{}).sort().join(', ')}
+function hostDinDBudgetText(host){
+  const tags=host?.tags||{};
+  if(tags['feature.aggregateResourceGroups']==='true')return 'aggregate';
+  if(tags['isolation.container-dind']==='true')return 'legacy x2';
+  return '—';
+}
 function hostStateRank(host){
   return ({online:0,draining:1,offline:2,archived:3})[String(host?.state||'').toLowerCase()]??3;
 }
@@ -580,11 +592,14 @@ function renderHosts(hosts,workers=[],poolByID=new Map()){
     if(name)nameCounts.set(name,(nameCounts.get(name)||0)+1);
   }
   const versions=[...new Set(online.map(h=>String(h.agentVersion||'').trim()).filter(Boolean))];
-  const warning=versions.length>1
-    ? '<div class="resource-note warn"><strong>Different agent revisions on online hosts:</strong> '+
-      online.map(h=>esc(h.name)+' ('+esc(String(h.agentVersion||'unknown').slice(0,8))+')').join(', ')+
-      '. Revision hashes alone cannot establish which agent is newer; verify the intended deployment version before updating.</div>'
-    : '';
+  const warnings=[];
+  if(versions.length>1)warnings.push('<div class="resource-note warn"><strong>Different agent revisions on online hosts:</strong> '+
+    online.map(h=>esc(h.name)+' ('+esc(String(h.agentVersion||'unknown').slice(0,8))+')').join(', ')+
+    '. Revision hashes alone cannot establish which agent is newer; verify the intended deployment version before updating.</div>');
+  const fallbackDinD=online.filter(h=>h.tags?.['isolation.container-dind']==='true'&&h.tags?.['feature.aggregateResourceGroups']!=='true');
+  if(fallbackDinD.length)warnings.push('<div class="resource-note warn"><strong>DinD aggregate budget unavailable:</strong> '+
+    fallbackDinD.map(h=>esc(h.name||h.id)).join(', ')+
+    ' will keep conservative x2 CPU/RAM reservation until the aggregate cgroup probe passes.</div>');
   const summary='<div class="host-counts">'+online.length+' online · '+offline.length+
     ' offline · '+archived.length+' archived · '+(hosts.length-archived.length)+' active records</div>';
   const previousByHost=new Map();
@@ -644,7 +659,8 @@ function renderHosts(hosts,workers=[],poolByID=new Map()){
       (state==='archived'?'':'<details class="host-settings" data-host-settings="'+esc(h.id)+'"><summary>Capacity and scheduling settings</summary>'+
       '<div class="host-resources">CPU: '+esc(h.capacity?.cpuMillis?cpuCores(used.cpu)+' / '+cpuCores(h.capacity.cpuMillis)+' cores':'unknown')+
       ' · RAM: '+esc(h.capacity?.memoryBytes?gib(used.ram)+' / '+gib(h.capacity.memoryBytes)+' GiB':'unknown')+
-      ' · Disk available: '+esc(h.capacity?.diskBytes?gib(h.capacity.diskBytes)+' GiB':'unknown')+'</div>'+
+      ' · Disk available: '+esc(h.capacity?.diskBytes?gib(h.capacity.diskBytes)+' GiB':'unknown')+
+      ' · DinD budget: '+esc(hostDinDBudgetText(h))+'</div>'+
       (String(h.provider||'').toLowerCase()==='docker'
         ? '<div class="resource-note muted">Disk available is filesystem free space at the agent state directory, not total disk capacity. Publisher/DinD runners also reserve their configured disk budget when scheduling.</div>'
         : '')+
@@ -655,7 +671,7 @@ function renderHosts(hosts,workers=[],poolByID=new Map()){
       '<button type="button" class="secondary compact" data-host-tags="'+esc(h.id)+'">'+
       (draft?'Save changes':'Save')+'</button></details>')+'</article>';
   }).join('');
-  const html=summary+warning+'<div class="host-list">'+(cards||'<div class="empty">No hosts match this filter.</div>')+'</div>';
+  const html=summary+warnings.join('')+'<div class="host-list">'+(cards||'<div class="empty">No hosts match this filter.</div>')+'</div>';
   renderPreservingTableScroll(els.hosts,html);
   els.hosts.querySelectorAll('details[data-host-settings]').forEach(el=>{
     el.open=previousOpen.has(el.dataset.hostSettings);
@@ -769,7 +785,7 @@ function renderWorkers(workers,poolByID){
     ['Limit / host reserve',x=>allocatedCPUText(x,poolByID?.get(x.poolId))+' / '+allocatedRAMText(x,poolByID?.get(x.poolId))],
     ['Updated',x=>fmtTime(workerTimestamp(x))],
     ['Failure',x=>x.failureReason||'']
-  ])+'<div class="muted small workers-note">CPU/RAM limits are per container. Publisher/DinD jobs use a runner plus a sidecar, so total observed usage and host reservation can be up to two envelopes. Implausible samples above configured envelopes are ignored for new telemetry and autosizing. Historical and deleted records remain available in Diagnostics.</div>');
+  ])+'<div class="muted small workers-note">On aggregate-capable Docker hosts, publisher/DinD CPU and RAM are one total logical-worker budget shared by the runner, DinD daemon, and nested containers. Hosts that cannot prove aggregate cgroup enforcement keep the conservative two-envelope reservation and are excluded from DinD autosizing. Historical and deleted records remain available in Diagnostics.</div>');
 }
 
 function renderOnboardingChecklist(hosts,pools,statuses,installations,repos){
@@ -1073,7 +1089,7 @@ function renderPools(pools,statuses,runtimeHealth,recommendationByPool,hosts=[],
       '<td class="pool-diagnosis">'+esc(diagnosis)+'</td></tr>';
   }).join('');
   const summary=(pools||[]).length
-    ? '<div class="table-wrap pool-status-table"><table><thead><tr><th>Repository</th><th>Runner label</th><th>Listener</th><th>Runtime</th><th>Active / limit</th><th>Worker size</th><th>Queue</th><th>Bottleneck</th><th>Host diagnosis</th></tr></thead><tbody>'+rows+'</tbody></table></div>'
+    ? '<div class="table-wrap pool-status-table"><table><thead><tr><th>Repository</th><th>Runner label</th><th>Listener</th><th>Runtime</th><th>Active / limit</th><th>Configured budget</th><th>Queue</th><th>Bottleneck</th><th>Host diagnosis</th></tr></thead><tbody>'+rows+'</tbody></table></div>'
     : '<div class="empty">No runner pools configured. Connect a repository to create one.</div>';
   const advanced='<details class="pool-advanced"><summary>Advanced pool metrics and resource learning</summary>'+tab(pools,[
     ['Repository',x=>repoName(x)],['Class',x=>runnerClass(x)],
@@ -1505,7 +1521,7 @@ function resourceEditor(repo,pool){
       '<label>Max concurrent<input data-field="concurrency" type="number" min="1" step="1" value="'+esc(max)+'"></label>'+
     '</div>'+
     '<label class="check-row"><input data-field="autotune" type="checkbox"'+(pool?.autoTuneResources?' checked':'')+'> Auto-size CPU/RAM from observed job usage</label>'+
-    '<div class="resource-note muted">CPU/RAM are per-container ceilings. Publisher/DinD jobs reserve two envelopes (runner + sidecar). Auto-size waits for at least 5 valid completed jobs, uses CPU p95 / RAM max per-container peaks + 25% headroom, and ignores impossible telemetry. Manual CPU/RAM changes start a fresh learning window. Limits apply to newly created runners.</div>'+
+    '<div class="resource-note muted">CPU/RAM are worker limits. On verified aggregate-capable Docker hosts, DinD profiles use one total logical-worker budget across the runner, daemon, and nested containers. Unsupported hosts keep a conservative two-envelope fallback. Auto-size uses only compatible telemetry; manual CPU/RAM changes start a fresh learning window. Limits apply to newly created runners.</div>'+
     '<div class="publisher-actions"><button data-resource-action="'+(connected?'update':'connect')+'" data-repo="'+esc(repo.fullName)+'" data-installation="'+esc(repo.installationId)+'"'+poolAttr+'>'+esc(action)+'</button>'+
       (connected?'<button class="secondary" data-learning-reset data-pool-id="'+esc(pool.id)+'" data-learning-label="standard runner">Reset learning</button>':'')+
     '</div>'+
@@ -1539,7 +1555,7 @@ function publisherEditor(repo,pool,status,runtime,hostAvailable,standardConnecte
       '<label>Max publishers<input data-publisher-field="concurrency" type="number" min="1" step="1" value="'+esc(max)+'"></label>'+
     '</div>'+
     '<label class="check-row"><input data-publisher-field="autotune" type="checkbox"'+(pool?.autoTuneResources?' checked':'')+'> Auto-size publisher CPU/RAM from observed jobs</label>'+
-    '<div class="resource-note muted">Max publishers is an upper bound, not a guarantee of runnable capacity. Each publisher reserves the configured disk on one Docker-in-Docker capable host; set disk based on measured build usage and available host storage, not just the concurrency limit. Auto-size waits for at least 5 valid jobs and sizes from the busiest outer container (runner or private DinD sidecar), not their summed CPU/RAM. Legacy aggregate-only samples are ignored.</div>';
+    '<div class="resource-note muted">Max publishers is an upper bound, not a guarantee of runnable capacity. Publisher CPU/RAM is the total budget per logical worker on verified aggregate-capable hosts; unsupported hosts keep the conservative two-envelope reservation. Auto-size learns only from verified aggregate jobs, so legacy per-container samples are not mixed. Each publisher reserves the configured disk on one Docker-in-Docker capable host; set it from measured build usage and available host storage, not just concurrency.</div>';
   let buttons='';
   if(enabled){
     buttons='<div class="publisher-actions"><button data-publisher-action="update" data-repo="'+esc(repo.fullName)+'" data-installation="'+esc(repo.installationId)+'">Save publisher settings</button><button class="secondary" data-learning-reset data-pool-id="'+esc(pool.id)+'" data-learning-label="publisher runner">Reset learning</button><button class="secondary" data-publisher-action="disable" data-repo="'+esc(repo.fullName)+'" data-installation="'+esc(repo.installationId)+'">Disable publisher</button></div>';
@@ -1592,9 +1608,9 @@ function runnerProfileEditor(repo,profiles,standardConnected){
   const disabled=standardConnected?'':' disabled';
   return '<details class="repo-config profile-config">'+
     '<summary>Custom runner profiles'+(active.length?' ('+active.length+')':'')+'</summary>'+
-    '<div class="resource-note muted">Only the dedicated Android emulator profile may use native host execution; ordinary custom profiles must stay container-isolated. The KVM device is verified by the native agent.</div>'+ 
+    '<div class="resource-note muted">Only the dedicated Android emulator profile may use native host execution; ordinary custom profiles must stay container-isolated. The KVM device is verified by the native agent.</div>'+
     '<button type="button" class="secondary compact" data-android-emulator-preset'+disabled+'>Fill Android emulator profile</button>'+
-    '<div class="resource-note muted">Tags are hard placement constraints. Use host priority for normal scheduling preference; use a custom profile when a workflow must explicitly target a machine class such as <code>runnerhub-fast</code>. Docker-capable profiles reserve two host CPU/RAM envelopes per runner (runner + private DinD sidecar). Resource learning uses the busiest individual container, not the summed DinD pair.</div>'+
+    '<div class="resource-note muted">Tags are hard placement constraints. Use host priority for normal scheduling preference; use a custom profile when a workflow must explicitly target a machine class such as <code>runnerhub-fast</code>. Verified aggregate-capable hosts enforce one total CPU/RAM budget per DinD worker; unsupported hosts keep conservative two-envelope reservations. DinD auto-sizing uses only verified aggregate samples.</div>'+
     (existing?'<div class="profile-list">'+existing+'</div>':'')+
     '<div class="resource-grid">'+
       '<label>Profile name<input data-profile-field="name" placeholder="fast"'+disabled+'></label>'+

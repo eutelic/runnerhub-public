@@ -60,6 +60,7 @@ func (execRunner) Run(ctx context.Context, name string, args ...string) (string,
 type Config struct {
 	DockerBinary           string
 	StateDir               string
+	CgroupRoot             string
 	AllowedImages          []string
 	HostID                 string
 	DefaultWorkdirBytes    int64
@@ -69,9 +70,10 @@ type Config struct {
 }
 
 type Provider struct {
-	cfg     Config
-	run     CommandRunner
-	allowed map[string]struct{}
+	cfg       Config
+	run       CommandRunner
+	allowed   map[string]struct{}
+	aggregate *aggregateState
 }
 
 func New(cfg Config) (*Provider, error) { return newWithRunner(cfg, execRunner{}) }
@@ -82,6 +84,9 @@ func newWithRunner(cfg Config, r CommandRunner) (*Provider, error) {
 	}
 	if cfg.StateDir == "" {
 		cfg.StateDir = "/var/lib/runnerhub"
+	}
+	if cfg.CgroupRoot == "" {
+		cfg.CgroupRoot = "/sys/fs/cgroup"
 	}
 	if cfg.DefaultWorkdirBytes <= 0 {
 		cfg.DefaultWorkdirBytes = 20 << 30
@@ -109,7 +114,7 @@ func newWithRunner(cfg Config, r CommandRunner) (*Provider, error) {
 	for _, i := range cfg.AllowedImages {
 		a[i] = struct{}{}
 	}
-	return &Provider{cfg: cfg, run: r, allowed: a}, nil
+	return &Provider{cfg: cfg, run: r, allowed: a, aggregate: newAggregateState()}, nil
 }
 
 func (p *Provider) Capabilities(ctx context.Context) (provider.Capabilities, error) {
@@ -133,6 +138,17 @@ func (p *Provider) Capabilities(ctx context.Context) (provider.Capabilities, err
 		features["dockerInDocker"] = true
 		features["containerActions"] = true
 		labels["isolation.container-dind"] = "true"
+		aggregate, version, driver := p.aggregateResourceGroupCapabilities(ctx)
+		if version == "2" {
+			features["cgroupV2"] = true
+			labels["docker.cgroup-version"] = version
+		}
+		if driver != "" {
+			labels["docker.cgroup-driver"] = driver
+		}
+		if aggregate {
+			features[aggregateResourceFeature] = true
+		}
 	}
 	return provider.Capabilities{
 		Provider:       "docker",
@@ -163,6 +179,9 @@ func (p *Provider) Validate(_ context.Context, s provider.WorkerSpec) error {
 	}
 	if !core.NonNegative(s.Resources) {
 		return errors.New("resource requests cannot be negative")
+	}
+	if s.AggregateResources && s.Isolation != core.IsolationContainerDinD {
+		return errors.New("aggregate resource groups are only supported for container-dind workers")
 	}
 	return nil
 }
@@ -255,6 +274,7 @@ func (p *Provider) Create(ctx context.Context, s provider.WorkerSpec) (provider.
 		_, _ = p.run.Run(ctx, p.cfg.DockerBinary, "rm", "-f", "-v", id)
 		if s.Isolation == core.IsolationContainerDinD {
 			_, _ = p.run.Run(ctx, p.cfg.DockerBinary, "rm", "-f", "-v", workerContainerName(s.WorkerID)+"-dind")
+			p.cleanupAggregateResourceGroup(s.WorkerID)
 		}
 		_ = os.RemoveAll(secretDir)
 		return provider.WorkerHandle{}, err
@@ -301,6 +321,31 @@ func (p *Provider) createDinDWorker(ctx context.Context, s provider.WorkerSpec, 
 			return "", err
 		}
 	}
+
+	aggregateParent, err := p.prepareAggregateResourceGroup(ctx, s, secretDir)
+	if err != nil {
+		_ = os.RemoveAll(secretDir)
+		return "", err
+	}
+	aggregateCreated := aggregateParent != ""
+	createdGroup := aggregateGroup{}
+	if aggregateCreated {
+		var ok bool
+		createdGroup, ok = p.workerAggregateGroup(s.WorkerID)
+		if !ok {
+			_ = os.RemoveAll(secretDir)
+			return "", errors.New("aggregate resource group marker was not persisted")
+		}
+	}
+	completed := false
+	defer func() {
+		if aggregateCreated && !completed {
+			p.cleanupAggregateGroup(context.Background(), createdGroup)
+			p.aggregate.mu.Lock()
+			delete(p.aggregate.cpu, s.WorkerID)
+			p.aggregate.mu.Unlock()
+		}
+	}()
 
 	// The inner Docker daemon must see the same work and runner-externals paths
 	// that the runner passes when launching container actions. Initialize those
@@ -437,9 +482,13 @@ exit 1`
 		"--mount", "type=bind,src=" + runDir + ",dst=" + dindSocketDir,
 		"--mount", "type=bind,src=" + externalsDir + ",dst=/home/runner/externals,readonly",
 	}
-	// The scheduler reserves one resource envelope for the runner and one for
-	// the privileged DinD sidecar. Apply the same per-container ceiling here so
-	// neither outer container can exceed the resources RunnerHub accounted for.
+	if aggregateParent != "" {
+		dindArgs = append(dindArgs, "--cgroup-parent", aggregateParent)
+	}
+	// Keep individual container ceilings as a defensive bound. On verified
+	// aggregate-capable hosts the shared parent cgroup is the authoritative
+	// logical-worker CPU/RAM budget; on legacy hosts the scheduler conservatively
+	// reserves one full envelope for each outer container.
 	if s.Resources.CPUMillis > 0 {
 		dindArgs = append(dindArgs, "--cpus", strconv.FormatFloat(float64(s.Resources.CPUMillis)/1000, 'f', 3, 64))
 	}
@@ -461,6 +510,23 @@ exit 1`
 		}
 	}
 
+	if aggregateParent != "" {
+		if err := p.verifyContainerCgroupParent(ctx, runnerID, aggregateParent); err != nil {
+			p.disableAggregateResourceGroups()
+			_, _ = p.run.Run(ctx, p.cfg.DockerBinary, "rm", "-f", dindName)
+			_, _ = p.run.Run(ctx, p.cfg.DockerBinary, "rm", "-f", runnerID)
+			_ = os.RemoveAll(secretDir)
+			return "", fmt.Errorf("verify aggregate runner cgroup: %w", err)
+		}
+		if err := p.verifyContainerCgroupParent(ctx, dindName, aggregateParent); err != nil {
+			p.disableAggregateResourceGroups()
+			_, _ = p.run.Run(ctx, p.cfg.DockerBinary, "rm", "-f", dindName)
+			_, _ = p.run.Run(ctx, p.cfg.DockerBinary, "rm", "-f", runnerID)
+			_ = os.RemoveAll(secretDir)
+			return "", fmt.Errorf("verify aggregate DinD cgroup: %w", err)
+		}
+	}
+
 	// Release the long-lived runner process only after the DinD sidecar exists.
 	// The runner process itself performs the Docker socket readiness check before
 	// starting run.sh. This validates the exact UID/GID/supplementary-group context
@@ -478,6 +544,7 @@ exit 1`
 		_ = os.RemoveAll(secretDir)
 		return "", err
 	}
+	completed = true
 	return runnerID, nil
 }
 
@@ -491,6 +558,9 @@ func (p *Provider) runnerArgs(s provider.WorkerSpec, name, jitPath string) []str
 		"--label", "io.runnerhub.role=runner",
 		"--security-opt", "no-new-privileges",
 		"--mount", "type=bind,src=" + jitPath + ",dst=/run/runnerhub/jitconfig,readonly",
+	}
+	if parent := p.workerCgroupParent(s.WorkerID); parent != "" {
+		args = append(args, "--cgroup-parent", parent)
 	}
 	if s.Resources.CPUMillis > 0 {
 		args = append(args, "--cpus", strconv.FormatFloat(float64(s.Resources.CPUMillis)/1000, 'f', 3, 64))
@@ -555,6 +625,22 @@ func (p *Provider) Inspect(ctx context.Context, h provider.WorkerHandle) (provid
 		}
 		return provider.WorkerState{}, err
 	}
+	workerID := p.workerIDForHandle(ctx, h.ProviderID)
+	aggregate := workerID != "" && p.workerCgroupParent(workerID) != ""
+	var aggregateUsage *provider.WorkerUsage
+	aggregateOOM := false
+	if aggregate {
+		usage, oom, usageErr := p.aggregateUsage(workerID)
+		if usageErr != nil {
+			p.disableAggregateResourceGroups()
+			return provider.WorkerState{
+				State: core.WorkerFailed,
+				SafeDetail: "aggregate resource group unavailable",
+				Diagnostics: sanitizeDiagnostics(usageErr.Error()),
+			}, nil
+		}
+		aggregateUsage, aggregateOOM = usage, oom
+	}
 	if state.Running {
 		sidecar, err := p.findSidecarByParent(ctx, h.ProviderID)
 		if err != nil {
@@ -562,7 +648,7 @@ func (p *Provider) Inspect(ctx context.Context, h provider.WorkerHandle) (provid
 		}
 		if p.handleUsesDinD(h.ProviderID) || sidecar != "" {
 			if sidecar == "" {
-				return provider.WorkerState{State: core.WorkerFailed, SafeDetail: "Docker-in-Docker sidecar absent"}, nil
+				return provider.WorkerState{State: core.WorkerFailed, OOMKilled: aggregateOOM, SafeDetail: "Docker-in-Docker sidecar absent", Usage: aggregateUsage}, nil
 			}
 			dindState, err := p.inspectContainer(ctx, sidecar)
 			if err != nil {
@@ -570,25 +656,28 @@ func (p *Provider) Inspect(ctx context.Context, h provider.WorkerHandle) (provid
 			}
 			if !dindState.Running {
 				code := dindState.ExitCode
-				return provider.WorkerState{State: core.WorkerFailed, ExitCode: &code, OOMKilled: dindState.OOMKilled, SafeDetail: "Docker-in-Docker sidecar exited", Diagnostics: p.collectDiagnostics(ctx, sidecar)}, nil
+				return provider.WorkerState{State: core.WorkerFailed, ExitCode: &code, OOMKilled: dindState.OOMKilled || aggregateOOM, SafeDetail: "Docker-in-Docker sidecar exited", Diagnostics: p.collectDiagnostics(ctx, sidecar), Usage: aggregateUsage}, nil
 			}
+		}
+		if aggregateUsage != nil {
+			return provider.WorkerState{State: core.WorkerReady, OOMKilled: aggregateOOM, SafeDetail: "container running; aggregate worker cgroup enforced", Usage: aggregateUsage}, nil
 		}
 		usage, _ := p.containerUsage(ctx, h.ProviderID, sidecar)
 		return provider.WorkerState{State: core.WorkerReady, SafeDetail: "container running", Usage: usage}, nil
 	}
 	code := state.ExitCode
 	detail := "container exited"
-	if state.OOMKilled {
+	if state.OOMKilled || aggregateOOM {
 		detail += "; OOM killed"
 	}
 	if msg := sanitize(state.Error); msg != "" {
 		detail += "; docker error: " + msg
 	}
-	if state.Status == "exited" && state.ExitCode == 0 {
-		return provider.WorkerState{State: core.WorkerCompleted, ExitCode: &code, OOMKilled: state.OOMKilled, SafeDetail: "container exited successfully"}, nil
+	if state.Status == "exited" && state.ExitCode == 0 && !aggregateOOM {
+		return provider.WorkerState{State: core.WorkerCompleted, ExitCode: &code, OOMKilled: false, SafeDetail: "container exited successfully", Usage: aggregateUsage}, nil
 	}
 	diagnostics := p.collectDiagnostics(ctx, h.ProviderID)
-	return provider.WorkerState{State: core.WorkerFailed, ExitCode: &code, OOMKilled: state.OOMKilled, SafeDetail: detail, Diagnostics: diagnostics}, nil
+	return provider.WorkerState{State: core.WorkerFailed, ExitCode: &code, OOMKilled: state.OOMKilled || aggregateOOM, SafeDetail: detail, Diagnostics: diagnostics, Usage: aggregateUsage}, nil
 }
 
 type containerState struct {
@@ -812,6 +901,7 @@ func (p *Provider) Delete(ctx context.Context, h provider.WorkerHandle) error {
 		}
 	}
 	if workerID != "" {
+		p.cleanupAggregateResourceGroup(workerID)
 		_ = os.RemoveAll(filepath.Join(p.cfg.StateDir, "workers", safeID(workerID)))
 	}
 	return nil

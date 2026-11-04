@@ -170,7 +170,7 @@ func TestRecommendResourcesDownsizesOnlyWithHighConfidenceHistory(t *testing.T) 
 }
 
 
-func TestRecommendResourcesUsesDinDPerContainerEnvelope(t *testing.T) {
+func TestRecommendResourcesUsesAggregateDinDBudget(t *testing.T) {
 	pool := core.RunnerPool{
 		ID: "publisher",
 		Isolation: core.IsolationContainerDinD,
@@ -181,12 +181,13 @@ func TestRecommendResourcesUsesDinDPerContainerEnvelope(t *testing.T) {
 	for i := 0; i < 5; i++ {
 		workers = append(workers, core.Worker{
 			ID: fmt.Sprintf("dind-%d", i), PoolID: pool.ID, Isolation: core.IsolationContainerDinD,
+			AggregateResources: true,
 			State: core.WorkerDeleted, StartedAt: base.Add(time.Duration(i) * time.Minute),
 			CompletedAt: base.Add(time.Duration(i)*time.Minute + 30*time.Second),
 			JobResult: "succeeded", Resources: pool.Resources,
 			Usage: core.ResourceUsageSummary{
-				PeakCPUMillis: 4800, PeakMemoryBytes: 12 << 30,
-				PeakEnvelopeCPUMillis: 2400, PeakEnvelopeMemoryBytes: 7 << 30, Samples: 3,
+				PeakCPUMillis: 2400, PeakMemoryBytes: 7 << 30,
+				AggregateResources: true, Samples: 3,
 			},
 		})
 	}
@@ -194,8 +195,11 @@ func TestRecommendResourcesUsesDinDPerContainerEnvelope(t *testing.T) {
 	if !got.Ready || got.Jobs != 5 {
 		t.Fatalf("recommendation=%+v", got)
 	}
+	if got.UsageBasis != "logical-worker-aggregate" {
+		t.Fatalf("usage basis=%q", got.UsageBasis)
+	}
 	if got.CPUPeakP95Millis != 2400 || got.MemoryPeakP95Bytes != 7<<30 {
-		t.Fatalf("DinD sizing used aggregate instead of envelope: %+v", got)
+		t.Fatalf("DinD sizing did not use aggregate worker budget: %+v", got)
 	}
 	if got.Recommended.CPUMillis != 3000 || got.Recommended.MemoryBytes != 9<<30 {
 		t.Fatalf("DinD recommendation=%+v, want 3000m / 9GiB", got.Recommended)
@@ -216,7 +220,7 @@ func TestRecommendResourcesRejectsLegacyDinDAggregateSamples(t *testing.T) {
 			State: core.WorkerDeleted, StartedAt: base.Add(time.Duration(i) * time.Minute),
 			CompletedAt: base.Add(time.Duration(i)*time.Minute + 30*time.Second),
 			JobResult: "succeeded", Resources: pool.Resources,
-			Usage: core.ResourceUsageSummary{PeakCPUMillis: 12070, PeakMemoryBytes: 2 << 30, Samples: 2},
+			Usage: core.ResourceUsageSummary{PeakCPUMillis: 4800, PeakMemoryBytes: 12 << 30, PeakEnvelopeCPUMillis: 2400, PeakEnvelopeMemoryBytes: 7 << 30, Samples: 2},
 		})
 	}
 	got := RecommendResources(pool, workers)
