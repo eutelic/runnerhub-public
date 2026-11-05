@@ -82,6 +82,89 @@ test('fleet overview identifies bad listener and zero online hosts with actionab
   assert.match(html,/Open diagnostics|Inspect readiness/);
 });
 
+test('empty Active runners is not mistaken for an empty GitHub queue',()=>{
+  const {ctx,element}=createDashboard();
+  vm.runInContext('renderActiveRunners([],new Map(),new Map(),new Map())',ctx);
+  assert.ok(element('active-runners').innerHTML.includes('GitHub may still have queued jobs'));
+  assert.ok(!element('active-runners').innerHTML.includes('No queued jobs'));
+});
+
+test('GitHub queue summary counts only observed RunnerHub labels and deduplicates workflow runs',()=>{
+  const {ctx}=createDashboard();
+  ctx.sampleQueue={checkedRuns:3,truncated:true,jobs:[
+    {id:1,runId:10,status:'queued',labels:['runnerhub']},
+    {id:2,runId:10,status:'queued',labels:['runnerhub-publisher']},
+    {id:3,runId:11,status:'queued',labels:['runnerhub-fast']},
+    {id:4,runId:11,status:'waiting',labels:['runnerhub']},
+    {id:5,runId:12,status:'pending',labels:['runnerhub']},
+    {id:6,runId:12,status:'queued',labels:['ubuntu-latest']},
+    {id:7,runId:12,status:'queued',labels:[]}
+  ]};
+  const summary=vm.runInContext('summarizeQueuedGitHubJobs(sampleQueue)',ctx);
+  assert.equal(summary.queuedJobs,3);
+  assert.equal(summary.queuedRuns,2);
+  assert.equal(summary.waitingJobs,2);
+  assert.equal(summary.otherJobs,2);
+  assert.equal(summary.partial,true);
+  assert.equal(summary.checkedRuns,3);
+});
+
+test('queue inspection only scans visible connected private repositories and marks failures unavailable',async()=>{
+  const endpoints={
+    '/api/v1/github/repositories/eutelic/runnerhub/queued-jobs':{
+      repository:'eutelic/runnerhub',checkedRuns:1,truncated:true,jobs:[
+        {id:10,runId:99,status:'queued',labels:['runnerhub']},
+        {id:11,runId:99,status:'queued',labels:['runnerhub-publisher']},
+        {id:12,runId:99,status:'queued',labels:['ubuntu-latest']}
+      ]
+    },
+    '/api/v1/github/repositories/eutelic/second/queued-jobs':new Error('GitHub throttled')
+  };
+  const {ctx,element,calls}=createDashboard(endpoints);
+  ctx.queueRepos=[
+    {fullName:'eutelic/runnerhub',private:true},
+    {fullName:'eutelic/second',private:true},
+    {fullName:'eutelic/public',private:false}
+  ];
+  ctx.queuePools=[
+    {scope:{kind:'repository',owner:'eutelic',repository:'runnerhub'},githubInstallationId:42},
+    {scope:{kind:'repository',owner:'eutelic',repository:'runnerhub'},githubInstallationId:42},
+    {scope:{kind:'repository',owner:'eutelic',repository:'second'},githubInstallationId:42},
+    {scope:{kind:'repository',owner:'eutelic',repository:'public'},githubInstallationId:42},
+    {scope:{kind:'repository',owner:'eutelic',repository:'not-connected'},githubInstallationId:0},
+  ];
+  vm.runInContext('auth={authenticated:true};snapshot.repos=queueRepos;snapshot.pools=queuePools;renderGitHubQueue()',ctx);
+  assert.ok(element('github-queue-summary').textContent.includes('Not checked'));
+  assert.equal(calls.filter(path=>path.includes('/queued-jobs')).length,0);
+  await vm.runInContext('inspectGitHubQueues()',ctx);
+  const checked=calls.filter(path=>path.endsWith('/queued-jobs'));
+  assert.equal(checked.length,2);
+  assert.ok(checked.some(path=>path.includes('/runnerhub/queued-jobs')));
+  assert.ok(checked.some(path=>path.includes('/second/queued-jobs')));
+  assert.ok(!checked.some(path=>path.includes('/public/')));
+  const html=element('github-queue-summary').innerHTML;
+  assert.ok(html.includes('2 observed queued RunnerHub jobs'));
+  assert.ok(html.includes('1 inspection failure'));
+  assert.ok(html.includes('≥ 2'));
+  assert.ok(html.includes('Unavailable: GitHub throttled'));
+  assert.ok(html.includes('Runs with queued RunnerHub jobs'));
+  assert.ok(!element('github-queue-refresh').disabled);
+});
+
+test('no successful queue inspections never reports a false empty queue',async()=>{
+  const {ctx,element}=createDashboard({
+    '/api/v1/github/repositories/eutelic/runnerhub/queued-jobs':new Error('403 GitHub unavailable')
+  });
+  ctx.queueRepos=[{fullName:'eutelic/runnerhub',private:true}];
+  ctx.queuePools=[{scope:{kind:'repository',owner:'eutelic',repository:'runnerhub'},githubInstallationId:42}];
+  vm.runInContext('auth={authenticated:true};snapshot.repos=queueRepos;snapshot.pools=queuePools',ctx);
+  await vm.runInContext('inspectGitHubQueues()',ctx);
+  const html=element('github-queue-summary').innerHTML;
+  assert.ok(html.includes('queue depth unknown'));
+  assert.ok(html.includes('Unavailable: 403 GitHub unavailable'));
+  assert.ok(!html.includes('0 observed queued RunnerHub jobs'));
+});
+
 test('publisher eligibility explains missing DinD host instead of reporting generic healthy fleet',()=>{
   const {ctx,element}=createDashboard();
   const pool={id:'publisher',scope:{owner:'eutelic',repository:'runnerhub'},

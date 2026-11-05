@@ -87,6 +87,40 @@ The repository inventory request may fail separately from the local pool APIs;
 the panel shows that limitation instead of presenting a false all-clear.
 
 
+## GitHub queue snapshot on the Active runners page
+
+The **Active runners** page shows only workers RunnerHub has already created.
+It cannot independently report all queued GitHub Actions jobs: GitHub may hold
+a job while no RunnerHub worker exists. An empty Active runners table is not
+evidence that GitHub has no waiting jobs.
+
+For a read-only per-repository snapshot, click **Check GitHub queues** on
+the Active runners page. This inspects only **connected private repositories**
+visible to the signed-in GitHub App identity, using the same bounded
+`/api/v1/github/repositories/{owner}/{repo}/queued-jobs` endpoint as
+Diagnostics. A RunnerHub bearer API token alone is not a GitHub login.
+
+The table reports, separately for each repository:
+
+- observed queued jobs requesting a `runnerhub`-prefixed label;
+- distinct workflow runs containing those observed queued jobs;
+- observed `waiting` or `pending` jobs on RunnerHub labels;
+- other or unknown-label pending jobs (not assumed to require RunnerHub);
+- coverage and any per-repository inspection failures.
+
+One scan reads at most two repositories concurrently and runs **only on
+request**, not on the ordinary dashboard refresh timer. GitHub may report
+additional runs or jobs beyond the bounded inspection; such results show
+a **lower-bound** count. Failed inspections show **Unavailable**, never zero.
+A completed snapshot retains its timestamp and is marked stale after two
+minutes, rather than silently claiming to reflect a live queue.
+
+A count of workflow runs containing queued jobs is **not** a GitHub
+queue-position or chronological scheduling estimate. Jobs may be waiting on
+environment approvals, dependencies, incompatible labels, eligible hosts,
+GitHub capacity, or listener readiness. For a specific job's diagnosis,
+use the existing **Inspect pending GitHub jobs** action on Diagnostics.
+
 ## Inspect a specific queued GitHub Actions job
 
 From the repository onboarding audit, click **Inspect pending GitHub jobs**

@@ -62,7 +62,7 @@
         <div>
           <div class="section-kicker">Live fleet</div>
           <h2>Active runners</h2>
-          <div class="muted small">Only runners that currently exist. Finished and historical jobs are not shown here.</div>
+          <div class="muted small">Only workers RunnerHub has created; GitHub jobs queued before provisioning are shown separately below.</div>
         </div>
         <div class="runner-filters">
           <label class="muted small" for="active-runner-filter">Show</label>
@@ -75,8 +75,19 @@
           <div id="active-runner-summary" class="summary-pill"></div>
         </div>
       </div>
+      <div class="resource-note" id="github-queue-panel">
+        <div class="card-head">
+          <div>
+            <h3>GitHub queue by repository</h3>
+            <div class="muted small">Jobs waiting on GitHub are not Active runners until RunnerHub creates workers. Read-only, on-demand snapshot of connected private repositories.</div>
+          </div>
+          <div class="actions"><button type="button" class="secondary compact" id="github-queue-refresh">Check GitHub queues</button></div>
+        </div>
+        <div id="github-queue-summary" aria-live="polite">Not checked. Zero active runners does not mean the GitHub queue is empty.</div>
+      </div>
       <div id="active-runners"></div>
       <div class="muted small workers-note">Step progress counts completed workflow steps, not elapsed time or an estimated percent of total job duration.</div>
+
     </section>
 
     <div id="compute-section" class="overview-grid" data-page-view="compute">

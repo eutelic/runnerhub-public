@@ -28,7 +28,9 @@ const els={
   dataFreshness:document.getElementById('data-freshness'),
   refreshNow:document.getElementById('refresh-now'),
   autoRefresh:document.getElementById('auto-refresh'),
-  activeRunnerFilter:document.getElementById('active-runner-filter')
+  activeRunnerFilter:document.getElementById('active-runner-filter'),
+  githubQueueRefresh:document.getElementById('github-queue-refresh'),
+  githubQueueSummary:document.getElementById('github-queue-summary')
 };
 let csrf='';
 let auth={enabled:false,authenticated:false};
@@ -38,6 +40,8 @@ let bulkConnecting=false;
 let hiddenRepoAccounts=loadHiddenRepoAccounts();
 const hostDrafts=new Map();
 const snapshot={};
+let githubQueueGeneration=0;
+let githubQueueScan={loading:false,complete:false,at:0,rows:[],total:0};
 const MACHINE_BOOTSTRAP_KEY='runnerhub-machine-bootstrap-v1';
 let machineBootstrap=loadMachineBootstrap();
 let machineOperation=null;
@@ -53,6 +57,9 @@ let dashboardIdentity='';
 function clearDashboardSnapshot(){
   for(const key of Object.keys(snapshot))delete snapshot[key];
   repositoryInventoryAt=0;
+  githubQueueGeneration++;
+  githubQueueScan={loading:false,complete:false,at:0,rows:[],total:0};
+  renderGitHubQueue();
   recommendationCache={key:'',at:0,value:new Map(),errors:[]};
   efficiencyCache={key:'',at:0,value:[],errors:[]};
   hostDrafts.clear();
@@ -161,6 +168,7 @@ document.getElementById('machine-bootstrap-status')?.addEventListener('click',ev
 bind('install-deployer','click',installDeployer);
 bind('copy-deployer-token','click',copyDeployerToken);
 bind('message-dismiss','click',()=>message(''));
+bind('github-queue-refresh','click',()=>{void inspectGitHubQueues()});
 bind('history-filter-form','submit',event=>{
   event.preventDefault();
   historyOffset=0;
@@ -723,7 +731,7 @@ function renderActiveRunners(workers,poolByID,hostByID,progressByWorker){
   const memory=active.reduce((sum,w)=>{const pool=poolByID?.get(w.poolId);return sum+Number(w.resources?.memoryBytes||0)*resourceEnvelopeFactor(pool,w)},0);
   els.activeRunnerSummary.textContent=active.length+' active · '+cpuCores(cpu)+' cores · '+gib(memory)+' GiB host-reserved';
   if(!visible.length){
-    els.activeRunners.innerHTML='<div class="empty">'+(active.length?'No active runners match this filter.':'No active runners right now. Connect a repository or check the Compute page for pool readiness.')+'</div>';
+    els.activeRunners.innerHTML='<div class="empty">'+(active.length?'No active runners match this filter.':'No RunnerHub workers currently exist. GitHub may still have queued jobs: check the GitHub queue by repository below.')+'</div>';
     return;
   }
 
@@ -759,6 +767,127 @@ function renderActiveRunners(workers,poolByID,hostByID,progressByWorker){
     ['Job started',x=>fmtTime(x.startedAt)],
     ['Age',x=>fmtAge(x.createdAt)]
   ]));
+}
+
+
+function summarizeQueuedGitHubJobs(report){
+  const jobs=Array.isArray(report?.jobs)?report.jobs:[];
+  const runnerhub=jobs.filter(job=>Array.isArray(job.labels)&&
+    job.labels.some(label=>/^runnerhub(?:-|$)/i.test(String(label))));
+  const queued=runnerhub.filter(job=>String(job.status||'').toLowerCase()==='queued');
+  const waiting=runnerhub.filter(job=>['waiting','pending'].includes(String(job.status||'').toLowerCase()));
+  const other=jobs.length-runnerhub.length;
+  const runs=new Set(queued.map(job=>String(job.runId||'')).filter(Boolean));
+  return {queuedJobs:queued.length,queuedRuns:runs.size,waitingJobs:waiting.length,
+    otherJobs:other,partial:report?.truncated===true,checkedRuns:Number(report?.checkedRuns)||0};
+}
+
+function eligibleQueueRepositories(){
+  if(!auth.authenticated)return [];
+  const visible=new Set((snapshot.repos||[]).filter(repo=>repo?.private===true)
+    .map(repo=>String(repo.fullName||'').toLowerCase()));
+  return [...new Set((snapshot.pools||[]).filter(pool=>
+    Number(pool.githubInstallationId)>0&&pool.scope?.kind==='repository'&&
+    /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repoName(pool))&&
+    visible.has(repoName(pool).toLowerCase())).map(repoName))].sort((a,b)=>a.localeCompare(b));
+}
+
+function renderGitHubQueue(){
+  const node=els.githubQueueSummary;
+  if(!node)return;
+  if(els.githubQueueRefresh)els.githubQueueRefresh.disabled=githubQueueScan.loading||!auth.authenticated;
+  if(!auth.authenticated){
+    node.textContent='Sign in with GitHub to inspect connected private repositories. A RunnerHub API token alone cannot query GitHub job queues.';
+    return;
+  }
+  const scan=githubQueueScan;
+  if(!scan.complete&&!scan.loading){
+    node.textContent='Not checked. Click Check GitHub queues to inspect pending jobs. Zero active runners does not mean GitHub has no queued work.';
+    return;
+  }
+  if(scan.complete&&scan.total===0){
+    node.textContent='No connected private repositories available for GitHub queue inspection. Verify repository access and pool configuration.';
+    return;
+  }
+  const rows=scan.rows.filter(Boolean);
+  const failures=rows.filter(row=>row.error).length;
+  const inspected=rows.filter(row=>!row.error);
+  const queued=inspected.reduce((n,row)=>n+row.summary.queuedJobs,0);
+  const waiting=inspected.reduce((n,row)=>n+row.summary.waitingJobs,0);
+  const incomplete=inspected.filter(row=>row.summary.partial).length;
+  const stamp=scan.at?new Date(scan.at).toLocaleTimeString([],{hour:'numeric',minute:'2-digit'}):'';
+  const old=scan.at&&Date.now()-scan.at>2*60*1000;
+  let html='<p class="muted small">'+(scan.loading?'Inspecting GitHub queues: '+rows.length+' / '+scan.total+' repositories…':
+    'GitHub snapshot checked at '+esc(stamp)+(old?' (stale)':'')+'. ')+
+    (scan.loading?'':inspected.length?
+      esc(queued+' observed queued RunnerHub jobs across '+inspected.length+' repositories; '+
+        waiting+' waiting/pending RunnerHub jobs.'):
+      'No successful repository inspections; queue depth unknown.')+
+    (failures?' '+failures+' inspection failure(s); counts do not include them.':'')+
+    (incomplete?' '+incomplete+' repository result(s) truncated; counts are lower bounds.':'')+'</p>';
+  if(rows.length){
+    const sorted=[...rows].sort((a,b)=>
+      (b.summary?.queuedJobs||0)-(a.summary?.queuedJobs||0)||
+      a.repository.localeCompare(b.repository));
+    html+=tab(sorted,[
+      ['Repository',row=>{
+        const parts=row.repository.split('/');
+        return '<a href="https://github.com/'+parts.map(encodeURIComponent).join('/')+
+          '/actions" target="_blank" rel="noopener noreferrer">'+esc(row.repository)+'</a>';
+      },true],
+      ['Queued RunnerHub jobs',row=>row.error?'Unavailable':(row.summary.partial?'≥ ':'')+row.summary.queuedJobs],
+      ['Runs with queued RunnerHub jobs',row=>row.error?'Unavailable':(row.summary.partial?'≥ ':'')+row.summary.queuedRuns],
+      ['Waiting / pending RunnerHub jobs',row=>row.error?'Unavailable':(row.summary.partial?'≥ ':'')+row.summary.waitingJobs],
+      ['Other / unknown-label pending jobs',row=>row.error?'Unavailable':(row.summary.partial?'≥ ':'')+row.summary.otherJobs],
+      ['Coverage',row=>row.error?'Unavailable: '+row.error:
+        (row.summary.partial?'Partial':'Bounded')+' · '+row.summary.checkedRuns+' runs checked']
+    ]);
+  }
+  html+='<p class="muted small">Only jobs observed in recent queued/in-progress GitHub workflow runs are counted. '+
+    'Counts are point-in-time observations, not GitHub queue positions or scheduling guarantees. '+
+    'Waiting/pending jobs may be blocked on approvals or workflow dependencies. '+
+    'For a specific job\'s labels and blockers, use <a href="/diagnostics.html">Diagnostics</a>. '+
+    'GitHub API inspection runs only when you click Check GitHub queues, not on the dashboard refresh timer.</p>';
+  node.innerHTML=html;
+}
+
+async function inspectGitHubQueues(){
+  if(githubQueueScan.loading||!auth.authenticated)return;
+  const repositories=eligibleQueueRepositories();
+  const generation=++githubQueueGeneration;
+  githubQueueScan={loading:true,complete:false,at:0,rows:[],total:repositories.length};
+  if(!repositories.length){
+    githubQueueScan={loading:false,complete:true,at:Date.now(),
+      rows:[],total:0};
+    if(els.githubQueueSummary)els.githubQueueSummary.textContent=
+      'No connected private repositories available for GitHub queue inspection. Verify repository access and pool configuration.';
+    if(els.githubQueueRefresh)els.githubQueueRefresh.disabled=false;
+    return;
+  }
+  renderGitHubQueue();
+  let cursor=0;
+  const responses=Array(repositories.length);
+  const inspect=async()=>{
+    while(cursor<repositories.length&&generation===githubQueueGeneration){
+      const index=cursor++;
+      const repository=repositories[index];
+      const path='/api/v1/github/repositories/'+repository.split('/').map(encodeURIComponent).join('/')+'/queued-jobs';
+      try{
+        const report=await j(path);
+        responses[index]={repository,summary:summarizeQueuedGitHubJobs(report)};
+      }catch(error){
+        responses[index]={repository,error:String(error?.message||error).slice(0,160)};
+      }
+      if(generation!==githubQueueGeneration)return;
+      githubQueueScan.rows=responses.filter(Boolean);
+      renderGitHubQueue();
+    }
+  };
+  await Promise.all([inspect(),inspect()]);
+  if(generation!==githubQueueGeneration)return;
+  githubQueueScan={loading:false,complete:true,at:Date.now(),
+    rows:responses.filter(Boolean),total:repositories.length};
+  renderGitHubQueue();
 }
 
 function renderWorkers(workers,poolByID){
@@ -1043,7 +1172,7 @@ function renderFleetOverview(hosts,pools,workers,statuses,runtimeHealth,progress
   const ready=connected.filter(p=>listenerByPool.get(p.id)?.state==='ready').length;
   const cards=[
     ['Hosts online',online+' / '+allHosts.length,'Online compute machines','#compute-section'],
-    ['Active runners',String(active.length),busy+' running jobs','#active-runners-section'],
+    ['Active runners',String(active.length),busy+' running jobs (GitHub queue separate)','#active-runners-section'],
     ['Listeners ready',ready+' / '+connected.length,'Connected scale-set listeners','#compute-section'],
     ['Runner capacity',String(connected.reduce((n,p)=>n+Math.max(0,Number(p.maxConcurrency)||0),0)),
       'Combined configured concurrency limit','#compute-section']
@@ -1162,6 +1291,7 @@ async function refresh(force=false){
       els.deployerStatus.innerHTML='<span class="muted">Sign in to view.</span>';
       els.activeRunnerSummary.textContent='';
       els.workerSummary.textContent='';
+      renderGitHubQueue();
       els.repos.innerHTML='';
       els.dataFreshness.textContent='Sign in required';
       clearDashboardSnapshot();
@@ -1233,6 +1363,7 @@ async function refresh(force=false){
     renderHosts(h,w,poolByID);
     renderPools(p,statuses,runtimeHealth,recommendationCache.value,h,w,progress);
     renderActiveRunners(w,poolByID,hostByID,progressByWorker);
+    renderGitHubQueue();
     renderWorkers(w,poolByID);
     renderPreservingTableScroll(els.audit,tab(a,[
       ['When',x=>fmtTime(x.createdAt)],
