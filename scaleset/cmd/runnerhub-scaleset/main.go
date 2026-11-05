@@ -6,9 +6,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"hash/fnv"
 	"io"
 	"log/slog"
+	mathrand "math/rand"
 	"net"
 	"net/http"
 	"net/url"
@@ -671,6 +671,7 @@ type managedListener struct {
 	cancel      context.CancelFunc
 	fingerprint string
 	ready       bool
+	stopping    bool
 }
 
 type listenerRetryState struct {
@@ -679,7 +680,32 @@ type listenerRetryState struct {
 	fingerprint string
 }
 
-func listenerRetryDelay(attempt int, key string) time.Duration {
+func beginListenerStop(active map[string]managedListener, key string) bool {
+	running, ok := active[key]
+	if !ok || running.stopping {
+		return false
+	}
+	if running.cancel != nil {
+		running.cancel()
+	}
+	running.ready = false
+	running.stopping = true
+	active[key] = running
+	return true
+}
+
+func listenerMayStart(key string, active map[string]managedListener) bool {
+	_, exists := active[key]
+	return !exists
+}
+
+func listenerRetryDelay(attempt int, _ string) time.Duration {
+	// Process-random jitter prevents separate managers retrying the same pool
+	// on the same deterministic schedule after a broker session conflict.
+	return listenerRetryDelayWithJitter(attempt, mathrand.Int63n)
+}
+
+func listenerRetryDelayWithJitter(attempt int, randomIntn func(int64) int64) time.Duration {
 	if attempt < 1 {
 		attempt = 1
 	}
@@ -694,10 +720,13 @@ func listenerRetryDelay(attempt int, key string) time.Duration {
 	if jitterMax <= 0 {
 		return base
 	}
-	h := fnv.New64a()
-	_, _ = h.Write([]byte(key + ":" + strconv.Itoa(attempt)))
-	// #nosec G115 -- jitterMax is capped at one quarter of the 5 minute retry ceiling.
-	jitter := time.Duration(h.Sum64() % uint64(jitterMax+1))
+	if randomIntn == nil {
+		randomIntn = mathrand.Int63n
+	}
+	jitter := time.Duration(randomIntn(int64(jitterMax) + 1))
+	if jitter < 0 || jitter > jitterMax {
+		jitter = 0
+	}
 	if base+jitter > 5*time.Minute {
 		return 5 * time.Minute
 	}
@@ -709,6 +738,33 @@ type listenerResult struct {
 	fingerprint string
 	ready       bool
 	err         error
+}
+
+var errMessageSessionClose = errors.New("GitHub message session close failed")
+
+func messageSessionCloseResult(runErr, closeErr error) error {
+	if closeErr == nil {
+		return runErr
+	}
+	closeErr = fmt.Errorf("%w: %w", errMessageSessionClose, closeErr)
+	if runErr == nil {
+		return closeErr
+	}
+	return errors.Join(runErr, closeErr)
+}
+
+func blockListenerOnSessionCloseFailure(active map[string]managedListener, key string, resultErr error) bool {
+	if !errors.Is(resultErr, errMessageSessionClose) {
+		return false
+	}
+	running, ok := active[key]
+	if !ok {
+		return false
+	}
+	running.ready = false
+	running.stopping = true
+	active[key] = running
+	return true
 }
 
 func main() {
@@ -802,6 +858,7 @@ func runDynamicManager(ctx context.Context, base config) error {
 		return tracker
 	}
 	results := make(chan listenerResult, 64)
+	var listeners sync.WaitGroup
 	ticker := time.NewTicker(10 * time.Second)
 	defer ticker.Stop()
 
@@ -813,6 +870,9 @@ func runDynamicManager(ctx context.Context, base config) error {
 	}
 
 	reconcile := func() {
+		if ctx.Err() != nil {
+			return
+		}
 		var remote []managedConfig
 		if err := hub.do(ctx, http.MethodGet, "/api/v1/scalesets/configs", nil, &remote); err != nil {
 			_ = setReadiness(false)
@@ -832,9 +892,15 @@ func runDynamicManager(ctx context.Context, base config) error {
 		for key, running := range active {
 			item, ok := desired[key]
 			if !ok || configFingerprint(item) != running.fingerprint {
-				running.cancel()
-				delete(active, key)
-				delete(retries, key)
+				if beginListenerStop(active, key) {
+					delete(retries, key)
+					if ok {
+						_ = hub.scaleSetStatus(ctx, key, "starting", "waiting for the previous message session to close")
+					}
+				}
+				continue
+			}
+			if running.stopping {
 				continue
 			}
 			state := "starting"
@@ -855,7 +921,7 @@ func runDynamicManager(ctx context.Context, base config) error {
 		startedInstallations := map[int64]bool{}
 		for _, key := range poolIDs {
 			item := desired[key]
-			if _, ok := active[key]; ok {
+			if !listenerMayStart(key, active) {
 				continue
 			}
 			fingerprint := configFingerprint(item)
@@ -886,11 +952,19 @@ func runDynamicManager(ctx context.Context, base config) error {
 			startedInstallations[item.AppInstallationID] = true
 			_ = hub.scaleSetStatus(ctx, key, "starting", "")
 			slog.Info("starting managed scale-set listener", "pool", key, "repository", item.RegistrationURL, "name", item.Name)
+			listeners.Add(1)
 			go func(key, fingerprint string, cfg config) {
+				defer listeners.Done()
+				sendResult := func(result listenerResult) {
+					select {
+					case results <- result:
+					case <-ctx.Done():
+					}
+				}
 				err := runListener(childCtx, cfg, func() {
-					results <- listenerResult{key: key, fingerprint: fingerprint, ready: true}
+					sendResult(listenerResult{key: key, fingerprint: fingerprint, ready: true})
 				})
-				results <- listenerResult{key: key, fingerprint: fingerprint, err: err}
+				sendResult(listenerResult{key: key, fingerprint: fingerprint, err: err})
 			}(key, fingerprint, cfg)
 		}
 		updateReadiness()
@@ -908,6 +982,18 @@ func runDynamicManager(ctx context.Context, base config) error {
 				running.cancel()
 			}
 			_ = setReadiness(false)
+			stopped := make(chan struct{})
+			go func() {
+				listeners.Wait()
+				close(stopped)
+			}()
+			timer := time.NewTimer(8 * time.Second)
+			defer timer.Stop()
+			select {
+			case <-stopped:
+			case <-timer.C:
+				slog.Warn("timed out waiting for scale-set message sessions to close during shutdown")
+			}
 			return ctx.Err()
 		case <-ticker.C:
 			reconcile()
@@ -917,6 +1003,9 @@ func runDynamicManager(ctx context.Context, base config) error {
 				continue
 			}
 			if result.ready {
+				if running.stopping {
+					continue
+				}
 				running.ready = true
 				active[result.key] = running
 				delete(retries, result.key)
@@ -924,8 +1013,22 @@ func runDynamicManager(ctx context.Context, base config) error {
 				updateReadiness()
 				continue
 			}
+			if blockListenerOnSessionCloseFailure(active, result.key, result.err) {
+				detail := "message session close failed; replacement is blocked: " + result.err.Error()
+				_ = hub.scaleSetStatus(ctx, result.key, "error", detail)
+				slog.Error("blocking scale-set listener replacement after message session close failure", "pool", result.key, "error", result.err)
+				updateReadiness()
+				continue
+			}
 
 			delete(active, result.key)
+			if running.stopping {
+				updateReadiness()
+				// Do not start a replacement until runListener has returned, which
+				// includes closing its GitHub message session.
+				reconcile()
+				continue
+			}
 			if result.err != nil && !errors.Is(result.err, context.Canceled) {
 				prev := retries[result.key]
 				attempt := prev.attempt + 1
@@ -985,7 +1088,7 @@ func configFromManaged(base config, remote managedConfig) config {
 	return c
 }
 
-func runListener(ctx context.Context, c config, onReady func()) error {
+func runListener(ctx context.Context, c config, onReady func()) (runErr error) {
 	if c.MaxRunners < 1 || c.MinRunners < 0 || c.MinRunners > c.MaxRunners {
 		return errors.New("invalid min/max runner values")
 	}
@@ -1071,7 +1174,14 @@ func runListener(ctx context.Context, c config, onReady func()) error {
 	if err != nil {
 		return fmt.Errorf("message session: %w", err)
 	}
-	defer sessions.Close(context.Background())
+	defer func() {
+		closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := sessions.Close(closeCtx); err != nil {
+			slog.Warn("close GitHub scale-set message session", "scaleSetID", set.ID, "error", err)
+			runErr = messageSessionCloseResult(runErr, err)
+		}
+	}()
 
 	l, err := listener.New(sessions, listener.Config{ScaleSetID: set.ID, MaxRunners: c.MaxRunners, Logger: slog.Default()})
 	if err != nil {
