@@ -18,14 +18,17 @@ import (
 )
 
 type Service struct {
-	Policy     *PolicySet
-	TrueNAS    TrueNAS
-	HTTPClient *http.Client
-	AuditPath  string
+	Policy          *PolicySet
+	TrueNAS         TrueNAS
+	HTTPClient      *http.Client
+	AuditPath       string
+	ManagementKey   []byte
+	ManagedAppsPath string
 
 	locksMu sync.Mutex
 	locks   map[string]*sync.Mutex
-	auditMu sync.Mutex
+	auditMu   sync.Mutex
+	managedMu sync.Mutex
 }
 
 var (
@@ -59,6 +62,8 @@ func (s *Service) Handler() http.Handler {
 		_, _ = io.WriteString(w, `{"status":"ok"}`)
 	})
 	mux.HandleFunc("/api/v1/deployments/", s.handleDeploy)
+	mux.HandleFunc("GET "+managementPrefix, s.listManagedApps)
+	mux.HandleFunc("POST "+managementPrefix+"/", s.manageApp)
 	return mux
 }
 
