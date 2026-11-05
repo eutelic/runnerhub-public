@@ -114,16 +114,16 @@ function sortWorkers(workers){
   return [...workers].sort((a,b)=>String(b.updatedAt||b.createdAt||'').localeCompare(String(a.updatedAt||a.createdAt||''))).slice(0,100);
 }
 
-function showReadiness(pools, statuses, runtime) {
+function showReadiness(pools, statuses, poolHealth) {
   const container=document.getElementById('queue-readiness');
   container.replaceChildren();
-  if(!pools.ok||!statuses.ok||!runtime.ok){
+  if(!pools.ok||!statuses.ok||!poolHealth.ok){
     const note=document.createElement('p');
     note.textContent='Runner readiness unavailable: check authentication and API connectivity.';
     container.append(note);
     return;
   }
-  const report=window.RunnerHubQueueDiagnostics.summarize(pools.value,statuses.value,runtime.value);
+  const report=window.RunnerHubQueueDiagnostics.summarize(pools.value,statuses.value,poolHealth.value);
   if(!report.length){
     const note=document.createElement('p');
     note.textContent='No runner pools are currently configured.';
@@ -160,7 +160,7 @@ function showReadiness(pools, statuses, runtime) {
 
 
 
-async function inspectQueuedJobs(repository, output, pools, statuses, runtime) {
+async function inspectQueuedJobs(repository, output, pools, statuses, poolHealth) {
   output.replaceChildren();
   const loading=document.createElement('p');
   loading.textContent='Inspecting GitHub job labels and live RunnerHub pool status…';
@@ -185,7 +185,7 @@ async function inspectQueuedJobs(repository, output, pools, statuses, runtime) {
       return;
     }
     for(const job of relevant){
-      const diagnosis=window.RunnerHubQueueDiagnostics.diagnoseQueuedJob(job,repository,pools,statuses,runtime);
+      const diagnosis=window.RunnerHubQueueDiagnostics.diagnoseQueuedJob(job,repository,pools,statuses,poolHealth);
       const card=document.createElement('div');
       card.className='resource-note';
       const name=document.createElement('strong');
@@ -219,7 +219,7 @@ async function inspectQueuedJobs(repository, output, pools, statuses, runtime) {
   }
 }
 
-function showRepositoryAudit(repositories, pools, statuses, runtime) {
+function showRepositoryAudit(repositories, pools, statuses, poolHealth) {
   const container=document.getElementById('repository-audit');
   if(!container)return;
   container.replaceChildren();
@@ -229,13 +229,13 @@ function showRepositoryAudit(repositories, pools, statuses, runtime) {
     container.append(note);
     return;
   }
-  if(!pools.ok||!statuses.ok||!runtime.ok){
-    note.textContent='Repository audit unavailable: pool or runtime API status could not be retrieved.';
+  if(!pools.ok||!statuses.ok||!poolHealth.ok){
+    note.textContent='Repository audit unavailable: pool eligibility or listener status could not be retrieved.';
     container.append(note);
     return;
   }
   const report=window.RunnerHubQueueDiagnostics.auditRepositories(
-    repositories.value,pools.value,statuses.value,runtime.value);
+    repositories.value,pools.value,statuses.value,poolHealth.value);
   const privateRepos=report.filter(r=>r.private);
   const disconnected=privateRepos.filter(r=>r.code==='no-standard-pool');
   const healthy=privateRepos.filter(r=>r.code==='ready');
@@ -281,7 +281,7 @@ function showRepositoryAudit(repositories, pools, statuses, runtime) {
       const result=document.createElement('div');
       button.addEventListener('click',()=>{
         button.disabled=true;
-        inspectQueuedJobs(entry.name,result,pools.value,statuses.value,runtime.value)
+        inspectQueuedJobs(entry.name,result,pools.value,statuses.value,poolHealth.value)
           .finally(()=>{button.disabled=false});
       });
       article.append(button,result);
@@ -296,7 +296,7 @@ async function buildBundle(){
   statusEl.className='';
   statusEl.textContent='Collecting diagnostics…';
   try{
-    const [auth,hosts,pools,workers,audit,scalesets,runtime,versions,metrics,repositories]=await Promise.all([
+    const [auth,hosts,pools,workers,audit,scalesets,runtime,poolHealth,versions,metrics,repositories]=await Promise.all([
       collect('auth','/auth/github/status'),
       collect('hosts','/api/v1/hosts'),
       collect('pools','/api/v1/pools'),
@@ -304,14 +304,15 @@ async function buildBundle(){
       collect('audit','/api/v1/audit?limit=200'),
       collect('scalesets','/api/v1/scalesets/status'),
       collect('runtime','/api/v1/runtime-health'),
+      collect('poolHealth','/api/v1/pools/health'),
       collect('versions','/api/v1/fleet/versions'),
       collect('metrics','/api/v1/metrics'),
       collect('repositories','/api/v1/github/connected-repositories')
     ]);
     const fullWorkerEvidence=workers.ok?{ok:true,value:workers.value}:workers;
     if(workers.ok)workers.value=sortWorkers(workers.value);
-    showReadiness(pools,scalesets,runtime);
-    showRepositoryAudit(repositories,pools,scalesets,runtime);
+    showReadiness(pools,scalesets,poolHealth);
+    showRepositoryAudit(repositories,pools,scalesets,poolHealth);
     incidentSnapshot=[fullWorkerEvidence,pools,hosts,scalesets,runtime];
     renderIncidents();
     if(auth.ok&&auth.value&&typeof auth.value==='object'){
@@ -333,6 +334,7 @@ async function buildBundle(){
       audit,
       scaleSets:scalesets,
       runtimeHealth:runtime,
+      poolEligibility:poolHealth,
       versions,
       metrics
     };

@@ -167,6 +167,26 @@ test('pending job diagnostics distinguish JIT failures, placement and capacity',
     [{poolId:'p1',state:'ready'}],[{poolId:'p1',healthy:true,onlineHosts:1,activeWorkers:0}]).code,'unknown');
 });
 
+test('runtime history does not imply live host eligibility',()=>{
+  const p={id:'p1',scope:{kind:'repository',owner:'eutelic',repository:'a'},scaleSetName:'runnerhub',githubInstallationId:42,maxConcurrency:2};
+  const job={labels:['runnerhub']};
+  const runtimeOnly={poolId:'p1',state:'healthy',activeWorkers:0,busyWorkers:0};
+  assert.equal(diagnoseQueuedJob(job,'eutelic/a',[p],[listener()],[runtimeOnly]).code,'capacity-unverified');
+  const valid={poolId:'p1',healthy:true,onlineHosts:1,activeWorkers:0,busyWorkers:0};
+  const result=diagnoseQueuedJob(job,'eutelic/a',[p],[listener()],[valid]);
+  assert.equal(result.code,'unknown');
+  assert.match(result.detail,/compatible host/);
+});
+
+test('host resource exhaustion, offline hosts and pool limit are distinct',()=>{
+  const p={id:'p1',scope:{kind:'repository',owner:'eutelic',repository:'a'},scaleSetName:'runnerhub',githubInstallationId:42,maxConcurrency:3};
+  const job={labels:['runnerhub']};
+  const get=health=>diagnoseQueuedJob(job,'eutelic/a',[p],[listener()],[health]).code;
+  assert.equal(get({poolId:'p1',healthy:false,onlineHosts:0,activeWorkers:1,reasons:['compute: CPU exhausted']}),'host-capacity');
+  assert.equal(get({poolId:'p1',healthy:false,onlineHosts:0,activeWorkers:0,reasons:['no recently online hosts']}),'no-compatible-host');
+  assert.equal(get({poolId:'p1',healthy:false,onlineHosts:0,activeWorkers:3,reasons:['compute: CPU exhausted']}),'capacity');
+});
+
 test('missing GitHub job labels never imply the job requests another runner',()=>{
   const result=diagnoseQueuedJob({labels:[]},'eutelic/a',[],[],[]);
   assert.equal(result.code,'labels-unavailable');

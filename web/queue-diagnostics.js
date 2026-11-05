@@ -202,18 +202,27 @@
       return {code:jit?'jit-failure':'listener-failure', detail:'Listener '+state+(listenerDetail?': '+listenerDetail:'; inspect scale-set logs')};
     }
     if(state !== 'ready')return {code:'listener-not-ready',detail:'Listener '+(state||'unknown')+'; registration not confirmed.'};
-    if(health && (!health.healthy || number(health.onlineHosts) === 0)) {
-      const reasons = list(health.reasons).map(String);
-      const failed = /worker failed|worker failure|startup failure/i.test([health.lastFailureReason,...reasons].join(' '));
-      return {code:failed?'worker-failure':'no-compatible-host',
-        detail:[health.lastFailureReason,...reasons].filter(Boolean).join('; ') || 'No confirmed compatible host capacity.'};
+    // Runtime history is not host capacity. Only the pool-health endpoint
+    // reports current eligible hosts after placement-domain reservations.
+    if(!health || typeof health.healthy !== 'boolean' ||
+        health.onlineHosts == null || !Number.isFinite(Number(health.onlineHosts))) {
+      return {code:'capacity-unverified',
+        detail:'Listener ready, but live pool eligibility data is unavailable. Runtime history cannot establish current host capacity.'};
     }
-    if(health && number(pool.maxConcurrency) > 0 && number(health.activeWorkers) >= number(pool.maxConcurrency)) {
-      return {code:'capacity',detail:'Configured concurrency limit is occupied ('+
+    if(number(pool.maxConcurrency)>0 && number(health.activeWorkers)>=number(pool.maxConcurrency)) {
+      return {code:'capacity',detail:'Configured pool concurrency limit occupied ('+
         number(health.activeWorkers)+'/'+number(pool.maxConcurrency)+').'};
     }
-    if(!health) return {code:'runtime-unverified',detail:'Listener ready, runtime eligibility data not available.'};
-    return {code:'unknown',detail:'RunnerHub reports a ready listener and capacity; use GitHub job history and live scale-set logs to diagnose continued queueing.'};
+    if(!health.healthy || number(health.onlineHosts)===0) {
+      const reasons=list(health.reasons).map(String);
+      const detail=[health.lastFailureReason,...reasons].filter(Boolean).join('; ');
+      const failed=/worker failed|worker failure|startup failure/i.test(detail);
+      const resources=/(?:cpu|ram|memory|disk|gpu).*(?:exhaust|insuff)|(?:exhaust|insuff).*(?:cpu|ram|memory|disk|gpu)/i.test(detail);
+      return {code:failed?'worker-failure':resources?'host-capacity':'no-compatible-host',
+        detail:detail || 'No currently eligible host has confirmed free capacity for this pool.'};
+    }
+    return {code:'unknown',detail:'Listener ready and '+number(health.onlineHosts)+
+      ' compatible host(s) have free resources according to RunnerHub. GitHub job assignment is not verified; inspect runner-group/label routing and scale-set logs.'};
   }
 
   const api = {summarize, auditRepositories, planOnboarding, diagnoseQueuedJob};

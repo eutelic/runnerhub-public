@@ -102,7 +102,7 @@ func TestDiagnosticsReadinessScriptIsEmbedded(t *testing.T) {
         t.Fatal("runner readiness script not loaded")
     }
     if !strings.Contains(string(logic), "function summarize(") ||
-        !strings.Contains(string(glue), "showReadiness(pools,scalesets,runtime)") {
+        !strings.Contains(string(glue), "showReadiness(pools,scalesets,poolHealth)") {
         t.Fatal("queue readiness analysis not wired to authenticated endpoints")
     }
 }
