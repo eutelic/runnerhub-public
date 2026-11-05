@@ -221,3 +221,28 @@ func TestBootstrapManagerUsesExistingDeployerCredential(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestManagedAppsProtectRunnerHubControlPlaneWithoutWorkflowTarget(t *testing.T) {
+	fake := testManagedInventory()
+	fake.inventory = append(fake.inventory,
+		TrueNASApp{Name: "runnerhub", State: "RUNNING"},
+		TrueNASApp{Name: "runnerhub-control", State: "RUNNING"},
+	)
+	svc := newManagedService(t, fake, t.TempDir())
+	// The policy fixture contains another workflow target, not RunnerHub.
+	// The control app must remain protected even without a matching target.
+	for _, app := range []string{"runnerhub", "runnerhub-control"} {
+		t.Run(app, func(t *testing.T) {
+			if !svc.protectedApp(app) {
+				t.Fatal("control-plane app must never use manual redeployment")
+			}
+			path := managementPrefix + "/" + app + "/enabled"
+			res := httptest.NewRecorder()
+			svc.Handler().ServeHTTP(res,
+				signedManagedRequest(t, svc.ManagementKey, "POST", path, `{"enabled":true}`))
+			if res.Code != http.StatusForbidden {
+				t.Fatalf("enable status=%d, want 403", res.Code)
+			}
+		})
+	}
+}
