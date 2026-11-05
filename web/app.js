@@ -59,6 +59,9 @@ let deployerAppsLastLoaded=0;
 let deployerAppsBusy=false;
 let deployerAppsError='';
 function clearDashboardSnapshot(){
+  deployerAppsLastLoaded=0;
+  deployerAppsError='';
+  if(els.deployerAppsList)els.deployerAppsList.textContent='Discovering TrueNAS apps…';
   for(const key of Object.keys(snapshot))delete snapshot[key];
   repositoryInventoryAt=0;
   githubQueueGeneration++;
