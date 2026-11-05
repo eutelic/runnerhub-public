@@ -34,9 +34,11 @@ func main() {
 	must(err)
 
 	svc := &deployer.Service{
-		Policy:    policy,
-		TrueNAS:   client,
-		AuditPath: env("RUNNERHUB_DEPLOY_AUDIT_FILE", "/data/deployments.jsonl"),
+		Policy:          policy,
+		TrueNAS:         client,
+		AuditPath:       env("RUNNERHUB_DEPLOY_AUDIT_FILE", "/data/deployments.jsonl"),
+		ManagementKey:   []byte(strings.TrimSpace(string(apiKeyBytes))),
+		ManagedAppsPath: env("RUNNERHUB_MANAGED_APPS_FILE", "/data/managed-apps.json"),
 	}
 	server := &http.Server{
 		Addr:              env("RUNNERHUB_DEPLOY_HTTP_ADDR", "0.0.0.0:8080"),
