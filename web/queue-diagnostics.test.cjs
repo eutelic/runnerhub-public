@@ -33,6 +33,24 @@ test('listener backoff is surfaced without diagnosing a specific underlying caus
   assert.match(result[0].explanation,/backoff/);
   assert.match(result[0].explanation,/may be involved/);
 });
+test('404 stale-worker cause is visible without blaming hardware or GitHub rate limits', () => {
+  const status = {...listener('backing_off'),
+    detail: 'listener retry attempt=2 at 2026-11-04T23:22:00Z; last failure: handle started job: runnerhub /api/v1/scale-events returned 404: scale-set worker not found'};
+  const report = summarize([pool()],[status],[healthy()]);
+  assert.equal(report[0].severity, 'attention');
+  assert.match(report[0].explanation, /unknown worker.*HTTP 404/);
+  assert.doesNotMatch(report[0].explanation, /may be involved/);
+  assert.equal(report[0].detail, status.detail);
+});
+
+test('listener diagnostics identify GitHub session conflicts separately', () => {
+  const status = {...listener('backing_off'),
+    detail: 'listener retry attempt=2 at 2026-11-04T23:22:00Z; last failure: 409 Conflict opening message session'};
+  const report = summarize([pool()],[status],[healthy()]);
+  assert.match(report[0].explanation, /message-session conflict/);
+  assert.doesNotMatch(report[0].explanation, /unknown worker/);
+});
+
 test('host rejection reasons and occupied concurrency are visible', () => {
   const result = summarize([pool()],[listener()],[healthy({
     healthy:false,onlineHosts:0,activeWorkers:2,busyWorkers:2,

@@ -29,7 +29,16 @@
       if (state === 'error') {
         warnings.push('Scale-set listener reports an error.');
       } else if (state === 'backing_off') {
-        warnings.push('Scale-set listener reports backoff; GitHub API throttling or an upstream error may be involved.');
+        const failure = String(status?.detail || '');
+        if (/scale-set worker not found/i.test(failure)) {
+          warnings.push('Listener is retrying a started-job event for an unknown worker (HTTP 404). Inspect worker cleanup and the scale-set callback logs; this does not indicate CPU exhaustion or GitHub API throttling.');
+        } else if (/\b409\b|message session.*conflict/i.test(failure)) {
+          warnings.push('Listener is retrying a GitHub message-session conflict. Check for duplicate listener owners or overlapping restarts.');
+        } else if (/\b429\b|rate.limit|\b403\b/i.test(failure)) {
+          warnings.push('Listener may be blocked by GitHub API throttling or authorization; inspect the reported status and retry time.');
+        } else {
+          warnings.push('Scale-set listener reports backoff; GitHub API throttling or an upstream error may be involved.');
+        }
       } else if (state === 'starting' || state === 'pending') {
         warnings.push('Scale-set listener is initializing; jobs may have to wait.');
       } else if (state === 'disabled') {

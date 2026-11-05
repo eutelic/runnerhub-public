@@ -510,6 +510,10 @@ func (s *scaler) Scale(ctx context.Context, message *scaleset.RunnerScaleSetMess
 			continue
 		}
 		if err := s.HandleJobStarted(ctx, job); err != nil {
+			s.logger.Error("scale-set started-job callback failed",
+				"pool", s.hub.poolID, "runner", job.RunnerName,
+				"workflowRunID", job.WorkflowRunID, "jobID", job.JobID,
+				"error", err)
 			return fmt.Errorf("handle started job: %w", err)
 		}
 	}
@@ -678,6 +682,41 @@ type listenerRetryState struct {
 	attempt     int
 	nextAttempt time.Time
 	fingerprint string
+	lastFailure string
+}
+
+// Keep the last failure visible across manager reconciliation ticks, even
+// when the listener is temporarily not running. The previous code replaced the
+// original error with only a "restart delayed" timestamp on every tick.
+func listenerRetryStatus(retry listenerRetryState) string {
+	detail := fmt.Sprintf("listener retry attempt=%d at %s", retry.attempt, retry.nextAttempt.UTC().Format(time.RFC3339))
+	if retry.lastFailure != "" {
+		detail += "; last failure: " + retry.lastFailure
+	}
+	return detail
+}
+
+func listenerFailureSummary(err error) string {
+	if err == nil {
+		return ""
+	}
+	// Never persist raw upstream errors: they can include credentials, URLs,
+	// headers, or response bodies. Only fixed classifications are safe here.
+	message := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(message, "scale-set worker not found"):
+		return "scale-set worker not found (404)"
+	case strings.Contains(message, "409") || strings.Contains(message, "conflict"):
+		return "GitHub message session conflict (409)"
+	case strings.Contains(message, "429"):
+		return "upstream rate limited (429)"
+	case strings.Contains(message, "403"):
+		return "upstream authorization denied (403)"
+	case strings.Contains(message, "404"):
+		return "upstream resource not found (404)"
+	default:
+		return "listener operation failed (details withheld)"
+	}
 }
 
 func beginListenerStop(active map[string]managedListener, key string) bool {
@@ -929,7 +968,7 @@ func runDynamicManager(ctx context.Context, base config) error {
 				if retry.fingerprint != fingerprint {
 					delete(retries, key)
 				} else if retry.nextAttempt.After(time.Now()) {
-					_ = hub.scaleSetStatus(ctx, key, "backing_off", "listener restart delayed until "+retry.nextAttempt.UTC().Format(time.RFC3339))
+					_ = hub.scaleSetStatus(ctx, key, "backing_off", listenerRetryStatus(retry))
 					continue
 				}
 			}
@@ -1039,8 +1078,11 @@ func runDynamicManager(ctx context.Context, base config) error {
 						nextAttempt = until
 					}
 				}
-				retries[result.key] = listenerRetryState{attempt: attempt, nextAttempt: nextAttempt, fingerprint: result.fingerprint}
-				detail := fmt.Sprintf("listener stopped; retry at %s: %v", nextAttempt.UTC().Format(time.RFC3339), result.err)
+				retries[result.key] = listenerRetryState{
+					attempt: attempt, nextAttempt: nextAttempt, fingerprint: result.fingerprint,
+					lastFailure: listenerFailureSummary(result.err),
+				}
+				detail := listenerRetryStatus(retries[result.key])
 				if item, ok := desired[result.key]; ok {
 					if rateDetail := trackerFor(item.AppInstallationID).detail(time.Now()); rateDetail != "" {
 						detail += " (" + rateDetail + ")"

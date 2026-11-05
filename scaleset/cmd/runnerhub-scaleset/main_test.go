@@ -543,6 +543,35 @@ func TestGitHubCooldownWaitRespectsCancellation(t *testing.T) {
 	}
 }
 
+func TestListenerRetryStatusRetainsRootCause(t *testing.T) {
+	retry := listenerRetryState{
+		attempt: 3,
+		nextAttempt: time.Date(2026, 11, 4, 23, 22, 0, 0, time.UTC),
+		lastFailure: "handle started job: runnerhub /api/v1/scale-events returned 404: scale-set worker not found",
+	}
+	detail := listenerRetryStatus(retry)
+	for _, want := range []string{"attempt=3", "2026-11-04T23:22:00Z", "scale-set worker not found"} {
+		if !strings.Contains(detail, want) {
+			t.Fatalf("listener status lost %q: %q", want, detail)
+		}
+	}
+	if got := listenerFailureSummary(fmt.Errorf("failed to handle stale event")); got != "listener operation failed (details withheld)" {
+		t.Fatalf("unexpected failure classification: %q", got)
+	}
+	if got := listenerFailureSummary(fmt.Errorf("upstream 404 scale-set worker not found; Authorization: Bearer secret-token")); got != "scale-set worker not found (404)" {
+		t.Fatalf("unsafe stale worker classification: %q", got)
+	}
+	for _, detail := range []string{"409 conflict", "403 forbidden", "429 too many requests", "network failure"} {
+		got := listenerFailureSummary(fmt.Errorf("%s token=super-secret", detail))
+		if strings.Contains(got, "super-secret") || strings.Contains(got, "token=") {
+			t.Fatalf("credential leaked into listener diagnostics: %q", got)
+		}
+	}
+	if got := listenerFailureSummary(nil); got != "" {
+		t.Fatalf("nil failure summary = %q", got)
+	}
+}
+
 
 func TestScaleLateStartedJobDoesNotCrashListener(t *testing.T) {
 	tests := []struct {
