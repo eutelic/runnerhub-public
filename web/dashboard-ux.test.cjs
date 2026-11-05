@@ -792,6 +792,19 @@ test('Docker hosts expose advertised free disk separately from CPU/RAM reservati
 });
 
 
+test('scale-set installation blockers are shown in pool and fleet diagnostics',()=>{
+  const {ctx,element}=createDashboard();
+  ctx.testPool={id:'pool-missing-installation',maxConcurrency:1,githubInstallationId:0,scaleSetDisabled:false,
+    scaleSetName:'runnerhub-publisher',scope:{owner:'eutelic',repository:'erd_tool'}};
+  ctx.testStatus={poolId:'pool-missing-installation',state:'error',
+    detail:'GitHub App installation mapping is missing; reconnect this repository to register its scale set'};
+  vm.runInContext('renderPools([testPool],[testStatus],[],new Map(),[])',ctx);
+  assert.match(element('pools').innerHTML,/GitHub App installation mapping is missing/);
+  vm.runInContext('renderFleetOverview([], [testPool], [], [testStatus], [], [])',ctx);
+  assert.match(element('fleet-overview').innerHTML,/GitHub App installation mapping is missing/);
+});
+
+
 test('resource learning shows recent maximum CPU peak and stale sample counts',()=>{
   const {ctx}=createDashboard();
   const observed=vm.runInContext("observedText({resourceSizing:{ready:true,cpuPeakP95Millis:2253,cpuPeakMaxMillis:10823,memoryPeakMaxBytes:2*1073741824}})",ctx);

@@ -1170,7 +1170,7 @@ function renderFleetOverview(hosts,pools,workers,statuses,runtimeHealth,progress
   const online=currentHosts.filter(h=>String(h.state||'').toLowerCase()==='online').length;
   const active=allWorkers.filter(w=>!['deleted','completed','failed'].includes(String(w.state||'').toLowerCase()));
   const busy=active.filter(w=>String(w.state||'').toLowerCase()==='busy').length;
-  const connected=allPools.filter(p=>Number(p.githubInstallationId)>0);
+  const connected=allPools.filter(p=>p.scaleSetDisabled!==true&&(Number(p.githubInstallationId)>0||listenerByPool.get(p.id)?.state==='error'));
   const ready=connected.filter(p=>listenerByPool.get(p.id)?.state==='ready').length;
   const cards=[
     ['Hosts online',online+' / '+currentHosts.length,'Online compute machines','#compute-section'],
@@ -1203,7 +1203,7 @@ function renderFleetOverview(hosts,pools,workers,statuses,runtimeHealth,progress
     const concurrencyBlocker=poolConcurrencyBlocker(pool,allWorkers);
     if(concurrencyBlocker)notices.push('<strong>'+esc(name)+'</strong>: '+esc(concurrencyBlocker)+' <a href="#active-runners-section">Review runners</a>.');
     if(publisherBlocker)notices.push('<strong>'+esc(name)+'</strong>: '+esc(publisherBlocker)+' <a href="#compute-section">Review hosts</a>.');
-    if(listener?.state!=='ready')notices.push('<strong>'+esc(name)+'</strong>: listener '+esc(listener?.state||'unknown')+'. <a href="/diagnostics.html">Inspect readiness</a>.');
+    if(listener?.state!=='ready')notices.push('<strong>'+esc(name)+'</strong>: listener '+esc(listener?.state||'unknown')+(listener?.detail?' — '+esc(listener.detail):'')+'. <a href="/diagnostics.html">Inspect readiness</a>.');
     else if(runtime?.state==='degraded'||runtime?.healthy===false)
       notices.push('<strong>'+esc(name)+'</strong>: runtime degraded. <a href="/diagnostics.html">Inspect failure</a>.');
     else if(!runtime||!['healthy','active'].includes(runtime.state))
@@ -1222,7 +1222,8 @@ function renderPools(pools,statuses,runtimeHealth,recommendationByPool,hosts=[],
   const progressByWorker=new Map((progress||[]).map(p=>[p.workerId,p]));
   const rows=(pools||[]).map(p=>{
     const r=recommendationByPool.get(p.id);
-    const listener=listeners.get(p.id)?.state||'unknown';
+    const listenerStatus=listeners.get(p.id);
+    const listener=listenerStatus?.state||'unknown';
     const runtime=runtimes.get(p.id)?.state||'unknown';
     const label=p.scaleSetName||'runnerhub';
     const confirmed=publisherHostBlocker(p,hosts);
@@ -1233,7 +1234,8 @@ function renderPools(pools,statuses,runtimeHealth,recommendationByPool,hosts=[],
     const capacityReason=capacity&&Number(capacity.additionalWorkers)===0&&
       Number(capacity.activeWorkers)<Number(p.maxConcurrency)?
       (capacity.reason||'No free capacity confirmed by the last pool summary.'):'';
-    const diagnosis=mismatch||poolBusy||confirmed||capacityReason||'No known host eligibility blocker';
+    const listenerBlocker=listener==='error'?(listenerStatus?.detail||'Scale-set registration is blocked'):'';
+    const diagnosis=mismatch||listenerBlocker||poolBusy||confirmed||capacityReason||'No known host eligibility blocker';
     return '<tr><td>'+esc(repoName(p))+'</td><td><code>'+esc(label)+'</code></td>'+
       '<td><span class="pool-status '+(listener==='ready'?'ok':listener==='unknown'?'unknown':'attention')+'">'+esc(listener)+'</span></td>'+
       '<td><span class="pool-status '+(['healthy','active'].includes(runtime)?'ok':runtime==='unknown'?'unknown':'attention')+'">'+esc(runtime)+'</span></td>'+
