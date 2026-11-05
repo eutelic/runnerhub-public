@@ -165,6 +165,35 @@ test('no successful queue inspections never reports a false empty queue',async()
   assert.ok(!html.includes('0 observed queued RunnerHub jobs'));
 });
 
+test('fleet overview ignores merged archived enrollments in totals and offline warnings',()=>{
+  const {ctx,element}=createDashboard();
+  ctx.testHosts=[
+    {id:'h1',name:'compute',state:'online'},
+    {id:'h2',name:'truenas',state:'online'},
+    {id:'h3',name:'compute-android',state:'online'},
+    {id:'old-h1',name:'compute',state:'archived',mergedIntoHostId:'h1'},
+    {id:'old-h2',name:'truenas',state:'archived',mergedIntoHostId:'h2'}
+  ];
+  vm.runInContext('renderFleetOverview(testHosts,[],[],[],[])',ctx);
+  let html=element('fleet-overview').innerHTML;
+  assert.match(html,/Hosts online[\s\S]*?3 \/ 3/);
+  assert.doesNotMatch(html,/machine\(s\) not online/);
+  assert.doesNotMatch(html,/No machines online/);
+
+  ctx.testHosts[1].state='offline';
+  vm.runInContext('renderFleetOverview(testHosts,[],[],[],[])',ctx);
+  html=element('fleet-overview').innerHTML;
+  assert.match(html,/Hosts online[\s\S]*?2 \/ 3/);
+  assert.match(html,/1 machine\(s\) not online/);
+  assert.doesNotMatch(html,/3 machine\(s\) not online/);
+
+  vm.runInContext('renderFleetOverview(testHosts.slice(3),[],[],[],[])',ctx);
+  html=element('fleet-overview').innerHTML;
+  assert.match(html,/Hosts online[\s\S]*?0 \/ 0/);
+  assert.match(html,/No active machines registered/);
+  assert.doesNotMatch(html,/No machines online/);
+});
+
 test('publisher eligibility explains missing DinD host instead of reporting generic healthy fleet',()=>{
   const {ctx,element}=createDashboard();
   const pool={id:'publisher',scope:{owner:'eutelic',repository:'runnerhub'},

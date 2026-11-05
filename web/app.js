@@ -1160,18 +1160,20 @@ function renderFleetAlerts(hosts,pools,workers,statuses,runtime,fresh=true){
 }
 function renderFleetOverview(hosts,pools,workers,statuses,runtimeHealth,progress=[]){
   const allHosts=Array.isArray(hosts)?hosts:[];
+  // Archived enrollments remain in the API for history, but are not fleet capacity.
+  const currentHosts=allHosts.filter(h=>String(h.state||'').toLowerCase()!=='archived');
   const allPools=Array.isArray(pools)?pools:[];
   const allWorkers=Array.isArray(workers)?workers:[];
   const progressByWorker=new Map((Array.isArray(progress)?progress:[]).map(p=>[p.workerId,p]));
   const listenerByPool=new Map((statuses||[]).map(s=>[s.poolId,s]));
   const runtimeByPool=new Map((runtimeHealth||[]).map(s=>[s.poolId,s]));
-  const online=allHosts.filter(h=>String(h.state||'').toLowerCase()==='online').length;
+  const online=currentHosts.filter(h=>String(h.state||'').toLowerCase()==='online').length;
   const active=allWorkers.filter(w=>!['deleted','completed','failed'].includes(String(w.state||'').toLowerCase()));
   const busy=active.filter(w=>String(w.state||'').toLowerCase()==='busy').length;
   const connected=allPools.filter(p=>Number(p.githubInstallationId)>0);
   const ready=connected.filter(p=>listenerByPool.get(p.id)?.state==='ready').length;
   const cards=[
-    ['Hosts online',online+' / '+allHosts.length,'Online compute machines','#compute-section'],
+    ['Hosts online',online+' / '+currentHosts.length,'Online compute machines','#compute-section'],
     ['Active runners',String(active.length),busy+' running jobs (GitHub queue separate)','#active-runners-section'],
     ['Listeners ready',ready+' / '+connected.length,'Connected scale-set listeners','#compute-section'],
     ['Runner capacity',String(connected.reduce((n,p)=>n+Math.max(0,Number(p.maxConcurrency)||0),0)),
@@ -1187,9 +1189,11 @@ function renderFleetOverview(hosts,pools,workers,statuses,runtimeHealth,progress
     if(conflict)notices.push('<strong>GitHub/RunnerHub state mismatch:</strong> '+esc(conflict)+
       ' <a href="#active-runners-section">Review runner</a>.');
   }
-  if(!allHosts.length)notices.push('No machines registered. Add a machine under <a href="#compute-section">Compute</a>.');
+  if(!currentHosts.length)notices.push(allHosts.length?
+    'No active machines registered. Archived enrollments are retained for history; add a machine under <a href="#compute-section">Compute</a>.':
+    'No machines registered. Add a machine under <a href="#compute-section">Compute</a>.');
   else if(!online)notices.push('No machines online. Check agent connectivity and <a href="/diagnostics.html">diagnostics</a>.');
-  else if(online<allHosts.length)notices.push(esc(allHosts.length-online)+' machine(s) not online; check <a href="#compute-section">Compute</a>.');
+  else if(online<currentHosts.length)notices.push(esc(currentHosts.length-online)+' machine(s) not online; check <a href="#compute-section">Compute</a>.');
   if(!connected.length)notices.push('No connected runner pools. Connect a private repository under <a href="#repositories-section">Repositories</a>.');
   for(const pool of connected){
     const name=repoName(pool)+' / '+(pool.scaleSetName||'runnerhub');
