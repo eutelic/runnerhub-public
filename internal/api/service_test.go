@@ -345,6 +345,83 @@ func TestEnablingAutoTuneStartsFreshLearningWindow(t *testing.T){
 	resetLearningForConfigChange(&before,&after)
 	if after.LearningResetAt.IsZero(){t.Fatal("enabling auto-size should start a fresh learning window")}
 }
+
+
+func TestScaleSetConfigsReportsMissingInstallationMapping(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.OpenSQLite(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	missing := core.RunnerPool{
+		ID: "pool-missing-installation",
+		Name: "ERD Tool publisher",
+		Scope: core.GitHubScope{Kind: core.ScopeRepository, Owner: "eutelic", Repository: "erd_tool"},
+		Labels: []string{publisherScaleSetName},
+		Isolation: core.IsolationContainerDinD,
+		MaxConcurrency: 1,
+		ScaleSetName: publisherScaleSetName,
+	}
+	disabled := missing
+	disabled.ID = "pool-disabled"
+	disabled.ScaleSetDisabled = true
+	valid := missing
+	valid.ID = "pool-valid"
+	valid.GitHubInstallationID = 42
+	valid.ScaleSetDisabled = false
+	for _, pool := range []core.RunnerPool{missing, disabled, valid} {
+		if err := st.UpsertPool(ctx, pool); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	svc := &Service{Store: st}
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/scalesets/configs", nil)
+	rr := httptest.NewRecorder()
+	svc.Handler().ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("configs status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	var configs []scaleSetConfigResponse
+	if err := json.NewDecoder(rr.Body).Decode(&configs); err != nil {
+		t.Fatal(err)
+	}
+	if len(configs) != 1 || configs[0].PoolID != valid.ID || configs[0].AppInstallationID != 42 {
+		t.Fatalf("configs=%+v, want only valid registration", configs)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/scalesets/status", nil)
+	rr = httptest.NewRecorder()
+	svc.Handler().ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("statuses status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	var statuses []scaleSetStatusResponse
+	if err := json.NewDecoder(rr.Body).Decode(&statuses); err != nil {
+		t.Fatal(err)
+	}
+	var got *scaleSetStatusResponse
+	disabledFound := false
+	for i := range statuses {
+		if statuses[i].PoolID == missing.ID {
+			got = &statuses[i]
+		}
+		if statuses[i].PoolID == disabled.ID {
+			disabledFound = true
+			if statuses[i].State != "disabled" || !strings.Contains(statuses[i].Detail, "re-enable") {
+				t.Fatalf("disabled pool status=%+v", statuses[i])
+			}
+		}
+	}
+	if !disabledFound {
+		t.Fatal("disabled pool lost its disabled status")
+	}
+	if got == nil || got.State != "error" || !strings.Contains(got.Detail, "GitHub App installation mapping is missing") {
+		t.Fatalf("missing-installation status=%+v, all statuses=%+v", got, statuses)
+	}
+}
 func TestUpdateHostPlacementDomain(t *testing.T) {
 	ctx := context.Background()
 	st, err := store.OpenSQLite(":memory:")
