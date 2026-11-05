@@ -805,6 +805,27 @@ test('scale-set installation blockers are shown in pool and fleet diagnostics',(
 });
 
 
+test('CI efficiency distinguishes unavailable queue data from a measured zero',()=>{
+  const {ctx,element}=createDashboard();
+  ctx.ciItems=[{repository:'eutelic/runnerhub',data:{
+    jobs:1,
+    queue:{overall:{samples:0,p50Seconds:null,p95Seconds:null}},
+    coverage:{queueSamples:0,validationIdentityJobs:0,validationPendingJobs:1,
+      analysisWindowComplete:false,detail:'analysis pending'},
+    analyzer:{state:'pending'},
+    waste:{provablyAvoidablePercent:0,confirmedPercent:0,potentialSavingsPercent:0}
+  }}];
+  vm.runInContext('renderCIEfficiency(ciItems)',ctx);
+  assert.match(element('ci-efficiency').innerHTML,/— · 0\/1/);
+  assert.equal(vm.runInContext("evidenceAwareWastePercent(0,{analysisWindowComplete:false},{state:'pending'},1)",ctx),'—');
+
+  ctx.ciItems[0].data.queue.overall={samples:1,p50Seconds:0,p95Seconds:0};
+  ctx.ciItems[0].data.coverage.queueSamples=1;
+  vm.runInContext('renderCIEfficiency(ciItems)',ctx);
+  assert.match(element('ci-efficiency').innerHTML,/0\.00s · 1\/1/);
+});
+
+
 test('resource learning shows recent maximum CPU peak and stale sample counts',()=>{
   const {ctx}=createDashboard();
   const observed=vm.runInContext("observedText({resourceSizing:{ready:true,cpuPeakP95Millis:2253,cpuPeakMaxMillis:10823,memoryPeakMaxBytes:2*1073741824}})",ctx);

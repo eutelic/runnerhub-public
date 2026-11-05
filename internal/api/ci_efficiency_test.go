@@ -3,14 +3,17 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/eutelic/runnerhub/internal/ciaudit"
 	"github.com/eutelic/runnerhub/internal/cireconcile"
 	"github.com/eutelic/runnerhub/internal/core"
+	"github.com/eutelic/runnerhub/internal/githubrunner"
 	"github.com/eutelic/runnerhub/internal/store"
 )
 
@@ -191,5 +194,93 @@ func TestCIEfficiencyEndpoint(t *testing.T) {
 	svc.Handler().ServeHTTP(rr, req)
 	if rr.Code != http.StatusBadRequest {
 		t.Fatalf("invalid window status=%d body=%s", rr.Code, rr.Body.String())
+	}
+}
+
+
+func TestSummarizeCIEfficiencyKeepsTrueZeroQueueSample(t *testing.T) {
+	now := time.Date(2026, 9, 25, 12, 0, 0, 0, time.UTC)
+	workers := []core.Worker{
+		{
+			ID: "zero-queue", Repository: "eutelic/runnerhub",
+			QueuedAt: now.Add(-time.Minute), StartedAt: now.Add(-time.Minute),
+			CompletedAt: now.Add(-30 * time.Second),
+		},
+		{
+			ID: "negative-queue", Repository: "eutelic/runnerhub",
+			QueuedAt: now.Add(-time.Minute), StartedAt: now.Add(-2 * time.Minute),
+			CompletedAt: now.Add(-time.Second),
+		},
+	}
+	got := summarizeCIEfficiencyAt("eutelic/runnerhub", "30d", 30*24*time.Hour, now, workers, nil, nil, true)
+	if got.Jobs != 2 {
+		t.Fatalf("jobs=%d, want both executions in the window", got.Jobs)
+	}
+	if got.Queue.Overall.Samples != 1 || got.Queue.Overall.P50Seconds == nil || *got.Queue.Overall.P50Seconds != 0 ||
+		got.Queue.Overall.P95Seconds == nil || *got.Queue.Overall.P95Seconds != 0 {
+		t.Fatalf("true zero queue sample=%+v", got.Queue.Overall)
+	}
+	if got.Coverage.QueueSamples != 1 || got.Coverage.QueueCoveragePercent != 50 {
+		t.Fatalf("queue coverage=%+v", got.Coverage)
+	}
+}
+
+
+type failingCIMetadataBackend struct{}
+
+func (failingCIMetadataBackend) GetWorkflowRun(context.Context, core.GitHubScope, int64) (githubrunner.WorkflowRunMetadata, error) {
+	return githubrunner.WorkflowRunMetadata{}, errors.New("github api returned 502: private transport detail")
+}
+func (failingCIMetadataBackend) GetWorkflowRunAttempt(context.Context, core.GitHubScope, int64, int) (githubrunner.WorkflowRunMetadata, error) {
+	return githubrunner.WorkflowRunMetadata{}, errors.New("unexpected workflow attempt fetch")
+}
+func (failingCIMetadataBackend) ListWorkflowJobsAttempt(context.Context, core.GitHubScope, int64, int) ([]githubrunner.WorkflowJob, error) {
+	return nil, errors.New("unexpected jobs fetch")
+}
+func (failingCIMetadataBackend) GetPullRequest(context.Context, core.GitHubScope, int) (githubrunner.PullRequestMetadata, error) {
+	return githubrunner.PullRequestMetadata{}, errors.New("unexpected pull request fetch")
+}
+func (failingCIMetadataBackend) GetRepositoryFile(context.Context, core.GitHubScope, string, string) (githubrunner.RepositoryFile, error) {
+	return githubrunner.RepositoryFile{}, errors.New("unexpected file fetch")
+}
+
+func TestCIAnalyzerHealthReportsUnavailablePendingAndSanitizedFailure(t *testing.T) {
+	unavailable, _ := ciAnalyzerStatus(nil, ciaudit.AnalyzerVersion)
+	if unavailable.State != "unavailable" {
+		t.Fatalf("nil reconciler status=%+v, want unavailable", unavailable)
+	}
+
+	ctx := context.Background()
+	st, err := store.OpenSQLite(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	now := time.Date(2026, 9, 26, 12, 0, 0, 0, time.UTC)
+	status := cireconcile.NewStatus(24 * time.Hour)
+	pending, lookback := ciAnalyzerStatus(status, ciaudit.AnalyzerVersion)
+	if pending.State != "pending" || lookback != 24*time.Hour {
+		t.Fatalf("new analyzer status=%+v lookback=%v", pending, lookback)
+	}
+
+	if err := st.UpsertWorker(ctx, core.Worker{
+		ID: "worker", Repository: "eutelic/runnerhub", WorkflowRunID: 123, WorkflowRunAttempt: 1,
+		StartedAt: now.Add(-time.Minute), CompletedAt: now.Add(-30 * time.Second),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	rec := &cireconcile.Reconciler{
+		Store: st, GitHub: failingCIMetadataBackend{}, Status: status, Lookback: 24 * time.Hour,
+		Now: func() time.Time { return now },
+	}
+	if err := rec.Once(ctx); err == nil {
+		t.Fatal("expected failed metadata reconciliation")
+	}
+	degraded, _ := ciAnalyzerStatus(status, ciaudit.AnalyzerVersion)
+	if degraded.State != "degraded" || degraded.LastError == "" {
+		t.Fatalf("failed reconciliation status=%+v", degraded)
+	}
+	if strings.Contains(degraded.LastError, "private transport detail") {
+		t.Fatalf("analyzer status exposed raw backend error: %+v", degraded)
 	}
 }

@@ -211,7 +211,7 @@ func summarizeCIEfficiencyAtWithAnalyzer(repository, windowName string, window t
 				}
 			}
 		}
-		if !included || worker.QueuedAt.IsZero() || worker.StartedAt.IsZero() || !worker.StartedAt.After(worker.QueuedAt) {
+		if !included || worker.QueuedAt.IsZero() || worker.StartedAt.IsZero() || worker.StartedAt.Before(worker.QueuedAt) {
 			continue
 		}
 		seconds := worker.StartedAt.Sub(worker.QueuedAt).Seconds()
