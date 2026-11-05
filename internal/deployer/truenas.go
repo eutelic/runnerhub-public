@@ -170,6 +170,49 @@ type trueNASAppInfo struct {
 	CustomApp bool   `json:"custom_app"`
 }
 
+type TrueNASApp struct {
+	Name  string `json:"name"`
+	State string `json:"state"`
+}
+
+// ListApps returns the installed TrueNAS application inventory. The caller
+// must authenticate as the management service; no TrueNAS credentials are
+// returned to the web dashboard.
+func (c *TrueNASClient) ListApps(ctx context.Context) ([]TrueNASApp, error) {
+	conn, _, err := c.dialer.DialContext(ctx, c.endpoint, nil)
+	if err != nil {
+		return nil, fmt.Errorf("connect to TrueNAS: %w", err)
+	}
+	defer conn.Close()
+
+	var auth struct {
+		ResponseType string `json:"response_type"`
+	}
+	if err := c.call(ctx, conn, "auth.login_ex", []any{
+		map[string]any{
+			"mechanism": "API_KEY_PLAIN",
+			"username": c.username,
+			"api_key": c.apiKey,
+			"login_options": map[string]any{"user_info": false},
+		},
+	}, &auth); err != nil {
+		return nil, fmt.Errorf("authenticate to TrueNAS: %w", err)
+	}
+	if auth.ResponseType != "SUCCESS" {
+		return nil, fmt.Errorf("authenticate to TrueNAS: response_type=%s", auth.ResponseType)
+	}
+
+	var apps []trueNASAppInfo
+	if err := c.call(ctx, conn, "app.query", []any{[]any{}, map[string]any{}}, &apps); err != nil {
+		return nil, fmt.Errorf("query TrueNAS apps: %w", err)
+	}
+	result := make([]TrueNASApp, 0, len(apps))
+	for _, app := range apps {
+		result = append(result, TrueNASApp{Name: app.Name, State: app.State})
+	}
+	return result, nil
+}
+
 func (c *TrueNASClient) FindAppMount(ctx context.Context, app, destination string) (string, error) {
 	app = strings.TrimSpace(app)
 	destination = strings.TrimSpace(destination)

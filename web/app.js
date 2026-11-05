@@ -20,6 +20,7 @@ const els={
   legacy:document.getElementById('legacy-auth'),
   deployerSummary:document.getElementById('deployer-summary'),
   deployerStatus:document.getElementById('deployer-status'),
+  deployerAppsList:document.getElementById('deployer-apps-list'),
   deployerSetup:document.getElementById('deployer-setup'),
   deployerTokenResult:document.getElementById('deployer-token-result'),
   deployerWorkflowToken:document.getElementById('deployer-workflow-token'),
@@ -54,7 +55,13 @@ let historyRequestSequence=0;
 let historyLastUpdated=0;
 let repositoryInventoryAt=0;
 let dashboardIdentity='';
+let deployerAppsLastLoaded=0;
+let deployerAppsBusy=false;
+let deployerAppsError='';
 function clearDashboardSnapshot(){
+  deployerAppsLastLoaded=0;
+  deployerAppsError='';
+  if(els.deployerAppsList)els.deployerAppsList.textContent='Discovering TrueNAS apps…';
   for(const key of Object.keys(snapshot))delete snapshot[key];
   repositoryInventoryAt=0;
   githubQueueGeneration++;
@@ -167,6 +174,40 @@ document.getElementById('machine-bootstrap-status')?.addEventListener('click',ev
 });
 bind('install-deployer','click',installDeployer);
 bind('copy-deployer-token','click',copyDeployerToken);
+bind('refresh-deployer-apps','click',()=>{void loadManagedDeployerApps(true)});
+els.deployerAppsList?.addEventListener('change',async event=>{
+  const checkbox=event.target.closest('input[data-deployer-enabled]');
+  if(!checkbox)return;
+  const app=checkbox.dataset.deployerEnabled;
+  checkbox.disabled=true;
+  try{
+    await j('/api/v1/deployer/apps/'+encodeURIComponent(app)+'/enabled',{
+      method:'POST',headers:{'content-type':'application/json'},
+      body:JSON.stringify({enabled:checkbox.checked})
+    });
+    message(app+(checkbox.checked?' enabled for redeployment.':' disabled for redeployment.'),'success');
+  }catch(e){
+    message('Could not update '+app+': '+e.message,'error');
+  }finally{
+    await loadManagedDeployerApps(true);
+  }
+});
+els.deployerAppsList?.addEventListener('click',async event=>{
+  const button=event.target.closest('button[data-deployer-redeploy]');
+  if(!button)return;
+  const app=button.dataset.deployerRedeploy;
+  if(!confirm('Pull updated images and redeploy '+app+' on TrueNAS now?'))return;
+  button.disabled=true;
+  button.textContent='Deploying…';
+  try{
+    await j('/api/v1/deployer/apps/'+encodeURIComponent(app)+'/redeploy',{method:'POST'});
+    message(app+' redeployed successfully.','success');
+  }catch(e){
+    message('Could not redeploy '+app+': '+e.message,'error');
+  }finally{
+    await loadManagedDeployerApps(true);
+  }
+});
 bind('message-dismiss','click',()=>message(''));
 bind('github-queue-refresh','click',()=>{void inspectGitHubQueues()});
 bind('history-filter-form','submit',event=>{
@@ -965,15 +1006,62 @@ function renderOnboardingChecklist(hosts,pools,statuses,installations,repos){
       '<span class="muted small">'+esc(item.help)+'</span></span></a>'
     ).join('')+'</div>';
 }
+
+function renderManagedDeployerApps(apps){
+  if(!els.deployerAppsList)return;
+  if(!apps.length){
+    els.deployerAppsList.innerHTML='<div class="muted">No TrueNAS apps were discovered.</div>';
+    return;
+  }
+  els.deployerAppsList.innerHTML=apps.map(app=>{
+    const name=esc(app.name);
+    const isProtected=Boolean(app.protected);
+    const enabled=Boolean(app.enabled);
+    return '<div class="deployer-app-row">'+
+      '<div class="deployer-app-name"><strong>'+name+'</strong>'+
+        '<span class="muted small">'+esc(app.state||'Unknown state')+
+        (isProtected?' · Managed by existing deployment configuration':'')+'</span></div>'+
+      '<div class="deployer-app-actions">'+
+        '<label class="check-row"><input type="checkbox" data-deployer-enabled="'+name+'" '+
+          (enabled?'checked ':'')+(isProtected?'disabled ':'')+'aria-label="Enable redeploy for '+name+'">'+
+          ' Enable redeploy</label>'+
+        '<button type="button" class="secondary compact" data-deployer-redeploy="'+name+'" '+
+          ((!enabled||isProtected)?'disabled':'')+'>Redeploy now</button>'+
+      '</div></div>';
+  }).join('');
+}
+
+async function loadManagedDeployerApps(force=false){
+  if(!els.deployerAppsList||deployerAppsBusy)return;
+  if(!force&&Date.now()-deployerAppsLastLoaded<30000)return;
+  deployerAppsBusy=true;
+  if(!deployerAppsLastLoaded)els.deployerAppsList.textContent='Discovering TrueNAS apps…';
+  try{
+    const result=await j('/api/v1/deployer/apps');
+    renderManagedDeployerApps(result.apps||[]);
+    deployerAppsLastLoaded=Date.now();
+    deployerAppsError='';
+  }catch(e){
+    deployerAppsError=String(e.message||e);
+    els.deployerAppsList.textContent='App discovery unavailable: '+deployerAppsError+
+      '. If the standalone deployer is on an older image, update it to the same release as RunnerHub.';
+    deployerAppsLastLoaded=Date.now();
+  }finally{
+    deployerAppsBusy=false;
+  }
+}
+
 function renderDeployerStatus(status){
   if(!status||status.available===false){
     els.deployerSummary.textContent='Unavailable';
     els.deployerStatus.textContent=status?.detail||'Deployer bootstrap is unavailable on this RunnerHub instance.';
+    if(els.deployerAppsList)els.deployerAppsList.textContent='Deployer unavailable.';
     return;
   }
   if(!status.configured){
     els.deployerSummary.textContent='Not configured';
     els.deployerStatus.innerHTML='Standalone redeployer is not installed. Open <strong>Enable automatic redeploy</strong> to install it.';
+    if(els.deployerAppsList)els.deployerAppsList.textContent='Install the redeployer to discover apps.';
     return;
   }
   els.deployerSummary.textContent=status.healthy?'Healthy':'Needs attention';
@@ -981,6 +1069,8 @@ function renderDeployerStatus(status){
     '<div class="repo-status"><span class="badge'+(status.healthy?'':' warn')+'">'+esc(status.healthy?'Deployer healthy':'Deployer unreachable')+'</span></div>'+
     '<div class="resource-summary">'+esc(status.deployerApp||'runnerhub-deployer')+' · '+esc(status.deployerUrl||'')+' · target '+esc(status.targetId||'runnerhub')+'</div>'+
     '<div class="muted small">'+esc(status.detail||'')+(status.configuredAt?' · configured '+esc(fmtTime(status.configuredAt)):'')+'</div>';
+  if(status.healthy)void loadManagedDeployerApps();
+  else if(els.deployerAppsList)els.deployerAppsList.textContent='Deployer is currently unreachable.';
 }
 
 async function installDeployer(){
@@ -1011,6 +1101,7 @@ async function installDeployer(){
     els.deployerWorkflowToken.textContent=result.workflowToken||'';
     show(els.deployerTokenResult,Boolean(result.workflowToken));
     message('Redeployer installed. Save the one-time workflow token as '+(result.workflowSecretName||'RUNNERHUB_DEPLOY_TOKEN')+' before closing this page.','success');
+    deployerAppsLastLoaded=0;
     await refresh();
   }catch(e){
     message(e.message,'error');
@@ -1295,6 +1386,7 @@ async function refresh(force=false){
       show(els.fleetWarning,false);
       els.deployerSummary.textContent='';
       els.deployerStatus.innerHTML='<span class="muted">Sign in to view.</span>';
+      if(els.deployerAppsList)els.deployerAppsList.textContent='Sign in to manage TrueNAS apps.';
       els.activeRunnerSummary.textContent='';
       els.workerSummary.textContent='';
       renderGitHubQueue();

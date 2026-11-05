@@ -559,6 +559,29 @@ The default published port is `8789`. Keep this endpoint on LAN/Tailscale/privat
 
 For a TrueNAS certificate signed by a private CA, mount the CA certificate and set `RUNNERHUB_TRUENAS_CA_FILE`. `RUNNERHUB_TRUENAS_TLS_INSECURE_SKIP_VERIFY=true` is available only as an explicit private-network/testing escape hatch; encrypted transport is still required.
 
+### Manage other TrueNAS apps from the RunnerHub dashboard
+
+After the standalone redeployer and the RunnerHub control plane have both been
+updated to the release that includes managed apps, open **Deployments → TrueNAS
+apps**. RunnerHub discovers installed apps through the existing standalone
+redeployer; the TrueNAS API key stays on the server.
+
+1. Enable the **Enable redeploy** checkbox next to an app.
+2. Click **Redeploy now** and confirm. The deployer pulls the configured images,
+   redeploys the TrueNAS app, waits for `RUNNING`, and audits the result.
+3. Uncheck the box to revoke dashboard redeployment permission without changing
+   or uninstalling the TrueNAS app.
+
+Enabled apps are saved to the deployer's persistent `/data/managed-apps.json`.
+The existing RunnerHub self-redeploy target and the standalone deployer are
+protected from this manual flow; they retain their own deployment controls.
+No additional GitHub Action secrets, policy hashes, or YAML editing are required
+for manual dashboard redeploys.
+
+**Automatic redeploys after verified image publishing are not enabled by this
+checkbox.** That integration is separate, so selecting a checkbox alone cannot
+cause an unexpected redeploy when a workflow completes.
+
 ### Trigger from GitHub Actions
 
 A self-hosted RunnerHub job that can reach the deployer can request only its preconfigured target:

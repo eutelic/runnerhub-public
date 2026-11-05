@@ -172,6 +172,16 @@
         <div id="deployer-summary" class="summary-pill subtle">Checking…</div>
       </div>
       <div id="deployer-status" class="resource-note muted"></div>
+      <div class="deployer-managed">
+        <div class="section-head">
+          <div>
+            <h3>TrueNAS apps</h3>
+            <div class="muted small">Enable a managed app to redeploy it from RunnerHub. No extra GitHub secret or Compose changes required.</div>
+          </div>
+          <button type="button" class="secondary compact" id="refresh-deployer-apps">Refresh apps</button>
+        </div>
+        <div id="deployer-apps-list" aria-live="polite" class="muted small">Install the standalone deployer to discover apps.</div>
+      </div>
       <details id="deployer-setup" class="advanced-details">
         <summary>Enable automatic redeploy</summary>
         <div class="advanced-body">
