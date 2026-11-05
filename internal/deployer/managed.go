@@ -149,7 +149,10 @@ func (s *Service) setManaged(name string, enabled bool) error {
 }
 
 func (s *Service) protectedApp(name string) bool {
-	if name == defaultDeployerApp {
+	// The control plane must use the quiesced self-redeployment path, never
+	// a direct app pull/redeploy that could interrupt running CI jobs.
+	// This remains protected even when no workflow target is configured.
+	if name == defaultDeployerApp || name == "runnerhub" || name == "runnerhub-control" {
 		return true
 	}
 	if s.Policy != nil {
