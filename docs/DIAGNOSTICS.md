@@ -115,6 +115,24 @@ a **lower-bound** count. Failed inspections show **Unavailable**, never zero.
 A completed snapshot retains its timestamp and is marked stale after two
 minutes, rather than silently claiming to reflect a live queue.
 
+**If queue inspection says `GitHub App Actions permission denied (403)`:**
+repository inventory access does not guarantee workflow-run read access. Check
+the GitHub App's **Repository permissions → Actions: Read-only**, ensure
+permission changes have been approved on each installation, and sign out of
+RunnerHub's GitHub session and back in to refresh its user token. GitHub App
+installation access and the OAuth user session are separate from the App's
+runner-registration/scale-set credentials. The diagnostic response returns a
+sanitized error code and GitHub request ID; it never returns the upstream
+response body or credentials.
+
+After two clear Actions permission denials in the same installation, the
+on-demand scan pauses remaining repositories **in that installation** to avoid
+pointless GitHub API requests; other installations may still be inspected.
+A GitHub-wide rate limit or expired user session pauses all remaining requests.
+Skipped repositories show **Not checked** and failed ones show **Unavailable**;
+neither is counted as a zero queue. Click Check GitHub queues again after
+permissions or rate limits have been addressed.
+
 A count of workflow runs containing queued jobs is **not** a GitHub
 queue-position or chronological scheduling estimate. Jobs may be waiting on
 environment approvals, dependencies, incompatible labels, eligible hosts,

@@ -173,6 +173,56 @@ test('no successful queue inspections never reports a false empty queue',async()
   assert.ok(!html.includes('0 observed queued RunnerHub jobs'));
 });
 
+test('queue inspection pauses repeat Actions permission failures per installation without blocking others',async()=>{
+  const permission=Object.assign(new Error('GitHub App cannot read Actions runs (403)'),{code:'github-actions-permission'});
+  const endpoints={};
+  const repoNames=['one','two','three','four','five'];
+  for(const name of repoNames)endpoints['/api/v1/github/repositories/eutelic/'+name+'/queued-jobs']=permission;
+  endpoints['/api/v1/github/repositories/example-user/personal/queued-jobs']={
+    repository:'example-user/personal',checkedRuns:1,truncated:false,jobs:[{id:11,runId:12,status:'queued',labels:['runnerhub']}]
+  };
+  const {ctx,element,calls}=createDashboard(endpoints);
+  ctx.queueRepos=[
+    ...repoNames.map(name=>({fullName:'eutelic/'+name,private:true,installationId:42})),
+    {fullName:'example-user/personal',private:true,installationId:88}
+  ];
+  ctx.queuePools=ctx.queueRepos.map(repo=>{
+    const [owner,repository]=repo.fullName.split('/');
+    return {scope:{kind:'repository',owner,repository},githubInstallationId:repo.installationId};
+  });
+  vm.runInContext('auth={authenticated:true};snapshot.repos=queueRepos;snapshot.pools=queuePools',ctx);
+  await vm.runInContext('inspectGitHubQueues()',ctx);
+  const orgCalls=calls.filter(path=>path.includes('/github/repositories/eutelic/')&&path.endsWith('/queued-jobs'));
+  assert.ok(orgCalls.length>=2&&orgCalls.length<=3,'repeat 403s should not fan out to all 5 org repositories');
+  assert.ok(calls.includes('/api/v1/github/repositories/example-user/personal/queued-jobs'),
+    'separate installation remains inspectable');
+  const html=element('github-queue-summary').innerHTML;
+  assert.match(html,/GitHub App cannot read Actions runs/);
+  assert.match(html,/Actions: read/);
+  assert.match(html,/not checked after repeated authorization failures/);
+  assert.match(html,/Not checked: Repeated Actions permission failures/);
+  assert.match(html,/1 observed queued RunnerHub jobs/);
+  assert.doesNotMatch(html,/5 inspection failure/);
+});
+
+test('queue inspection honors API-wide rate limit and does not claim an empty queue',async()=>{
+  const limited=Object.assign(new Error('GitHub API rate limit reached'),{code:'github-rate-limited'});
+  const endpoints={};
+  const names=['one','two','three','four','five','six'];
+  for(const name of names)endpoints['/api/v1/github/repositories/eutelic/'+name+'/queued-jobs']=limited;
+  const {ctx,element,calls}=createDashboard(endpoints);
+  ctx.queueRepos=names.map(name=>({fullName:'eutelic/'+name,private:true,installationId:42}));
+  ctx.queuePools=names.map(name=>({scope:{kind:'repository',owner:'eutelic',repository:name},githubInstallationId:42}));
+  vm.runInContext('auth={authenticated:true};snapshot.repos=queueRepos;snapshot.pools=queuePools',ctx);
+  await vm.runInContext('inspectGitHubQueues()',ctx);
+  assert.ok(calls.filter(path=>path.endsWith('/queued-jobs')).length<=2,'rate limit must stop new requests');
+  const html=element('github-queue-summary').innerHTML;
+  assert.match(html,/queue depth unknown/);
+  assert.match(html,/rate limit reached/);
+  assert.match(html,/Not checked/);
+  assert.doesNotMatch(html,/0 observed queued RunnerHub jobs/);
+});
+
 test('fleet overview ignores merged archived enrollments in totals and offline warnings',()=>{
   const {ctx,element}=createDashboard();
   ctx.testHosts=[

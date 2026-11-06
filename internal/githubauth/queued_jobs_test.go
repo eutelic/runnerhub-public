@@ -1,9 +1,11 @@
 package githubauth
 
 import (
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -97,5 +99,55 @@ func TestQueuedJobsMarksTruncatedAndIgnoresCompletedJobs(t *testing.T) {
 	if err!=nil {t.Fatal(err)}
 	if !report.Truncated || len(report.Jobs)!=1 || report.Jobs[0].Status!="waiting" {
 		t.Fatalf("unexpected bounded report: %+v",report)
+	}
+}
+
+func TestQueuedJobsClassifiesSanitizedGitHubFailures(t *testing.T) {
+	cases := []struct {
+		name string
+		status int
+		message string
+		remaining string
+		code string
+	}{
+		{"missing Actions permission", 403, "Resource not accessible by integration", "100", "github-actions-permission"},
+		{"primary rate limit", 403, "Resource not accessible by integration", "0", "github-rate-limited"},
+		{"secondary rate limit", 403, "You have exceeded a secondary rate limit", "100", "github-rate-limited"},
+		{"HTTP 429 throttling", 429, "Too many requests", "100", "github-rate-limited"},
+		{"expired OAuth token", 401, "Bad credentials", "100", "github-auth-expired"},
+		{"inaccessible repository", 404, "Not Found", "100", "github-repository-inaccessible"},
+		{"other forbidden", 403, "Forbidden", "100", "github-forbidden"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			calls := 0
+			m,r := queuedJobsTestManager(t,true,roundTripFunc(func(req *http.Request) (*http.Response,error) {
+				calls++
+				header := make(http.Header)
+				header.Set("X-GitHub-Request-Id","BEEF:1")
+				header.Set("X-RateLimit-Remaining",tc.remaining)
+				header.Set("X-RateLimit-Reset","1794013200")
+				return &http.Response{
+					StatusCode:tc.status,Header:header,
+					Body:io.NopCloser(strings.NewReader(`{"message":`+strconv.Quote(tc.message)+`,"token":"do-not-leak"}`)),
+					Request:req,
+				},nil
+			}))
+			_,err := m.QueuedJobs(r,"eutelic/private")
+			var classified *QueueInspectionError
+			if !errors.As(err,&classified) {
+				t.Fatalf("expected typed queue error, got %T: %v",err,err)
+			}
+			if classified.Code!=tc.code || classified.RequestID!="BEEF:1" {
+				t.Fatalf("code=%q id=%q, want %q/BEEF:1",classified.Code,classified.RequestID,tc.code)
+			}
+			if tc.code=="github-rate-limited" && classified.RetryAt=="" {
+				t.Fatal("rate-limit reset timestamp was not retained")
+			}
+			if strings.Contains(err.Error(),"do-not-leak") || strings.Contains(err.Error(),tc.message) {
+				t.Fatalf("raw GitHub response leaked to caller: %v",err)
+			}
+			if calls!=1 {t.Fatalf("expected one GitHub request, got %d",calls)}
+		})
 	}
 }

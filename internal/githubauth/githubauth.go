@@ -687,6 +687,21 @@ func (m *Manager) repositoriesForInstallation(r *http.Request, token string, ins
 	return all, nil
 }
 
+// githubAPIError preserves safe API failure metadata for queue diagnostics.
+// Never persist Authorization or raw response bodies in this error.
+type githubAPIError struct {
+	StatusCode int
+	Message string
+	RequestID string
+	RateRemaining string
+	RateReset string
+	RetryAfter string
+}
+
+func (e *githubAPIError) Error() string {
+	return fmt.Sprintf("github api returned %d: %s", e.StatusCode, e.Message)
+}
+
 func (m *Manager) apiGET(r *http.Request, token, path string, out any) error {
 	u := *m.apiURL
 	u.Path = strings.TrimRight(u.Path, "/") + strings.SplitN(path, "?", 2)[0]
@@ -706,8 +721,24 @@ func (m *Manager) apiGET(r *http.Request, token, path string, out any) error {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return fmt.Errorf("github api returned %d: %s", resp.StatusCode, strings.TrimSpace(string(msg)))
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		var payload struct { Message string `json:"message"` }
+		_ = json.Unmarshal(body, &payload)
+		message := strings.TrimSpace(payload.Message)
+		if message == "" {
+			message = http.StatusText(resp.StatusCode)
+		}
+		// GitHub's error message is untrusted: bound its length, never return the
+		// raw body (which may contain documentation URLs or other arbitrary data).
+		if len(message) > 240 { message = message[:240] }
+		requestID := strings.TrimSpace(resp.Header.Get("X-GitHub-Request-Id"))
+		if len(requestID) > 80 { requestID = "" }
+		return &githubAPIError{
+			StatusCode: resp.StatusCode, Message: message, RequestID: requestID,
+			RateRemaining: resp.Header.Get("X-RateLimit-Remaining"),
+			RateReset: resp.Header.Get("X-RateLimit-Reset"),
+			RetryAfter: resp.Header.Get("Retry-After"),
+		}
 	}
 	return json.NewDecoder(resp.Body).Decode(out)
 }

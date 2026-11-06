@@ -559,7 +559,13 @@ async function j(path,opts={}){
   const r=await fetch(path,opts);
   const t=await r.text();
   let v;try{v=JSON.parse(t)}catch{v=t}
-  if(!r.ok)throw new Error(typeof v==='object'?(v.detail||v.error):v);
+  if(!r.ok){
+    const error=new Error(typeof v==='object'?(v.detail||v.error):v);
+    if(v&&typeof v==='object'&&typeof v.code==='string')error.code=v.code;
+    if(v&&typeof v==='object'&&typeof v.requestId==='string')error.requestId=v.requestId.slice(0,80);
+    if(v&&typeof v==='object'&&typeof v.retryAt==='string')error.retryAt=v.retryAt;
+    throw error;
+  }
   return v;
 }
 
@@ -823,6 +829,21 @@ function summarizeQueuedGitHubJobs(report){
     otherJobs:other,partial:report?.truncated===true,checkedRuns:Number(report?.checkedRuns)||0};
 }
 
+// Keep Github error classification in the server's sanitized response. Unknown
+// errors remain per-repository rather than being guessed to affect every app.
+function queueInspectionError(error){
+  const code=String(error?.code||'');
+  const labels={
+    'github-actions-permission':'GitHub App Actions permission denied (403)',
+    'github-rate-limited':'GitHub API rate limit reached',
+    'github-auth-expired':'GitHub session expired or unauthorized',
+    'github-repository-inaccessible':'Repository inaccessible to GitHub App (404)',
+    'github-forbidden':'GitHub Actions access forbidden (403)',
+    'github-api-failure':'GitHub Actions API request failed'
+  };
+  return {code,label:labels[code]||String(error?.message||error).slice(0,120)};
+}
+
 function eligibleQueueRepositories(){
   if(!auth.authenticated)return [];
   const visible=new Set((snapshot.repos||[]).filter(repo=>repo?.private===true)
@@ -851,8 +872,9 @@ function renderGitHubQueue(){
     return;
   }
   const rows=scan.rows.filter(Boolean);
-  const failures=rows.filter(row=>row.error).length;
-  const inspected=rows.filter(row=>!row.error);
+  const failures=rows.filter(row=>row.error&&!row.skipped).length;
+  const skipped=rows.filter(row=>row.skipped).length;
+  const inspected=rows.filter(row=>!row.error&&!row.skipped);
   const queued=inspected.reduce((n,row)=>n+row.summary.queuedJobs,0);
   const waiting=inspected.reduce((n,row)=>n+row.summary.waitingJobs,0);
   const incomplete=inspected.filter(row=>row.summary.partial).length;
@@ -865,7 +887,18 @@ function renderGitHubQueue(){
         waiting+' waiting/pending RunnerHub jobs.'):
       'No successful repository inspections; queue depth unknown.')+
     (failures?' '+failures+' inspection failure(s); counts do not include them.':'')+
+    (skipped?' '+skipped+' not checked after repeated authorization failures or a rate limit.':'')+
     (incomplete?' '+incomplete+' repository result(s) truncated; counts are lower bounds.':'')+'</p>';
+  if(rows.some(row=>row.errorCode==='github-actions-permission')){
+    html+='<p class="muted small">GitHub App cannot read Actions runs. In GitHub App settings, verify <strong>Actions: read</strong>, approve pending installation permission changes, and sign out/in to refresh the GitHub session. <a href="https://github.com/settings/installations" target="_blank" rel="noopener noreferrer">Review GitHub App installations</a>. Jobs were not counted for inaccessible repositories.</p>';
+  }else if(rows.some(row=>row.errorCode==='github-rate-limited')){
+    const rate=rows.find(row=>row.errorCode==='github-rate-limited'&&row.retryAt);
+    const reset=rate?new Date(rate.retryAt):null;
+    const resetText=reset&&Number.isFinite(reset.getTime())?' GitHub retry time: '+esc(reset.toLocaleString())+'.':'';
+    html+='<p class="muted small">GitHub API rate limit reached. Queue inspection was paused instead of making further requests. Retry after the limit resets.'+resetText+'</p>';
+  }else if(rows.some(row=>row.errorCode==='github-auth-expired')){
+    html+='<p class="muted small">The GitHub login cannot read Actions runs. Sign out and sign back in with GitHub, then retry.</p>';
+  }
   if(rows.length){
     const sorted=[...rows].sort((a,b)=>
       (b.summary?.queuedJobs||0)-(a.summary?.queuedJobs||0)||
@@ -880,7 +913,8 @@ function renderGitHubQueue(){
       ['Runs with queued RunnerHub jobs',row=>row.error?'Unavailable':(row.summary.partial?'≥ ':'')+row.summary.queuedRuns],
       ['Waiting / pending RunnerHub jobs',row=>row.error?'Unavailable':(row.summary.partial?'≥ ':'')+row.summary.waitingJobs],
       ['Other / unknown-label pending jobs',row=>row.error?'Unavailable':(row.summary.partial?'≥ ':'')+row.summary.otherJobs],
-      ['Coverage',row=>row.error?'Unavailable: '+row.error:
+      ['Coverage',row=>row.skipped?'Not checked: '+row.error:row.error?
+        'Unavailable: '+row.error+(row.requestId?' · GitHub request '+row.requestId:''):
         (row.summary.partial?'Partial':'Bounded')+' · '+row.summary.checkedRuns+' runs checked']
     ]);
   }
@@ -908,16 +942,41 @@ async function inspectGitHubQueues(){
   renderGitHubQueue();
   let cursor=0;
   const responses=Array(repositories.length);
+  const installationByRepo=new Map((snapshot.repos||[]).map(repo=>[
+    String(repo.fullName||'').toLowerCase(),
+    String(repo.installationId||String(repo.fullName||'').split('/')[0]).toLowerCase()
+  ]));
+  const permissionFailures=new Map();
+  const pausedInstallations=new Set();
+  let globalBlock=null;
   const inspect=async()=>{
     while(cursor<repositories.length&&generation===githubQueueGeneration){
       const index=cursor++;
       const repository=repositories[index];
-      const path='/api/v1/github/repositories/'+repository.split('/').map(encodeURIComponent).join('/')+'/queued-jobs';
-      try{
-        const report=await j(path);
-        responses[index]={repository,summary:summarizeQueuedGitHubJobs(report)};
-      }catch(error){
-        responses[index]={repository,error:String(error?.message||error).slice(0,160)};
+      const installation=installationByRepo.get(repository.toLowerCase())||repository.split('/')[0].toLowerCase();
+      if(globalBlock){
+        responses[index]={repository,skipped:true,error:globalBlock.label,errorCode:globalBlock.code};
+      }else if(pausedInstallations.has(installation)){
+        responses[index]={repository,skipped:true,error:'Repeated Actions permission failures for this installation',errorCode:'github-actions-permission-paused'};
+      }else{
+        const path='/api/v1/github/repositories/'+repository.split('/').map(encodeURIComponent).join('/')+'/queued-jobs';
+        try{
+          const report=await j(path);
+          responses[index]={repository,summary:summarizeQueuedGitHubJobs(report)};
+        }catch(error){
+          const issue=queueInspectionError(error);
+          responses[index]={repository,error:issue.label,errorCode:issue.code,
+            requestId:error?.requestId||'',retryAt:error?.retryAt||''};
+          if(issue.code==='github-actions-permission'){
+            const count=(permissionFailures.get(installation)||0)+1;
+            permissionFailures.set(installation,count);
+            // Do not fan out repeated App permission denials to every repo in
+            // the same installation. One already in-flight request may finish.
+            if(count>=2)pausedInstallations.add(installation);
+          }else if(issue.code==='github-rate-limited'||issue.code==='github-auth-expired'){
+            globalBlock=issue;
+          }
+        }
       }
       if(generation!==githubQueueGeneration)return;
       githubQueueScan.rows=responses.filter(Boolean);
