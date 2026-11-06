@@ -90,6 +90,10 @@ jobs:
     runs-on: runnerhub-publisher
     strategy:
       fail-fast: false
+      # A DinD runner without verified aggregate cgroup containment reserves
+      # 2x its configured CPU. Keep publisher builds from consuming all of the
+      # compute host's scheduler capacity, leaving room for CI validation.
+      max-parallel: 2
       matrix:
         include:
           - target: control
