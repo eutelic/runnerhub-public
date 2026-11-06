@@ -901,3 +901,23 @@ test('resource learning shows recent maximum CPU peak and stale sample counts',(
   const learning=vm.runInContext("learningText({resourceSizing:{jobs:5,confidence:'low',staleJobs:30}})",ctx);
   assert.match(learning,/30 stale ignored/);
 });
+
+test('TrueNAS auto-publish selects only an unambiguous GHCR image owner',()=>{
+  const {ctx,element}=createDashboard();
+  vm.runInContext("snapshot.repos=[{fullName:'eutelic/clark-calendar',private:true},{fullName:'eutelic/file-ingest',private:true},{fullName:'eutelic/public',private:false}]",ctx);
+  const imageOwner=vm.runInContext("guessedAutoPublishRepo({name:'clark-scheduler',images:['redis:7','ghcr.io/eutelic/clark-calendar:latest']})",ctx);
+  assert.equal(imageOwner,'eutelic/clark-calendar');
+  const ambiguous=vm.runInContext("guessedAutoPublishRepo({name:'multi-service',images:['ghcr.io/eutelic/clark-calendar:latest','ghcr.io/eutelic/file-ingest:latest']})",ctx);
+  assert.equal(ambiguous,'');
+  vm.runInContext("renderManagedDeployerApps([{name:'clark-scheduler',state:'RUNNING',enabled:true,protected:false,customApp:true,images:['redis:7','ghcr.io/eutelic/clark-calendar:latest']}])",ctx);
+  const html=element('deployer-apps-list').innerHTML;
+  assert.match(html,/Auto-redeploy after successful image publishing/);
+  assert.match(html,/ghcr\.io\/eutelic\/clark-calendar:latest/);
+  assert.match(html,/data-deployer-repo="clark-scheduler"/);
+  assert.doesNotMatch(html,/option value="redis:7"/);
+  assert.doesNotMatch(html,/data-deployer-auto="clark-scheduler"[^>]*disabled/);
+  vm.runInContext("renderManagedDeployerApps([{name:'catalog-app',state:'RUNNING',enabled:true,protected:false,customApp:false,images:['ghcr.io/eutelic/file-ingest:latest']}])",ctx);
+  const catalogHTML=element('deployer-apps-list').innerHTML;
+  assert.match(catalogHTML,/Not available for catalog\/wizard apps: use manual redeploy instead\./);
+  assert.match(catalogHTML,/data-deployer-auto="catalog-app"[^>]*disabled/);
+});

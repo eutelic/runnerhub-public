@@ -176,6 +176,9 @@ type trueNASAppInfo struct {
 	Config    struct {
 		CustomComposeConfigString string `json:"custom_compose_config_string"`
 	} `json:"config"`
+	ActiveWorkloads struct {
+		Images []string `json:"images"`
+	} `json:"active_workloads"`
 }
 
 func replaceRunnerHubControlImage(compose, image string) (string, error) {
@@ -282,8 +285,10 @@ func (c *TrueNASClient) RedeployImageAndWait(ctx context.Context, app, image str
 }
 
 type TrueNASApp struct {
-	Name  string `json:"name"`
-	State string `json:"state"`
+	Name   string   `json:"name"`
+	State  string   `json:"state"`
+	CustomApp bool `json:"customApp"`
+	Images []string `json:"images"`
 }
 
 // ListApps returns the installed TrueNAS application inventory. The caller
@@ -319,7 +324,7 @@ func (c *TrueNASClient) ListApps(ctx context.Context) ([]TrueNASApp, error) {
 	}
 	result := make([]TrueNASApp, 0, len(apps))
 	for _, app := range apps {
-		result = append(result, TrueNASApp{Name: app.Name, State: app.State})
+		result = append(result, TrueNASApp{Name: app.Name, State: app.State, CustomApp: app.CustomApp, Images: app.ActiveWorkloads.Images})
 	}
 	return result, nil
 }

@@ -36,6 +36,8 @@ type Service struct {
 	locks   map[string]*sync.Mutex
 	auditMu sync.Mutex
 	managedMu sync.Mutex
+	managementNonceMu sync.Mutex
+	managementNonces map[string]int64
 }
 
 // beginSelfRedeploy reserves a tracked operation before returning 202. The

@@ -175,6 +175,40 @@ document.getElementById('machine-bootstrap-status')?.addEventListener('click',ev
 bind('install-deployer','click',installDeployer);
 bind('copy-deployer-token','click',copyDeployerToken);
 bind('refresh-deployer-apps','click',()=>{void loadManagedDeployerApps(true)});
+els.deployerAppsList?.addEventListener('change',event=>{
+  const select=event.target.closest('select[data-deployer-repo]');
+  if(!select)return;
+  const imageSelect=select.closest('.deployer-auto-settings')?.querySelector('select[data-deployer-image]');
+  if(!imageSelect)return;
+  const match='ghcr.io/'+select.value.toLowerCase()+':latest';
+  imageSelect.value=[...imageSelect.options].some(option=>option.value.toLowerCase()===match)?match:'';
+});
+els.deployerAppsList?.addEventListener('change',async event=>{
+  const checkbox=event.target.closest('input[data-deployer-auto]');
+  if(!checkbox)return;
+  const app=checkbox.dataset.deployerAuto;
+  const row=checkbox.closest('.deployer-app-row');
+  const repository=row?.querySelector('[data-deployer-repo]')?.value||'';
+  const workflow=row?.querySelector('[data-deployer-workflow]')?.value.trim()||'';
+  const image=row?.querySelector('[data-deployer-image]')?.value||'';
+  if(checkbox.checked&&(!repository||!workflow||!image)){
+    checkbox.checked=false;
+    message('Choose a GitHub publishing repository, workflow, and matching installed image for '+app+'.','error');
+    return;
+  }
+  checkbox.disabled=true;
+  try{
+    await j('/api/v1/deployer/apps/'+encodeURIComponent(app)+'/automatic',{
+      method:'POST',headers:{'content-type':'application/json'},
+      body:JSON.stringify({enabled:checkbox.checked,repository,workflow,image})
+    });
+    message('Automatic publishing '+(checkbox.checked?'enabled':'disabled')+' for '+app+'.','success');
+  }catch(e){
+    message('Could not configure automatic publishing for '+app+': '+e.message,'error');
+  }finally{
+    await loadManagedDeployerApps(true);
+  }
+});
 els.deployerAppsList?.addEventListener('change',async event=>{
   const checkbox=event.target.closest('input[data-deployer-enabled]');
   if(!checkbox)return;
@@ -1066,27 +1100,76 @@ function renderOnboardingChecklist(hosts,pools,statuses,installations,repos){
     ).join('')+'</div>';
 }
 
+
+function guessedAutoPublishRepo(app){
+  const repos=(snapshot.repos||[]).filter(repo=>repo?.private===true&&
+    /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(String(repo.fullName||'')));
+  // Prefer concrete image ownership over a TrueNAS app's display name.
+  // Never guess when multiple connected repositories match the same app.
+  const images=new Set((app.images||[]).map(image=>String(image).toLowerCase()));
+  const imageMatches=repos.filter(repo=>images.has('ghcr.io/'+repo.fullName.toLowerCase()+':latest'));
+  if(imageMatches.length===1)return imageMatches[0].fullName;
+  if(imageMatches.length>1)return '';
+  const normalized=str=>String(str||'').toLowerCase().replace(/[-_.]/g,'');
+  const nameMatches=repos.filter(repo=>normalized(repo.fullName.split('/')[1])===normalized(app.name));
+  return nameMatches.length===1?nameMatches[0].fullName:'';
+}
+
 function renderManagedDeployerApps(apps){
   if(!els.deployerAppsList)return;
   if(!apps.length){
     els.deployerAppsList.innerHTML='<div class="muted">No TrueNAS apps were discovered.</div>';
     return;
   }
+  const repositories=(snapshot.repos||[]).filter(repo=>repo?.private===true&&
+    /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(String(repo.fullName||'')));
   els.deployerAppsList.innerHTML=apps.map(app=>{
     const name=esc(app.name);
     const isProtected=Boolean(app.protected);
+    const isCustomApp=Boolean(app.customApp);
     const enabled=Boolean(app.enabled);
+    const automatic=app.automatic||null;
+    const repoSelected=automatic?.repository||guessedAutoPublishRepo(app);
+    const workflow=automatic?.workflow||'publish-images.yml';
+    const images=(app.images||[]).filter(image=>/^ghcr\.io\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+:latest$/i.test(String(image||'')));
+    const selectedImage=automatic?.image||images.find(image=>image.toLowerCase()==='ghcr.io/'+repoSelected.toLowerCase()+':latest')||'';
+    const imageChoices=['<option value="">Choose installed image</option>'].concat(
+      images.map(image=>'<option value="'+esc(image)+'" '+
+        (image.toLowerCase()===selectedImage.toLowerCase()?'selected':'')+'>'+esc(image)+'</option>')
+    ).join('');
+    const repoChoices=['<option value="">Choose publishing repository</option>'].concat(
+      repositories.map(repo=>'<option value="'+esc(repo.fullName)+'" '+
+        (repo.fullName.toLowerCase()===repoSelected.toLowerCase()?'selected':'')+'>'+
+        esc(repo.fullName)+'</option>')
+    ).join('');
+    const lastStatus=automatic?.lastResult?
+      '<span class="muted small">Last publishing run: '+esc(automatic.lastResult)+
+      (automatic.lastDetail?' · '+esc(automatic.lastDetail):'')+'</span>':'';
     return '<div class="deployer-app-row">'+
       '<div class="deployer-app-name"><strong>'+name+'</strong>'+
         '<span class="muted small">'+esc(app.state||'Unknown state')+
-        (isProtected?' · Managed by existing deployment configuration':'')+'</span></div>'+
+        (isProtected?' · Managed by existing deployment configuration':'')+'</span>'+
+        lastStatus+
+      '</div>'+
       '<div class="deployer-app-actions">'+
         '<label class="check-row"><input type="checkbox" data-deployer-enabled="'+name+'" '+
           (enabled?'checked ':'')+(isProtected?'disabled ':'')+'aria-label="Enable redeploy for '+name+'">'+
           ' Enable redeploy</label>'+
         '<button type="button" class="secondary compact" data-deployer-redeploy="'+name+'" '+
           ((!enabled||isProtected)?'disabled':'')+'>Redeploy now</button>'+
-      '</div></div>';
+      '</div>'+
+      ((!enabled||isProtected)?'':
+        '<div class="deployer-auto-settings">'+
+          '<label class="check-row"><input type="checkbox" data-deployer-auto="'+name+'" '+
+            (automatic?'checked':'')+((isCustomApp||automatic)?'':' disabled')+'> Auto-redeploy after successful image publishing</label>'+
+          '<div class="deployer-auto-fields">'+
+            '<label>Publishing repository<select data-deployer-repo="'+name+'">'+repoChoices+'</select></label>'+
+            '<label>Publishing workflow filename<input data-deployer-workflow="'+name+'" value="'+esc(workflow)+'" autocomplete="off" spellcheck="false"></label>'+
+            '<label>Installed image<select data-deployer-image="'+name+'">'+imageChoices+'</select></label>'+
+          '</div>'+
+          '<div class="muted small">'+(isCustomApp?'Requires verified SHA-tagged GHCR images and permission to update custom Compose apps. No GitHub workflow secrets needed.':'Not available for catalog/wizard apps: use manual redeploy instead.')+'</div>'+
+        '</div>')+
+    '</div>';
   }).join('');
 }
 

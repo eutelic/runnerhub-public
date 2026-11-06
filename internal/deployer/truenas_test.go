@@ -472,3 +472,42 @@ func TestTrueNASImmutableImagePreflightRequiresFullAdmin(t *testing.T) {
   })
  }
 }
+
+func TestTrueNASListAppsIncludesImagesForPublishingSafety(t *testing.T) {
+	upgrader := websocket.Upgrader{}
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil { t.Errorf("upgrade: %v", err); return }
+		defer conn.Close()
+		for i := 0; i < 2; i++ {
+			var req struct { ID uint64 `json:"id"`; Method string `json:"method"` }
+			if err := conn.ReadJSON(&req); err != nil { t.Errorf("read: %v", err); return }
+			switch req.Method {
+			case "auth.login_ex":
+				_ = conn.WriteJSON(map[string]any{"jsonrpc":"2.0","id":req.ID,"result":map[string]any{"response_type":"SUCCESS"}})
+			case "app.query":
+				_ = conn.WriteJSON(map[string]any{"jsonrpc":"2.0","id":req.ID,
+					"result":[]map[string]any{
+						{"name":"file-ingest","state":"RUNNING","active_workloads":map[string]any{
+							"images":[]string{"ghcr.io/eutelic/file-ingest:latest","redis:7"},
+						}},
+					},
+				})
+			default:
+				t.Errorf("unexpected request: %s", req.Method)
+			}
+		}
+	}))
+	defer server.Close()
+	client, err := NewTrueNASClient(TrueNASConfig{
+		Endpoint:"wss"+strings.TrimPrefix(server.URL,"https"),
+		Username:"deployer",APIKey:"secret",InsecureSkipVerify:true,
+	})
+	if err != nil { t.Fatal(err) }
+	apps, err := client.ListApps(context.Background())
+	if err != nil { t.Fatal(err) }
+	if len(apps)!=1 || apps[0].Name!="file-ingest" || len(apps[0].Images)!=2 ||
+		apps[0].Images[0]!="ghcr.io/eutelic/file-ingest:latest" {
+		t.Fatalf("unexpected TrueNAS inventory: %+v", apps)
+	}
+}

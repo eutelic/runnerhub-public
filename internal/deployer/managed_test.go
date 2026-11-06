@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -20,6 +21,27 @@ type fakeManagedTrueNAS struct {
 
 func (f *fakeManagedTrueNAS) ListApps(context.Context) ([]TrueNASApp, error) {
 	return f.inventory, nil
+}
+
+// A fake custom app implements the same pinned endpoint as the TrueNAS
+// client while recording the exact immutable image visible in app.query.
+func (f *fakeManagedTrueNAS) RedeployPinnedAndWait(ctx context.Context, app, image, previousDigest, targetDigest string) error {
+	if err := ctx.Err(); err != nil { return err }
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	previousPinned := strings.TrimSuffix(strings.ToLower(image), ":latest")+"@"+previousDigest
+	pinned := strings.TrimSuffix(strings.ToLower(image), ":latest")+"@"+targetDigest
+	for i := range f.inventory {
+		if f.inventory[i].Name != app { continue }
+		for j, installed := range f.inventory[i].Images {
+			if strings.EqualFold(installed, image) || strings.EqualFold(installed, previousPinned) {
+				f.inventory[i].Images[j] = pinned
+				f.apps = append(f.apps, app)
+				return nil
+			}
+		}
+	}
+	return errors.New("pinned fake app image does not match previous release")
 }
 
 func newManagedService(t *testing.T, fake *fakeManagedTrueNAS, root string) *Service {
@@ -143,6 +165,26 @@ func TestManagedAppsRejectInvalidCredentialsAndProtectedTargets(t *testing.T) {
 			t.Fatalf("code=%d", res.Code)
 		}
 	})
+	t.Run("valid signature cannot be replayed", func(t *testing.T) {
+		req := signedManagedRequest(t, key, "GET", managementPrefix, "")
+		first := httptest.NewRecorder()
+		handler.ServeHTTP(first, req)
+		if first.Code != http.StatusOK {
+			t.Fatalf("first request status=%d body=%s", first.Code, first.Body.String())
+		}
+		second := httptest.NewRecorder()
+		duplicate := httptest.NewRequest("GET", managementPrefix, nil)
+		duplicate.Header = req.Header.Clone()
+		handler.ServeHTTP(second, duplicate)
+		if second.Code != http.StatusUnauthorized {
+			t.Fatalf("replayed management request status=%d", second.Code)
+		}
+		third := httptest.NewRecorder()
+		handler.ServeHTTP(third, signedManagedRequest(t, key, "GET", managementPrefix, ""))
+		if third.Code != http.StatusOK {
+			t.Fatalf("fresh signed request status=%d", third.Code)
+		}
+	})
 	t.Run("tampered body", func(t *testing.T) {
 		req := signedManagedRequest(t, key, "POST", path, `{"enabled":false}`)
 		req.Body = ioNopCloser(`{"enabled":true}`)
@@ -244,5 +286,43 @@ func TestManagedAppsProtectRunnerHubControlPlaneWithoutWorkflowTarget(t *testing
 				t.Fatalf("enable status=%d, want 403", res.Code)
 			}
 		})
+	}
+}
+
+
+func TestManagedAppPinnedRedeployRequiresAuthenticationAndEnabledApp(t *testing.T) {
+	fake := testManagedInventory()
+	for i := range fake.inventory {
+		if fake.inventory[i].Name == "file-ingest" {
+			fake.inventory[i].Images = []string{"ghcr.io/eutelic/file-ingest:latest"}
+		}
+	}
+	svc := newManagedService(t, fake, t.TempDir())
+	path := managementPrefix + "/file-ingest/redeploy-pinned"
+	payload := `{"image":"ghcr.io/eutelic/file-ingest:latest","previousDigest":"`+baselineDigest+`","targetDigest":"`+updatedDigest+`"}`
+	response := httptest.NewRecorder()
+	svc.Handler().ServeHTTP(response, signedManagedRequest(t, svc.ManagementKey, "POST", path, payload))
+	if response.Code != http.StatusForbidden || len(fake.apps) != 0 {
+		t.Fatalf("disabled pinned app deployed: status=%d apps=%v", response.Code, fake.apps)
+	}
+	if err := svc.setManaged("file-ingest", true); err != nil { t.Fatal(err) }
+	unauthorized := httptest.NewRecorder()
+	unauthorizedReq := httptest.NewRequest("POST", path, strings.NewReader(payload))
+	svc.Handler().ServeHTTP(unauthorized, unauthorizedReq)
+	if unauthorized.Code != http.StatusUnauthorized {
+		t.Fatalf("unsigned pinned redeploy accepted: %d", unauthorized.Code)
+	}
+	valid := httptest.NewRecorder()
+	svc.Handler().ServeHTTP(valid, signedManagedRequest(t, svc.ManagementKey, "POST", path, payload))
+	if valid.Code != http.StatusOK || len(fake.apps) != 1 {
+		t.Fatalf("pinned deployment status=%d body=%s apps=%v", valid.Code, valid.Body.String(), fake.apps)
+	}
+	if fake.inventory[2].Images[0] != "ghcr.io/eutelic/file-ingest@"+updatedDigest {
+		t.Fatalf("expected pinned inventory, got %v", fake.inventory[2].Images)
+	}
+	stale := httptest.NewRecorder()
+	svc.Handler().ServeHTTP(stale, signedManagedRequest(t, svc.ManagementKey, "POST", path, payload))
+	if stale.Code != http.StatusConflict || len(fake.apps) != 1 {
+		t.Fatalf("accepted pinned deployment with outdated source: %d apps=%v", stale.Code, fake.apps)
 	}
 }

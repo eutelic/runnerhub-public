@@ -2,6 +2,7 @@ package deployer
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
@@ -22,6 +23,7 @@ const (
 	managementPrefix = "/api/v1/managed-apps"
 	managementTimestampHeader = "X-RunnerHub-Management-Timestamp"
 	managementSignatureHeader = "X-RunnerHub-Management-Signature"
+	managementNonceHeader = "X-RunnerHub-Management-Nonce"
 )
 
 type ManagedApp struct {
@@ -29,6 +31,8 @@ type ManagedApp struct {
 	State     string `json:"state"`
 	Enabled   bool   `json:"enabled"`
 	Protected bool   `json:"protected"`
+	CustomApp bool `json:"customApp"`
+	Images    []string `json:"images"`
 }
 
 type managedSettings struct {
@@ -44,14 +48,18 @@ type trueNASAppCatalog interface {
 // placed in an HTTP header. Workflow deployment tokens cannot sign requests.
 func SignManagementRequest(req *http.Request, key []byte, body []byte) {
 	timestamp := strconv.FormatInt(time.Now().Unix(), 10)
+	// A unique authenticated nonce makes captured requests non-replayable inside
+	// the allowed clock-skew window. Both services require this v2 signature.
+	nonce := rand.Text()
 	req.Header.Set(managementTimestampHeader, timestamp)
-	req.Header.Set(managementSignatureHeader, managementSignature(key, req.Method, req.URL.EscapedPath(), timestamp, body))
+	req.Header.Set(managementNonceHeader, nonce)
+	req.Header.Set(managementSignatureHeader, managementSignature(key, req.Method, req.URL.EscapedPath(), timestamp, nonce, body))
 }
 
-func managementSignature(key []byte, method, path, timestamp string, body []byte) string {
+func managementSignature(key []byte, method, path, timestamp, nonce string, body []byte) string {
 	digest := sha256.Sum256(body)
 	mac := hmac.New(sha256.New, key)
-	_, _ = fmt.Fprintf(mac, "runnerhub-managed-apps-v1\n%s\n%s\n%s\n%x", method, path, timestamp, digest)
+	_, _ = fmt.Fprintf(mac, "runnerhub-managed-apps-v2\n%s\n%s\n%s\n%s\n%x", method, path, timestamp, nonce, digest)
 	return hex.EncodeToString(mac.Sum(nil))
 }
 
@@ -66,6 +74,11 @@ func (s *Service) authenticatedManagementBody(w http.ResponseWriter, r *http.Req
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return nil, false
 	}
+	nonce := r.Header.Get(managementNonceHeader)
+	if len(nonce) < 16 || len(nonce) > 128 {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return nil, false
+	}
 	provided, err := hex.DecodeString(r.Header.Get(managementSignatureHeader))
 	if err != nil || len(provided) != sha256.Size {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
@@ -76,11 +89,33 @@ func (s *Service) authenticatedManagementBody(w http.ResponseWriter, r *http.Req
 		http.Error(w, "invalid request body", http.StatusBadRequest)
 		return nil, false
 	}
-	expected, _ := hex.DecodeString(managementSignature(s.ManagementKey, r.Method, r.URL.EscapedPath(), timestamp, body))
+	expected, _ := hex.DecodeString(managementSignature(s.ManagementKey, r.Method, r.URL.EscapedPath(), timestamp, nonce, body))
 	if !hmac.Equal(provided, expected) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return nil, false
 	}
+	// Reject replayed requests even when the HMAC and timestamp are valid.
+	// Keep bounded, short-lived nonce state in memory; a service restart
+	// clears it but never creates a reusable token or credential.
+	s.managementNonceMu.Lock()
+	defer s.managementNonceMu.Unlock()
+	if s.managementNonces == nil {
+		s.managementNonces = make(map[string]int64)
+	}
+	if _, exists := s.managementNonces[nonce]; exists {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return nil, false
+	}
+	for k, expiration := range s.managementNonces {
+		if expiration < time.Now().Unix() {
+			delete(s.managementNonces, k)
+		}
+	}
+	if len(s.managementNonces) >= 4096 {
+		http.Error(w, "management request capacity exceeded", http.StatusServiceUnavailable)
+		return nil, false
+	}
+	s.managementNonces[nonce] = unix + 60
 	return body, true
 }
 
@@ -188,6 +223,8 @@ func (s *Service) managedCatalog(ctx context.Context) ([]ManagedApp, error) {
 			State:     app.State,
 			Enabled:   enabled[app.Name],
 			Protected: s.protectedApp(app.Name),
+			CustomApp: app.CustomApp,
+			Images:    app.Images,
 		})
 	}
 	sort.Slice(result, func(i, j int) bool { return result[i].Name < result[j].Name })
@@ -260,6 +297,71 @@ func (s *Service) manageApp(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"name": app, "enabled": *input.Enabled})
+	case "redeploy-pinned":
+		if !enabled {
+			http.Error(w, "redeployment is not enabled for this app", http.StatusForbidden)
+			return
+		}
+		var input struct {
+			Image string `json:"image"`
+			PreviousDigest string `json:"previousDigest"`
+			TargetDigest string `json:"targetDigest"`
+		}
+		if err := json.Unmarshal(body, &input); err != nil || !ValidImageDigest(input.PreviousDigest) ||
+			!ValidImageDigest(input.TargetDigest) || input.PreviousDigest == input.TargetDigest ||
+			!strings.HasPrefix(strings.ToLower(input.Image), "ghcr.io/") {
+			http.Error(w, "exact GHCR image and distinct verified SHA-256 digests required", http.StatusBadRequest)
+			return
+		}
+		// The signed request cannot redirect a managed deployment to an
+		// arbitrary image: that image must already be this app's image
+		// or its previous verified immutable reference.
+		base := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(input.Image)), ":latest")
+		if !strings.HasSuffix(strings.ToLower(input.Image), ":latest") ||
+			!ImageMatchesPublicationRepository(input.Image, strings.TrimPrefix(base, "ghcr.io/")) {
+			http.Error(w, "invalid pinned publishing repository/image", http.StatusBadRequest)
+			return
+		}
+		expectedPrevious := base+"@"+input.PreviousDigest
+		imageAuthorized := false
+		for _, item := range apps {
+			if item.Name != app { continue }
+			for _, installed := range item.Images {
+				if strings.EqualFold(installed, input.Image) || strings.EqualFold(installed, expectedPrevious) {
+					imageAuthorized = true
+				}
+			}
+		}
+		if !imageAuthorized {
+			http.Error(w, "TrueNAS app image does not match the verified previous release", http.StatusConflict)
+			return
+		}
+		pinned, ok := s.TrueNAS.(PinnedAppRedeployer)
+		if !ok {
+			http.Error(w, "pinned TrueNAS app updates unavailable on this deployment", http.StatusServiceUnavailable)
+			return
+		}
+		lock := s.appLock(app)
+		if !lock.TryLock() {
+			http.Error(w, "deployment already in progress for app", http.StatusConflict)
+			return
+		}
+		defer lock.Unlock()
+		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Minute)
+		defer cancel()
+		record := deploymentRecord{ID: deploymentID(), Target: app, App: app, RequestedAt: time.Now().UTC(), Result: "failed"}
+		err := pinned.RedeployPinnedAndWait(ctx, app, input.Image, input.PreviousDigest, input.TargetDigest)
+		record.CompletedAt = time.Now().UTC()
+		if err == nil { record.Result = "success" } else { record.Detail = safeDetail(err) }
+		if auditErr := s.appendAudit(record); auditErr != nil {
+			http.Error(w, "pinned deployment result is uncertain: audit persistence failed", http.StatusInternalServerError)
+			return
+		}
+		if err != nil {
+			http.Error(w, "pinned TrueNAS deployment failed: "+record.Detail, http.StatusBadGateway)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"name": app, "state": "deployed", "digest": input.TargetDigest})
 	case "redeploy":
 		if len(body) != 0 {
 			http.Error(w, "redeploy request body must be empty", http.StatusBadRequest)

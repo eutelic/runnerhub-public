@@ -634,6 +634,44 @@ for manual dashboard redeploys.
 checkbox.** That integration is separate, so selecting a checkbox alone cannot
 cause an unexpected redeploy when a workflow completes.
 
+### Opt in to automatic redeploy after publishing
+
+Under **Deployments → TrueNAS apps**, enable manual redeploy for an app.
+When the app uses a matching mutable GHCR image
+(`ghcr.io/OWNER/REPOSITORY:latest`), the dashboard also offers
+**Auto-redeploy after successful image publishing**.
+
+Choose the connected publishing GitHub repository, its `.github/workflows/`
+workflow filename (for example `publish-images.yml`), and the installed
+image. RunnerHub automatically selects the repository and image if it can
+find one unambiguous match. It will refuse to enable automatic redeploy
+unless the image appears in TrueNAS' actual app inventory and exactly
+matches the publishing repository's GHCR image path.
+
+The control plane uses its existing GitHub App `Actions: read` permission.
+It checks the selected `main` branch workflow approximately every 90 seconds
+and only redeploys when a **new**, **completed**, **successful**
+`push`/`workflow_dispatch` run of the exact workflow is observed.
+At opt-in, it takes the current latest workflow run as its baseline,
+so previously successful runs do not immediately trigger a deployment.
+
+A persistent per-app run cursor (in
+`/data/deployer-bootstrap/config/automatic-publishing.json`) prevents
+repeated deploys on restart. A failed redeploy is recorded and not retried
+automatically for the same run; use **Redeploy now** after diagnosing the
+failure. Disabling manual redeploy also removes the automatic watch.
+RunnerHub's own CI-control app and the deployer itself remain protected.
+
+This feature does **not** require manually editing GitHub Actions secrets
+or publishing workflow YAML. It assumes the selected workflow really
+publishes the installed GHCR image before reporting success; it does not
+independently verify that the OCI registry digest changed. Publishing
+workflows must perform their own image publication and integrity checks.
+GitHub App permissions must include Actions-read access to the repository.
+Apps with digest-pinned tags, other registries or unlinked images can still
+use manual **Redeploy now** but are not eligible for this initial automatic
+flow.
+
 ### Trigger from GitHub Actions
 
 A self-hosted RunnerHub job that can reach the deployer can request only its preconfigured target:

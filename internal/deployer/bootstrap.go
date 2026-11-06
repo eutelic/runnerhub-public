@@ -16,6 +16,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -36,10 +37,12 @@ type TrueNASBootstrapClient interface {
 type BootstrapClientFactory func(TrueNASConfig) (TrueNASBootstrapClient, error)
 
 type BootstrapManager struct {
+	autoMu    sync.Mutex
 	MaintenanceToken string
 	Root      string
 	NewClient BootstrapClientFactory
 	HTTP      *http.Client
+	RegistryDigests ImageDigestResolver
 }
 
 type BootstrapRequest struct {
