@@ -1110,7 +1110,7 @@ async function loadManagedDeployerApps(force=false){
   }
 }
 
-function renderDeployerStatus(status){
+function renderDeployerStatus(status,maintenance={}){
   if(!status||status.available===false){
     els.deployerSummary.textContent='Unavailable';
     els.deployerStatus.textContent=status?.detail||'Deployer bootstrap is unavailable on this RunnerHub instance.';
@@ -1123,11 +1123,12 @@ function renderDeployerStatus(status){
     if(els.deployerAppsList)els.deployerAppsList.textContent='Install the redeployer to discover apps.';
     return;
   }
-  els.deployerSummary.textContent=status.healthy?'Healthy':'Needs attention';
+  els.deployerSummary.textContent=maintenance.paused?'Draining CI':status.healthy?'Healthy':'Needs attention';
   els.deployerStatus.innerHTML=
     '<div class="repo-status"><span class="badge'+(status.healthy?'':' warn')+'">'+esc(status.healthy?'Deployer healthy':'Deployer unreachable')+'</span></div>'+
     '<div class="resource-summary">'+esc(status.deployerApp||'runnerhub-deployer')+' · '+esc(status.deployerUrl||'')+' · target '+esc(status.targetId||'runnerhub')+'</div>'+
-    '<div class="muted small">'+esc(status.detail||'')+(status.configuredAt?' · configured '+esc(fmtTime(status.configuredAt)):'')+'</div>';
+    '<div class="muted small">'+esc(status.detail||'')+(status.configuredAt?' · configured '+esc(fmtTime(status.configuredAt)):'')+'</div>'+
+    (maintenance.paused?'<div class="resource-note warn"><strong>RunnerHub maintenance active:</strong> new CI jobs are paused; '+esc(String(maintenance.activeWorkers||0))+' active worker(s) remain · '+esc(maintenance.phase||'draining')+'</div>':'');
   if(status.healthy)void loadManagedDeployerApps();
   else if(els.deployerAppsList)els.deployerAppsList.textContent='Deployer is currently unreachable.';
 }
@@ -1477,7 +1478,8 @@ async function refresh(force=false){
       collect('audit','/api/v1/audit?limit=12',[]),
       collect('scalesets','/api/v1/scalesets/status',[]),
       collect('runtime','/api/v1/runtime-health',[]),
-      collect('deployer','/api/v1/deployer/status',{available:false,detail:'Not available'})
+      collect('deployer','/api/v1/deployer/status',{available:false,detail:'Not available'}),
+      collect('maintenance','/api/v1/maintenance',{paused:false,activeWorkers:0,phase:'unknown'})
     ];
     if(auth.authenticated){
       const inventoryDue=force||!snapshot.repos||!snapshot.installations||
@@ -1491,7 +1493,7 @@ async function refresh(force=false){
         requests.push(Promise.resolve(snapshot.installations));
       }
     }
-    const [h,p,w,progress,a,statuses,runtimeHealth,deployer,repos,installations]=await Promise.all(requests);
+    const [h,p,w,progress,a,statuses,runtimeHealth,deployer,maintenance,repos,installations]=await Promise.all(requests);
     const now=Date.now();
     const poolKey=(p||[]).map(pool=>String(pool.id)).sort().join(',');
     if(force||poolKey!==recommendationCache.key||now-recommendationCache.at>30000){
@@ -1525,7 +1527,7 @@ async function refresh(force=false){
     renderFleetAlerts(h,p,w,statuses,runtimeHealth,
       !errors.some(error=>/^(hosts|pools|workers|scalesets|runtime):/.test(error)));
     renderOnboardingChecklist(h,p,statuses,installations,repos);
-    renderDeployerStatus(deployer);
+    renderDeployerStatus(deployer,maintenance);
     renderCIEfficiency(efficiencyCache.value);
     renderHosts(h,w,poolByID);
     renderPools(p,statuses,runtimeHealth,recommendationCache.value,h,w,progress);

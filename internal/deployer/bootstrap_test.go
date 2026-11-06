@@ -53,6 +53,7 @@ func TestBootstrapManagerInstallWritesPrivateConfigAndInstallsApp(t *testing.T) 
 	fake := &fakeAppInstaller{}
 	manager := &BootstrapManager{
 		Root: root,
+		MaintenanceToken: "test-admin-key",
 		NewClient: func(TrueNASConfig) (TrueNASBootstrapClient, error) {
 			return fake, nil
 		},
@@ -81,13 +82,14 @@ func TestBootstrapManagerInstallWritesPrivateConfigAndInstallsApp(t *testing.T) 
 	if fake.app != "runnerhub-deployer" {
 		t.Fatalf("unexpected installed app %q", fake.app)
 	}
-	if strings.Contains(fake.compose, "secret-api-key") {
+	if strings.Contains(fake.compose, "secret-api-key") || strings.Contains(fake.compose,"test-admin-key") {
 		t.Fatal("generated Compose must not contain the TrueNAS API key")
 	}
 	for _, want := range []string{
 		"/mnt/tank/runnerhub/data/deployer-bootstrap/data",
 		"/mnt/tank/runnerhub/data/deployer-bootstrap/config/deployments.json",
 		"/mnt/tank/runnerhub/data/deployer-bootstrap/secrets/truenas-api-key",
+		"/mnt/tank/runnerhub/data/deployer-bootstrap/secrets/runnerhub-maintenance-key",
 		"wss://truenas.example/api/current",
 	} {
 		if !strings.Contains(fake.compose, want) {
@@ -119,6 +121,11 @@ func TestBootstrapManagerInstallWritesPrivateConfigAndInstallsApp(t *testing.T) 
 	if target.TokenSHA256 != hex.EncodeToString(sum[:]) {
 		t.Fatal("policy token digest does not match returned workflow token")
 	}
+	if !target.SelfRedeploy||target.MaintenanceURL!="http://truenas.example:8788"{
+		t.Fatalf("RunnerHub maintenance policy not configured: %+v",target)
+	}
+	key,err:=os.ReadFile(filepath.Join(root,"secrets","runnerhub-maintenance-key"))
+	if err!=nil||string(key)!="test-admin-key\n"{t.Fatalf("maintenance credential missing or invalid: %v",err)}
 	if target.App != "runnerhub" || target.Repository != "eutelic/runnerhub" {
 		t.Fatalf("unexpected target: %#v", target)
 	}
@@ -132,10 +139,12 @@ func TestBootstrapManagerRestoresExistingFilesWhenInstallFails(t *testing.T) {
 		}
 	}
 	keyPath := filepath.Join(root, "secrets", "truenas-api-key")
+	maintenanceKeyPath:=filepath.Join(root,"secrets","runnerhub-maintenance-key")
 	policyPath := filepath.Join(root, "config", "deployments.json")
 	statePath := filepath.Join(root, "state.json")
 	original := map[string]string{
 		keyPath:    "old-key\n",
+		maintenanceKeyPath:"old-admin-key\n",
 		policyPath: "{\"old\":true}\n",
 		statePath:  "{\"old\":true}\n",
 	}
@@ -147,6 +156,7 @@ func TestBootstrapManagerRestoresExistingFilesWhenInstallFails(t *testing.T) {
 
 	manager := &BootstrapManager{
 		Root: root,
+		MaintenanceToken: "test-admin-key",
 		NewClient: func(TrueNASConfig) (TrueNASBootstrapClient, error) {
 			return failingAppInstaller{}, nil
 		},
@@ -178,6 +188,7 @@ func TestBootstrapManagerAutoDetectsHostDataPath(t *testing.T) {
 	fake := &fakeAppInstaller{}
 	manager := &BootstrapManager{
 		Root: root,
+		MaintenanceToken: "test-admin-key",
 		NewClient: func(TrueNASConfig) (TrueNASBootstrapClient, error) {
 			return fake, nil
 		},
@@ -198,7 +209,7 @@ func TestBootstrapManagerAutoDetectsHostDataPath(t *testing.T) {
 }
 
 func TestBootstrapManagerRejectsUnsafeHostDataPath(t *testing.T) {
-	manager := &BootstrapManager{Root: t.TempDir()}
+	manager := &BootstrapManager{Root: t.TempDir(),MaintenanceToken:"test-admin-key"}
 	_, err := manager.Install(context.Background(), BootstrapRequest{
 		Endpoint:     "wss://truenas.example/api/current",
 		Username:     "runnerhub_deployer",
@@ -225,6 +236,7 @@ func TestBootstrapManagerCustomPort(t *testing.T) {
 	fake := &fakeAppInstaller{}
 	manager := &BootstrapManager{
 		Root: root,
+		MaintenanceToken: "test-admin-key",
 		NewClient: func(TrueNASConfig) (TrueNASBootstrapClient, error) { return fake, nil },
 	}
 	result, err := manager.Install(context.Background(), BootstrapRequest{
@@ -275,6 +287,7 @@ func TestBootstrapManagerRetainsSecretWhenTrueNASInstallStillPending(t *testing.
 	root := t.TempDir()
 	manager := &BootstrapManager{
 		Root: root,
+		MaintenanceToken: "test-admin-key",
 		NewClient: func(TrueNASConfig) (TrueNASBootstrapClient, error) {
 			return pendingAppInstaller{}, nil
 		},

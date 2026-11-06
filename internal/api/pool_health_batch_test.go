@@ -75,4 +75,20 @@ func TestPoolHealthBatchUsesLiveHostCapacityAcrossPools(t *testing.T) {
         after["publisher"].OnlineHosts!=1 || after["standard"].ActiveWorkers!=0 {
         t.Fatalf("capacity release not reflected: %+v",after)
     }
+    // A maintenance pause overrides placement capacity in *all* health
+    // endpoints so diagnostics and scale-set admission agree.
+    if err:=db.SetMaintenance(ctx,store.MaintenanceState{
+        Paused:true,Generation:"mnt-health-test",
+    });err!=nil{t.Fatal(err)}
+    paused:=fetch()
+    for id,health:=range paused {
+        if health.Healthy || !strings.Contains(strings.Join(health.Reasons,";"),"maintenance") {
+            t.Fatalf("pool %s stayed healthy during admission pause: %+v",id,health)
+        }
+    }
+    if err:=db.SetMaintenance(ctx,store.MaintenanceState{Paused:false});err!=nil{t.Fatal(err)}
+    resumed:=fetch()
+    if !resumed["standard"].Healthy || !resumed["publisher"].Healthy {
+        t.Fatalf("batch pool health did not recover after maintenance: %+v",resumed)
+    }
 }

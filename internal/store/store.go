@@ -30,6 +30,21 @@ type CIWorkerCandidateReader interface {
 	ListCIWorkerCandidates(context.Context, time.Time, time.Time) ([]core.Worker, error)
 }
 
+// MaintenanceState gates new worker admissions while existing jobs drain.
+type MaintenanceState struct {
+ Paused bool `json:"paused"`
+ Generation string `json:"generation,omitempty"`
+ Reason string `json:"reason,omitempty"`
+ RequestedBy string `json:"requestedBy,omitempty"`
+ RequestedAt time.Time `json:"requestedAt,omitempty"`
+}
+
+// MaintenanceStore persists the global admission gate across restarts.
+type MaintenanceStore interface {
+ GetMaintenance(context.Context) (MaintenanceState,error)
+ SetMaintenance(context.Context,MaintenanceState) error
+}
+
 type Store interface {
 	UpsertHost(context.Context, core.Host) error
 	GetHost(context.Context, string) (core.Host, error)

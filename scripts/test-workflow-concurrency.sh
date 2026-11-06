@@ -44,6 +44,9 @@ require_fixed "$publish" "tags:"
 require_fixed "$publish" "cancel-in-progress: false"
 # Ensure publishing cannot monopolize compute with conservative DinD reservations.
 require_fixed "$publish" "max-parallel: 2"
+require_fixed "$publish" "redeploy_runnerhub:"
+require_fixed "$publish" "default: false"
+require_fixed "$publish" "inputs.redeploy_runnerhub"
 require_fixed "$publish" "if: github.ref_type == 'tag'"
 if grep -Eq '^[[:space:]]+branches:' "$publish"; then
   echo "publish-images must not publish automatically from branch pushes" >&2

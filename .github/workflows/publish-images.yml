@@ -7,6 +7,12 @@ on:
     tags:
       - 'v*'
   workflow_dispatch:
+    inputs:
+      redeploy_runnerhub:
+        description: "Drain RunnerHub CI and redeploy the control image after publishing"
+        type: boolean
+        required: false
+        default: false
 
 permissions:
   contents: read
@@ -245,6 +251,54 @@ jobs:
 
             echo "[ ok ] published aliases for ${ref} -> ${source_digest}"
           done
+      # Request only after all five matching images have been published and
+      # latest was promoted for the exact current main commit. The control
+      # image digest is sent separately so TrueNAS deploys this exact artifact.
+      # Manual dispatch defaults to publish-only; redeployment requires opting in.
+      # This job itself must finish before the external deployer drains CI.
+      - name: Request coordinated RunnerHub self-redeployment
+        if: github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && inputs.redeploy_runnerhub
+        env:
+          RUNNERHUB_DEPLOY_TOKEN: ${{ secrets.RUNNERHUB_DEPLOY_TOKEN }}
+          RUNNERHUB_DEPLOY_URL: ${{ vars.RUNNERHUB_DEPLOY_URL }}
+        run: |
+          set -euo pipefail
+          if [ -z "${RUNNERHUB_DEPLOY_TOKEN:-}" ] || [ -z "${RUNNERHUB_DEPLOY_URL:-}" ]; then
+            echo '[error] RunnerHub deployer credentials are missing for an explicitly requested self-redeployment' >&2
+            exit 1
+          fi
+          remote_main="$(git ls-remote origin refs/heads/main | awk '{print $1}')"
+          if [ "$remote_main" != "$GITHUB_SHA" ]; then
+            echo '[note] main advanced; not requesting redeploy of an obsolete image set'
+            exit 0
+          fi
+          deploy_url="${RUNNERHUB_DEPLOY_URL%/}/api/v1/deployments/runnerhub"
+          # Old deployers use synchronous pull/redeploy. Fail closed rather
+          # than terminating the currently running publishing job.
+          if ! capabilities="$(curl --fail --silent --show-error --max-time 10 \
+            --header "Authorization: Bearer $RUNNERHUB_DEPLOY_TOKEN" \
+            "$deploy_url/capabilities")"; then
+            echo "[error] redeployer is unavailable or too old for safe CI drain; upgrade the standalone deployer first"
+            exit 1
+          fi
+          if ! printf '%s' "$capabilities" | grep -qE '"async_self_redeploy"[[:space:]]*:[[:space:]]*true'; then
+            echo "[error] redeployer does not advertise asynchronous RunnerHub self-redeployment"
+            exit 1
+          fi
+          crane="$(go env GOPATH)/bin/crane"
+          image_digest="$("$crane" digest "ghcr.io/eutelic/runnerhub-control:sha-${GITHUB_SHA}")"
+          if ! [[ "$image_digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "[error] published RunnerHub control image has an invalid digest: $image_digest"
+            exit 1
+          fi
+          payload="$(printf '{"sha":"%s","run_id":"%s","image_digest":"%s"}' "$GITHUB_SHA" "$GITHUB_RUN_ID" "$image_digest")"
+          # The deployer returns 202 immediately. It waits for this and all
+          # other CI jobs to finish before calling TrueNAS.
+          curl --fail-with-body --silent --show-error --max-time 20 \
+            --request POST "$deploy_url" \
+            --header "Authorization: Bearer $RUNNERHUB_DEPLOY_TOKEN" \
+            --header 'Content-Type: application/json' \
+            --data "$payload"
       - name: Verify release tags are anonymously pullable
         if: github.ref_type == 'tag'
         env:

@@ -36,6 +36,7 @@ type TrueNASBootstrapClient interface {
 type BootstrapClientFactory func(TrueNASConfig) (TrueNASBootstrapClient, error)
 
 type BootstrapManager struct {
+	MaintenanceToken string
 	Root      string
 	NewClient BootstrapClientFactory
 	HTTP      *http.Client
@@ -173,6 +174,20 @@ func (m *BootstrapManager) Install(ctx context.Context, req BootstrapRequest) (B
 	if err != nil {
 		return BootstrapResult{}, err
 	}
+	// Self-redeployment needs a trusted admin credential for the maintenance
+	// gate. The workflow token is NEVER granted this authority.
+	maintenanceToken:=strings.TrimSpace(m.MaintenanceToken)
+	if maintenanceToken==""{
+		return BootstrapResult{},errors.New("RunnerHub self-redeployment requires the control-plane admin key; install from a configured trusted RunnerHub control instance")
+	}
+	if health.Path!="/healthz" || health.RawQuery!="" || health.Fragment!="" {
+		return BootstrapResult{},errors.New("RunnerHub health URL must end in /healthz for coordinated self-redeployment")
+	}
+	maintenanceEndpoint:=*health
+	maintenanceEndpoint.Path=""
+	maintenanceEndpoint.RawPath=""
+	maintenanceEndpoint.RawQuery=""
+	maintenanceEndpoint.Fragment=""
 	if req.HostDataPath == "" {
 		req.HostDataPath, err = client.FindAppMount(ctx, req.RunnerHubApp, "/data")
 		if err != nil {
@@ -214,6 +229,9 @@ func (m *BootstrapManager) Install(ctx context.Context, req BootstrapRequest) (B
 		TokenSHA256:    hex.EncodeToString(sum[:]),
 		HealthURL:      req.HealthURL,
 		TimeoutSeconds: 180,
+		SelfRedeploy:true,
+		MaintenanceURL:maintenanceEndpoint.String(),
+		DrainTimeoutSeconds:14400,
 	}}}
 	policyBytes, err := json.MarshalIndent(policy, "", "  ")
 	if err != nil {
@@ -235,9 +253,10 @@ func (m *BootstrapManager) Install(ctx context.Context, req BootstrapRequest) (B
 	stateBytes = append(stateBytes, '\n')
 
 	keyPath := filepath.Join(secretsDir, "truenas-api-key")
+	maintenanceKeyPath := filepath.Join(secretsDir, "runnerhub-maintenance-key")
 	policyPath := filepath.Join(configDir, "deployments.json")
 	statePath := filepath.Join(root, "state.json")
-	paths := []string{keyPath, policyPath, statePath}
+	paths := []string{keyPath, maintenanceKeyPath, policyPath, statePath}
 	snapshots := make([]bootstrapFileSnapshot, 0, len(paths))
 	for _, path := range paths {
 		snapshot, err := snapshotBootstrapFile(path)
@@ -255,6 +274,7 @@ func (m *BootstrapManager) Install(ctx context.Context, req BootstrapRequest) (B
 	if err := writePrivateFile(keyPath, []byte(req.APIKey+"\n")); err != nil {
 		return rollback(err)
 	}
+	if err:=writePrivateFile(maintenanceKeyPath,[]byte(maintenanceToken+"\n"));err!=nil{return rollback(err)}
 	if err := writePrivateFile(policyPath, policyBytes); err != nil {
 		return rollback(err)
 	}
@@ -391,9 +411,11 @@ func bootstrapCompose(hostRoot, endpoint, username string, insecure bool, port i
       RUNNERHUB_TRUENAS_URL: %s
       RUNNERHUB_TRUENAS_USERNAME: %s
       RUNNERHUB_TRUENAS_API_KEY_FILE: /run/secrets/truenas-api-key
+      RUNNERHUB_MAINTENANCE_TOKEN_FILE: /run/secrets/runnerhub-maintenance-key
       RUNNERHUB_TRUENAS_TLS_INSECURE_SKIP_VERIFY: %s
     secrets:
       - truenas-api-key
+      - runnerhub-maintenance-key
     volumes:
       - type: bind
         source: %s
@@ -412,6 +434,8 @@ func bootstrapCompose(hostRoot, endpoint, username string, insecure bool, port i
 secrets:
   truenas-api-key:
     file: %s
+  runnerhub-maintenance-key:
+    file: %s
 `,
 		q(filepath.Join(hostRoot, "data")),
 		q(strconv.Itoa(port)),
@@ -421,6 +445,7 @@ secrets:
 		q(filepath.Join(hostRoot, "data")),
 		q(filepath.Join(hostRoot, "config", "deployments.json")),
 		q(filepath.Join(hostRoot, "secrets", "truenas-api-key")),
+		q(filepath.Join(hostRoot, "secrets", "runnerhub-maintenance-key")),
 	)
 }
 

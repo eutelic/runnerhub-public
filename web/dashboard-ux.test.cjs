@@ -74,6 +74,16 @@ test('pool queue p95 shows sample coverage and never disguises missing data as z
   assert.equal(vm.runInContext('poolRecentQueueText({samples:1,startedJobs:1,p95Seconds:0})',ctx),'0.00s · 1/1');
 });
 
+test('deployer dashboard shows maintenance and remaining CI workers',()=>{
+  const {ctx,element}=createDashboard();
+  vm.runInContext("renderDeployerStatus({available:true,configured:true,healthy:true,deployerApp:'runnerhub-deployer'},{paused:true,activeWorkers:2,phase:'draining'})",ctx);
+  assert.match(element('deployer-summary').textContent,/Draining CI/);
+  assert.match(element('deployer-status').innerHTML,/new CI jobs are paused/);
+  assert.match(element('deployer-status').innerHTML,/2 active worker/);
+  vm.runInContext("renderDeployerStatus({available:true,configured:true,healthy:true},{paused:false,activeWorkers:0,phase:'running'})",ctx);
+  assert.doesNotMatch(element('deployer-status').innerHTML,/new CI jobs are paused/);
+});
+
 test('fleet overview identifies bad listener and zero online hosts with actionable links',()=>{
   const {ctx,element}=createDashboard();
   vm.runInContext(`renderFleetOverview(

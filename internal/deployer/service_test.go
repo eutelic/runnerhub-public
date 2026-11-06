@@ -18,6 +18,7 @@ import (
 type fakeTrueNAS struct {
 	mu    sync.Mutex
 	apps  []string
+	images []string
 	block chan struct{}
 }
 
@@ -33,6 +34,13 @@ func (f *fakeTrueNAS) RedeployAndWait(ctx context.Context, app string) error {
 		}
 	}
 	return nil
+}
+
+func (f *fakeTrueNAS) RedeployImageAndWait(ctx context.Context, app, image string) error {
+	f.mu.Lock()
+	f.images = append(f.images, image)
+	f.mu.Unlock()
+	return f.RedeployAndWait(ctx, app)
 }
 
 func testPolicy(t *testing.T, token string, healthURL string) *PolicySet {
@@ -170,3 +178,47 @@ func TestDeploymentSerializesPerApp(t *testing.T) {
 		t.Fatalf("first deployment status=%d", code)
 	}
 }
+
+
+func TestShutdownWaitsForCanceledSelfRedeployRecovery(t *testing.T) {
+	svc := &Service{}
+	if !svc.beginSelfRedeploy() {
+		t.Fatal("self-redeployment did not start before shutdown")
+	}
+
+	operationCtx, cancelOperation := context.WithCancel(context.Background())
+	recoveryStarted := make(chan struct{})
+	allowRecovery := make(chan struct{})
+	recoveryFinished := make(chan struct{})
+	go func() {
+		defer svc.selfOps.Done()
+		<-operationCtx.Done()
+		close(recoveryStarted)
+		<-allowRecovery
+		close(recoveryFinished)
+	}()
+
+	svc.StopSelfRedeployAdmissions()
+	if svc.beginSelfRedeploy() {
+		t.Fatal("shutdown accepted a new self-redeployment")
+	}
+	cancelOperation()
+	<-recoveryStarted
+
+	waitCtx, cancelWait := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	waitErr := svc.WaitForSelfRedeploys(waitCtx)
+	cancelWait()
+	if waitErr != context.DeadlineExceeded {
+		t.Fatalf("shutdown wait error=%v, want deadline while recovery is still in progress", waitErr)
+	}
+
+	close(allowRecovery)
+	<-recoveryFinished
+	completeCtx, cancelComplete := context.WithTimeout(context.Background(), time.Second)
+	defer cancelComplete()
+	if err := svc.WaitForSelfRedeploys(completeCtx); err != nil {
+		t.Fatalf("shutdown did not finish after bounded recovery completed: %v", err)
+	}
+}
+
+func (f *fakeTrueNAS) VerifyImmutableImageUpdate(context.Context,string,string)error{return nil}

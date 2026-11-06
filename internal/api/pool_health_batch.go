@@ -25,10 +25,17 @@ func (s *Service) poolHealthAll(w http.ResponseWriter, r *http.Request) {
     }
     if err != nil { problem(w, http.StatusInternalServerError, err); return }
 
+    maintenance, err := s.maintenanceState(r.Context())
+    if err != nil { problem(w, http.StatusServiceUnavailable, err); return }
     now := time.Now().UTC()
     result := make([]fleet.Health, 0, len(pools))
     for _, pool := range pools {
-        result = append(result, fleet.PoolHealth(pool, hosts, workers, now))
+        health := fleet.PoolHealth(pool, hosts, workers, now)
+        if maintenance.Paused {
+            health.Healthy = false
+            health.Reasons = append(health.Reasons, "RunnerHub maintenance: new CI admissions paused for self-redeployment")
+        }
+        result = append(result, health)
     }
     writeJSON(w, http.StatusOK, result)
 }

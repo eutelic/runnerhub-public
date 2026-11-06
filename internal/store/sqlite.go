@@ -18,7 +18,9 @@ CREATE TABLE IF NOT EXISTS audit_events(id INTEGER PRIMARY KEY AUTOINCREMENT, ac
 CREATE INDEX IF NOT EXISTS idx_audit_created_at ON audit_events(created_at DESC);
 CREATE TABLE IF NOT EXISTS agent_commands(id TEXT PRIMARY KEY, host_id TEXT NOT NULL, worker_id TEXT NOT NULL, command_type TEXT NOT NULL, payload BLOB NOT NULL, created_at TEXT NOT NULL, lease_until TEXT, attempts INTEGER NOT NULL DEFAULT 0, acked_at TEXT);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_commands_active_semantic ON agent_commands(host_id, worker_id, command_type) WHERE acked_at IS NULL;
-CREATE INDEX IF NOT EXISTS idx_agent_commands_delivery ON agent_commands(host_id, acked_at, lease_until, created_at);`);return err}
+CREATE INDEX IF NOT EXISTS idx_agent_commands_delivery ON agent_commands(host_id, acked_at, lease_until, created_at);
+-- The global admission gate persists across self-redeployment.
+CREATE TABLE IF NOT EXISTS deployment_maintenance(id INTEGER PRIMARY KEY CHECK(id=1), data BLOB NOT NULL);`);return err}
 func marshal(v any)([]byte,error){return json.Marshal(v)}
 func decode[T any](b []byte)(T,error){var v T;err:=json.Unmarshal(b,&v);return v,err}
 func upsert(ctx context.Context,db *sql.DB,table,id string,v any)error{b,err:=marshal(v);if err!=nil{return err};q:=fmt.Sprintf("INSERT INTO %s(id,data,updated_at) VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data,updated_at=excluded.updated_at",table);_,err=db.ExecContext(ctx,q,id,b,time.Now().UTC().Format(time.RFC3339Nano));return err}

@@ -484,6 +484,58 @@ RunnerHub can run a small deployment coordinator as a **separate TrueNAS Custom 
 
 The deployer never gives a workflow the TrueNAS API key or the host Docker socket. A workflow receives only a target-specific RunnerHub deployment token. The server-side policy maps that target to one fixed TrueNAS app and optional health URL.
 
+### RunnerHub's own automatic redeployment (maintenance/drain)
+
+RunnerHub self-redeployment is different from updating ordinary apps. The
+standalone `runnerhub-deployer` must be a **separate TrueNAS Custom App**, not
+a service inside the `runnerhub` app that it restarts.
+
+After the Deployments wizard installs the standalone deployer:
+
+1. Store the **one-time workflow token** as the trusted release repository
+   Actions secret `RUNNERHUB_DEPLOY_TOKEN`.
+2. Set repository Actions variable `RUNNERHUB_DEPLOY_URL` to the deployer's
+   **base HTTP URL**, such as `http://TRUENAS_HOST:8790` if you chose port
+   8790 in the updated wizard (not the full `/api/v1/deployments/...` path).
+3. Automatic publication on `main` never requests self-redeployment.
+   Manual **Publish images** dispatches publish only by default. Select
+   `redeploy_runnerhub: true` to explicitly request the coordinated CI drain
+   and RunnerHub redeploy after the exact control-image digest is published.
+   Version-tag publications do not trigger RunnerHub self-redeployment.
+4. The deployer immediately returns HTTP **202 Accepted**, so that requesting
+   RunnerHub CI job can **exit before the drain**. The independent deployer
+   then tells RunnerHub to pause new worker admissions in a SQLite-persisted
+   maintenance state. GitHub Actions jobs stay queued instead of being
+   provisioned. Already-running jobs on all hosts keep working.
+5. Only after there are **zero active/provisioning/cleanup-reserved workers**
+   does the separate deployer ask TrueNAS to pull and redeploy the RunnerHub
+   app. It verifies the new app's health and the exact maintenance generation,
+   then resumes admissions. The default drain deadline is four hours.
+6. If draining times out **before** an app update, the deployer attempts to
+   resume admissions and reports failure. If TrueNAS redeployment or health
+   verification fails **after an update was attempted**, admissions remain
+   paused for manual recovery. There is no unverified automatic rollback.
+
+An authenticated deployment status is available using the workflow token at
+`GET /api/v1/deployments/runnerhub/status`. The RunnerHub **Deployments**
+dashboard shows the global maintenance pause and number of remaining workers.
+
+The local administrator can inspect the control plane using
+`GET /api/v1/maintenance`. If a deployment fails and maintenance remains
+paused, investigate the TrueNAS app, published images, and worker records
+**before** using the admin-only
+`POST /api/v1/maintenance/resume` with the matching current generation.
+Never resume blindly if a redeploy is still running.
+
+The workflow authorization token is separate from the TrueNAS API key and
+the control-plane admin credential. The redeployer stores its trusted
+maintenance credential as a protected Compose secret. Pinning the control
+image uses TrueNAS `app.query` and `app.update`; TrueNAS requires the
+configured API identity to have the `FULL_ADMIN` role to update a custom
+Compose configuration. The
+deployer fails closed if it cannot find the expected control image anchor or
+verify that the running app uses the requested digest.
+
 ### TrueNAS prerequisite: TLS
 
 TrueNAS 25.04 revokes a user-linked API key if it is submitted over insecure HTTP/WebSocket transport. Configure HTTPS for the TrueNAS management/API endpoint before enabling the deployer. The deployer intentionally accepts only a `wss://` TrueNAS URL.
@@ -613,7 +665,10 @@ For each deployment the coordinator:
 5. runs the configured HTTP health check, when present;
 6. appends a sanitized record to `/data/deployments.jsonl`.
 
-This first implementation is intended for the current `:latest` workflow. Immutable SHA image selection, GitHub OIDC authorization, rollback, and dashboard deployment history remain follow-up hardening.
+This first implementation pins the RunnerHub control image by registry digest
+for self-redeployment. Ordinary targets still use their configured image and
+pull policy. GitHub OIDC authorization, rollback, and dashboard deployment
+history remain follow-up hardening.
 
 ## Troubleshooting
 
