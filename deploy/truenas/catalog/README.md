@@ -25,8 +25,11 @@ Before upstream submission:
 4. Copy `ix-dev/community/runnerhub` into a fork of `truenas/apps`.
 5. Run the upstream app CI/copy-lib tooling so `templates/library`, generated
    metadata, and the current library hash are refreshed.
-6. Run the upstream port validator. The staging default is 30557 and was unused
-   when this overlay was prepared, but upstream is authoritative.
+6. Run the upstream port validator. The staging default is 30559 as of
+   November 6, 2026; upstream assigned 30557 to `community/cbzforge`.
+   Recheck upstream before submission because reserved ports can change. This
+   changes only the catalog's **default for new installations** and does not
+   change the port of an existing TrueNAS Custom App deployment.
 7. Add the final icon/screenshots through the TrueNAS media workflow.
 8. Open the required TrueNAS Apps issue, then the app-addition pull request.
 
