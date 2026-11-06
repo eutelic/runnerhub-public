@@ -1307,6 +1307,14 @@ function renderFleetOverview(hosts,pools,workers,statuses,runtimeHealth,progress
   els.fleetOverview.innerHTML=html;
 }
 
+function poolRecentQueueText(queue){
+  if(!queue)return '—';
+  const samples=Number(queue.samples)||0;
+  const started=Number(queue.startedJobs)||0;
+  const wait=samples>0?efficiencySeconds(queue.p95Seconds):'—';
+  return wait+' · '+samples+'/'+started;
+}
+
 function renderPools(pools,statuses,runtimeHealth,recommendationByPool,hosts=[],workers=[],progress=[]){
   const listeners=new Map((statuses||[]).map(s=>[s.poolId,s]));
   const runtimes=new Map((runtimeHealth||[]).map(s=>[s.poolId,s]));
@@ -1332,12 +1340,12 @@ function renderPools(pools,statuses,runtimeHealth,recommendationByPool,hosts=[],
       '<td><span class="pool-status '+(['healthy','active'].includes(runtime)?'ok':runtime==='unknown'?'unknown':'attention')+'">'+esc(runtime)+'</span></td>'+
       '<td>'+esc(r?.capacity?String(r.capacity.activeWorkers??'—')+' / '+p.maxConcurrency:'—')+'</td>'+
       '<td>'+esc(cpuCores(p.resources?.cpuMillis))+' CPU · '+esc(gib(p.resources?.memoryBytes))+' GiB</td>'+
-      '<td>'+esc(fmtDuration(r?.latencies?.queue))+'</td>'+
+      '<td>'+esc(poolRecentQueueText(r?.latencies?.recentQueue))+'</td>'+
       '<td>'+esc(bottleneckLabel(r?.capacity?.bottleneck))+'</td>'+
       '<td class="pool-diagnosis">'+esc(diagnosis)+'</td></tr>';
   }).join('');
   const summary=(pools||[]).length
-    ? '<div class="table-wrap pool-status-table"><table><thead><tr><th>Repository</th><th>Runner label</th><th>Listener</th><th>Runtime</th><th>Active / limit</th><th>Configured budget</th><th>Queue</th><th>Bottleneck</th><th>Host diagnosis</th></tr></thead><tbody>'+rows+'</tbody></table></div>'
+    ? '<div class="table-wrap pool-status-table"><table><thead><tr><th>Repository</th><th>Runner label</th><th>Listener</th><th>Runtime</th><th>Active / limit</th><th>Configured budget</th><th>Queue p95 (7d) · samples</th><th>Bottleneck</th><th>Host diagnosis</th></tr></thead><tbody>'+rows+'</tbody></table></div>'
     : '<div class="empty">No runner pools configured. Connect a repository to create one.</div>';
   const advanced='<details class="pool-advanced"><summary>Advanced pool metrics and resource learning</summary>'+tab(pools,[
     ['Repository',x=>repoName(x)],['Class',x=>runnerClass(x)],
@@ -1345,6 +1353,8 @@ function renderPools(pools,statuses,runtimeHealth,recommendationByPool,hosts=[],
     ['RAM / container',x=>gib(x.resources?.memoryBytes)+' GiB'],
     ['Eligible agents',x=>recommendationByPool.get(x.id)?.capacity?.compatibleHosts??'—'],
     ['Placement domains',x=>recommendationByPool.get(x.id)?.capacity?.placementDomains??'—'],
+    ['7d queue p50',x=>efficiencySeconds(recommendationByPool.get(x.id)?.latencies?.recentQueue?.p50Seconds)],
+    ['7d queue coverage',x=>{const q=recommendationByPool.get(x.id)?.latencies?.recentQueue;return q?efficiencyCoverage(q.samples,q.startedJobs):'—'}],
     ['Provision',x=>fmtDuration(recommendationByPool.get(x.id)?.latencies?.provision)],
     ['Register',x=>fmtDuration(recommendationByPool.get(x.id)?.latencies?.registration)],
     ['Execute',x=>fmtDuration(recommendationByPool.get(x.id)?.latencies?.execution)],

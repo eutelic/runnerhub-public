@@ -53,7 +53,8 @@ func (m *Metrics) Lifecycle(ok bool, provision, cleanup time.Duration) {
 }
 
 func (m *Metrics) Queue(poolID string, d time.Duration) {
-	if d <= 0 {
+	// A measured zero wait is valid; only negative durations indicate clock skew.
+	if d < 0 {
 		return
 	}
 	m.mu.Lock()

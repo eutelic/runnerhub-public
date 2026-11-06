@@ -66,6 +66,14 @@ function createDashboard(endpoints = {}, storage = new Map(), session = new Map(
   return {ctx,elements,element,document,calls,requestOptions,endpoints,storage,session,location,urlChanges};
 }
 
+test('pool queue p95 shows sample coverage and never disguises missing data as zero wait',()=>{
+  const {ctx}=createDashboard();
+  assert.equal(vm.runInContext('poolRecentQueueText(null)',ctx),'—');
+  assert.equal(vm.runInContext('poolRecentQueueText({samples:0,startedJobs:3,p95Seconds:null})',ctx),'— · 0/3');
+  assert.equal(vm.runInContext('poolRecentQueueText({samples:2,startedJobs:3,p95Seconds:90})',ctx),'1.5m · 2/3');
+  assert.equal(vm.runInContext('poolRecentQueueText({samples:1,startedJobs:1,p95Seconds:0})',ctx),'0.00s · 1/1');
+});
+
 test('fleet overview identifies bad listener and zero online hosts with actionable links',()=>{
   const {ctx,element}=createDashboard();
   vm.runInContext(`renderFleetOverview(
