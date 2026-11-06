@@ -94,8 +94,17 @@ jobs:
   publish:
     needs: [acceptance-host, jit-smoke]
     runs-on: runnerhub-publisher
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+      packages: write
     strategy:
       fail-fast: false
+      # A DinD runner without verified aggregate cgroup containment reserves
+      # 2x its configured CPU. Keep publisher builds from consuming all of the
+      # compute host's scheduler capacity, leaving room for CI validation.
+      max-parallel: 2
       # A DinD runner without verified aggregate cgroup containment reserves
       # 2x its configured CPU. Keep publisher builds from consuming all of the
       # compute host's scheduler capacity, leaving room for CI validation.
@@ -112,6 +121,8 @@ jobs:
             image: runnerhub-scaleset
           - target: deployer
             image: runnerhub-deployer
+          - target: updater
+            image: runnerhub-agent-updater
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -166,6 +177,19 @@ jobs:
             echo "- provenance: enabled"
             echo "- SBOM: enabled"
           } >> "$GITHUB_STEP_SUMMARY"
+
+      # Docker Buildx OCI provenance/SBOM metadata is not by itself a signed
+      # statement of the workflow identity. Attach a GitHub OIDC-backed SLSA
+      # attestation to the exact multi-platform digest before tag promotion.
+      - name: Sign published image provenance
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-name: ghcr.io/eutelic/${{ matrix.image }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+          # Artifact storage records are optional and require an additional
+          # artifact-metadata permission. Signing and GHCR attachment do not.
+          create-storage-record: false
 
   verify-staged-images:
     name: Verify staged published artifacts
@@ -231,7 +255,7 @@ jobs:
             fi
           fi
 
-          for image in runnerhub-control runnerhub-agent runnerhub-bootstrap runnerhub-scaleset runnerhub-deployer; do
+          for image in runnerhub-control runnerhub-agent runnerhub-bootstrap runnerhub-scaleset runnerhub-deployer runnerhub-agent-updater; do
             ref="ghcr.io/eutelic/${image}"
             source="${ref}:${SOURCE_TAG}"
             source_digest="$("$crane" digest "$source")"
@@ -308,7 +332,7 @@ jobs:
           crane="$(go env GOPATH)/bin/crane"
           anonymous_docker_config="$(mktemp -d)"
           trap 'rm -rf "$anonymous_docker_config"' EXIT
-          for image in runnerhub-control runnerhub-agent runnerhub-bootstrap runnerhub-scaleset runnerhub-deployer; do
+          for image in runnerhub-control runnerhub-agent runnerhub-bootstrap runnerhub-scaleset runnerhub-deployer runnerhub-agent-updater; do
             ref="ghcr.io/eutelic/${image}:${REF_NAME}"
             digest="$(DOCKER_CONFIG="$anonymous_docker_config" "$crane" digest "$ref")"
             test -n "$digest"

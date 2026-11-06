@@ -9,7 +9,7 @@ usage() {
 Usage:
   bash deploy/truenas/check-images.sh [--tag TAG] [--registry REGISTRY]
 
-Checks that the five RunnerHub runtime images for the selected tag are readable
+Checks that the six RunnerHub runtime images for the selected tag are readable
 with the current Docker registry credentials and publish both linux/amd64 and
 linux/arm64 manifests.
 
@@ -58,7 +58,7 @@ for cmd in docker python3; do
   command -v "$cmd" >/dev/null 2>&1 || fail "$cmd is required"
 done
 
-images=(control agent bootstrap scaleset deployer)
+images=(control agent bootstrap scaleset deployer agent-updater)
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 chmod 0700 "$tmp"
@@ -97,4 +97,4 @@ print(f"[ ok ] {ref} publishes linux/amd64 and linux/arm64")
 PY
 done
 
-ok "all five RunnerHub runtime images are available for tag $tag"
+ok "all six RunnerHub runtime images are available for tag $tag"

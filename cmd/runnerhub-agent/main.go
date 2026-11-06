@@ -11,6 +11,7 @@ import (
 	"syscall"
 
 	"github.com/eutelic/runnerhub/internal/agent"
+	"github.com/eutelic/runnerhub/internal/agentupdatedocker"
 	"github.com/eutelic/runnerhub/internal/images"
 	"github.com/eutelic/runnerhub/internal/provider"
 	dockerprovider "github.com/eutelic/runnerhub/internal/providers/docker"
@@ -98,6 +99,23 @@ func main() {
 		log.Fatalf("unsupported provider %q", kind)
 	}
 
+	var updater agent.AgentUpdater
+	if kind == "docker" {
+		if image := strings.TrimSpace(os.Getenv("RUNNERHUB_AGENT_UPDATER_IMAGE")); image != "" {
+			launcher := &agentupdatedocker.Launcher{
+				ApprovedHelperImage: image,
+				ControlURL: mustEnv("RUNNERHUB_CONTROL_PLANE_URL"),
+				AllowInsecureHTTP: boolEnv("RUNNERHUB_ALLOW_INSECURE_HTTP", false),
+			}
+			if err := launcher.Available(ctx); err == nil {
+				updater = launcher
+				providers[kind] = updateCapableProvider{Provider: providers[kind]}
+			} else {
+				log.Printf("pinned detached updater unavailable: %v", err)
+			}
+		}
+	}
+
 	enrollmentToken, err := readEnrollmentToken()
 	must(err)
 	credentialFile := env("RUNNERHUB_CREDENTIAL_FILE", filepath.Join(stateDir, "agent-credentials.json"))
@@ -108,6 +126,7 @@ func main() {
 		Name:              name,
 		Provider:          kind,
 		AgentVersion:      version,
+		Updater:           updater,
 		PlacementDomainID: env("RUNNERHUB_PLACEMENT_DOMAIN_ID", ""),
 		AllowInsecureHTTP: boolEnv("RUNNERHUB_ALLOW_INSECURE_HTTP", false),
 	}, providers)

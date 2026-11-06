@@ -29,6 +29,7 @@ type Request struct {
 	HostName          string
 	ControlPlaneURL   string
 	AgentImage              string
+	AgentUpdaterImage string
 	InstallDocker           bool
 	AllowInsecureHTTP       bool
 	AllowPrivilegedWorkers  bool
@@ -51,6 +52,7 @@ type SSH struct {
 }
 
 var safeUser = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
+var pinnedUpdaterImage = regexp.MustCompile(`^ghcr\.io/eutelic/runnerhub-agent-updater@sha256:[a-f0-9]{64}$`)
 var safeHost = regexp.MustCompile(`^[A-Za-z0-9._:-]+$`)
 
 func (s SSH) Bootstrap(ctx context.Context, req Request, enrollmentToken string, wait WaitForHost) (core.Host, error) {
@@ -62,6 +64,8 @@ func (s SSH) Bootstrap(ctx context.Context, req Request, enrollmentToken string,
 	req.HostName = strings.TrimSpace(req.HostName)
 	req.ControlPlaneURL = strings.TrimSpace(req.ControlPlaneURL)
 	req.AgentImage = strings.TrimSpace(req.AgentImage)
+	req.AgentUpdaterImage = strings.TrimSpace(req.AgentUpdaterImage)
+	if req.AgentUpdaterImage!="" && !pinnedUpdaterImage.MatchString(req.AgentUpdaterImage){return core.Host{},errors.New("updater image must be the official pinned digest")}
 	if req.Address == "" || !safeHost.MatchString(req.Address) {
 		return core.Host{}, errors.New("valid machine address is required")
 	}
@@ -321,6 +325,7 @@ printf '%s' "$TOKEN" > "$TOKEN_PATH"
 pull_agent_image
 docker_cmd rm -f runnerhub-agent >/dev/null 2>&1 || true
 args="run -d --name runnerhub-agent --restart unless-stopped -v /var/run/docker.sock:/var/run/docker.sock -v /var/lib/runnerhub:/var/lib/runnerhub -v $TOKEN_PATH:/run/runnerhub-enrollment-token:ro -e RUNNERHUB_CONTROL_PLANE_URL=$CONTROL -e RUNNERHUB_ENROLLMENT_TOKEN_FILE=/run/runnerhub-enrollment-token -e RUNNERHUB_HOST_NAME=$HOST_NAME -e RUNNERHUB_PROVIDER=docker"
+if [ -n "$UPDATER_IMAGE" ]; then args="$args -e RUNNERHUB_AGENT_UPDATER_IMAGE=$UPDATER_IMAGE"; fi
 if [ "$INSECURE" = true ]; then args="$args -e RUNNERHUB_ALLOW_INSECURE_HTTP=true"; fi
 if [ "$PRIVILEGED" = true ]; then args="$args -e RUNNERHUB_ALLOW_PRIVILEGED_WORKERS=true -e RUNNERHUB_CGROUP_ROOT=/sys/fs/cgroup-host --cgroupns=host --cap-add SYS_ADMIN -v /sys/fs/cgroup:/sys/fs/cgroup-host:rw"; fi
 if [ -n "$AGENT_DNS" ]; then args="$args --dns=$AGENT_DNS"; fi
@@ -336,6 +341,7 @@ func finalizeScript(req Request, tokenPath string) string {
 		`ensure_docker
 docker_cmd rm -f runnerhub-agent >/dev/null 2>&1 || true
 args="run -d --name runnerhub-agent --restart unless-stopped -v /var/run/docker.sock:/var/run/docker.sock -v /var/lib/runnerhub:/var/lib/runnerhub -e RUNNERHUB_CONTROL_PLANE_URL=$CONTROL -e RUNNERHUB_HOST_NAME=$HOST_NAME -e RUNNERHUB_PROVIDER=docker"
+if [ -n "$UPDATER_IMAGE" ]; then args="$args -e RUNNERHUB_AGENT_UPDATER_IMAGE=$UPDATER_IMAGE"; fi
 if [ "$INSECURE" = true ]; then args="$args -e RUNNERHUB_ALLOW_INSECURE_HTTP=true"; fi
 if [ "$PRIVILEGED" = true ]; then args="$args -e RUNNERHUB_ALLOW_PRIVILEGED_WORKERS=true -e RUNNERHUB_CGROUP_ROOT=/sys/fs/cgroup-host --cgroupns=host --cap-add SYS_ADMIN -v /sys/fs/cgroup:/sys/fs/cgroup-host:rw"; fi
 if [ -n "$AGENT_DNS" ]; then args="$args --dns=$AGENT_DNS"; fi
@@ -366,6 +372,7 @@ func commonScript(req Request) string {
 	return `set -eu
 CONTROL=` + shellQuote(req.ControlPlaneURL) + `
 IMAGE=` + shellQuote(req.AgentImage) + `
+UPDATER_IMAGE=` + shellQuote(req.AgentUpdaterImage) + `
 HOST_NAME=` + shellQuote(req.HostName) + `
 SUDO_PASSWORD=` + shellQuote(req.SudoPassword) + `
 REGISTRY=` + shellQuote(registry) + `

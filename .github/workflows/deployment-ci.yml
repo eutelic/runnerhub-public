@@ -50,6 +50,8 @@ jobs:
           sh -n deploy/docker/init-secrets.sh
           bash -n deploy/docker/test-control-data-ownership.sh
           bash -n deploy/truenas/verify.sh
+          bash -n deploy/truenas/verify-agent-update-attestations.sh
+          bash -n deploy/truenas/test-verify-agent-update-attestations.sh
 
           tmp="$(mktemp -d "$RUNNER_TEMP/runnerhub-deploy.XXXXXX")"
           trap 'rm -rf "$tmp"' EXIT
@@ -105,6 +107,7 @@ jobs:
           bash deploy/truenas/test-verify.sh
           bash deploy/truenas/test-check-images.sh
           bash deploy/truenas/test-verify-image-set.sh
+          bash deploy/truenas/test-verify-agent-update-attestations.sh
 
           docker compose --env-file "$envfile" -f deploy/docker/compose.yaml --profile autoscale config >/dev/null
           docker compose --env-file "$envfile" -f deploy/docker/compose.release.yaml config >/dev/null
@@ -171,6 +174,7 @@ jobs:
           docker build --build-arg VERSION=ci-test --target bootstrap -f deploy/docker/Dockerfile -t runnerhub-ci-bootstrap .
           docker build --build-arg VERSION=ci-test --target scaleset -f deploy/docker/Dockerfile -t runnerhub-ci-scaleset .
           docker build --build-arg VERSION=ci-test --target deployer -f deploy/docker/Dockerfile -t runnerhub-ci-deployer .
+          docker build --build-arg VERSION=ci-test --target updater -f deploy/docker/Dockerfile -t runnerhub-ci-updater .
 
       - name: Verify control persistent data ownership migration
         run: |

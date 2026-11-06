@@ -79,6 +79,10 @@ func (s *Service) runHostBootstrap(ctx context.Context, in bootstrapHostRequest)
 	if image == "" {
 		image = "ghcr.io/eutelic/runnerhub-agent:latest"
 	}
+	updaterImage := ""
+	if s.AgentUpdateEnabled && officialUpdaterDigest.MatchString(s.AgentUpdateHelperImage) {
+		updaterImage = s.AgentUpdateHelperImage
+	}
 	sudoPassword := in.SudoPassword
 	if sudoPassword == "" {
 		sudoPassword = in.Password
@@ -91,7 +95,7 @@ func (s *Service) runHostBootstrap(ctx context.Context, in bootstrapHostRequest)
 		Address:in.Address, User:in.User, Password:in.Password, SudoPassword:sudoPassword,
 		PrivateKey:in.PrivateKey, HostKeyFingerprint:in.HostKeyFingerprint,
 		RegistryUsername:in.RegistryUsername, RegistryPassword:in.RegistryPassword,
-		HostName:in.Name, ControlPlaneURL:s.MachineBootstrapURL, AgentImage:image,
+		HostName:in.Name, ControlPlaneURL:s.MachineBootstrapURL, AgentImage:image, AgentUpdaterImage:updaterImage,
 		InstallDocker:installDocker,
 		AllowInsecureHTTP:strings.HasPrefix(strings.ToLower(s.MachineBootstrapURL),"http://"),
 		AllowPrivilegedWorkers:in.AllowPrivilegedWorkers,

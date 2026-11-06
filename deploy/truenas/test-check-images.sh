@@ -41,10 +41,10 @@ chmod +x "$tmp/bin/docker"
 
 PATH="$tmp/bin:$PATH" bash -n "$check"
 PATH="$tmp/bin:$PATH" bash "$check" --tag sha-deadbeef > "$tmp/success.log"
-for image in control agent bootstrap scaleset deployer; do
+for image in control agent bootstrap scaleset deployer agent-updater; do
   grep -Fq "ghcr.io/eutelic/runnerhub-$image:sha-deadbeef publishes linux/amd64 and linux/arm64" "$tmp/success.log"
 done
-grep -Fq '[ ok ] all five RunnerHub runtime images are available for tag sha-deadbeef' "$tmp/success.log"
+grep -Fq '[ ok ] all six RunnerHub runtime images are available for tag sha-deadbeef' "$tmp/success.log"
 
 if FAKE_IMAGE_MODE=missing PATH="$tmp/bin:$PATH" bash "$check" --tag sha-deadbeef >/dev/null 2>&1; then
   echo 'image preflight unexpectedly accepted a missing image' >&2

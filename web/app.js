@@ -40,6 +40,8 @@ const bulkSelected=new Set();
 let bulkConnecting=false;
 let hiddenRepoAccounts=loadHiddenRepoAccounts();
 const hostDrafts=new Map();
+const hostUpdateChecks=new Map();
+const hostUpdateOperations=new Map();
 const snapshot={};
 let githubQueueGeneration=0;
 let githubQueueScan={loading:false,complete:false,at:0,rows:[],total:0};
@@ -70,6 +72,8 @@ function clearDashboardSnapshot(){
   recommendationCache={key:'',at:0,value:new Map(),errors:[]};
   efficiencyCache={key:'',at:0,value:[],errors:[]};
   hostDrafts.clear();
+  hostUpdateChecks.clear();
+  hostUpdateOperations.clear();
   historyLastUpdated=0;
   historyRequestSequence++;
 }
@@ -315,6 +319,12 @@ els.activeRunners.addEventListener('click',event=>{
   if(button)reconcileFinishedGitHubWorker(button);
 });
 els.hosts.addEventListener('click',e=>{
+  const inspectUpdate=e.target.closest('button[data-host-update-status]');
+  if(inspectUpdate){inspectHostAgentUpdateOperation(inspectUpdate);return}
+  const startUpdate=e.target.closest('button[data-host-update-start]');
+  if(startUpdate){startHostAgentUpdate(startUpdate);return}
+  const update=e.target.closest('button[data-host-update-check]');
+  if(update){checkHostAgentUpdate(update);return}
   const android=e.target.closest('button[data-host-android]');
   if(android){setupHostAndroid(android);return}
   const recover=e.target.closest('button[data-host-recover]');
@@ -646,6 +656,71 @@ function hostDinDBudgetText(host){
 function hostStateRank(host){
   return ({online:0,draining:1,offline:2,archived:3})[String(host?.state||'').toLowerCase()]??3;
 }
+function hostAgentUpdateBlockerLabel(code){
+  const labels={
+    'non-docker-agent':'This is not a Docker agent.',
+    'host-not-online':'The host is not online.',
+    'active-workers-or-cleanup':'Workers or cleanup reservations are still active.',
+    'immutable-verified-target-required':'The control plane must select a verified immutable agent image (not :latest).',
+    'verified-release-metadata-required':'Configure the verified image digest and exact release revision in RunnerHub before attempting an update.',
+    'agent-updater-not-advertised':'This agent does not advertise the in-place updater. An older build may need a one-time upgrade.',
+    'update-executor-not-implemented':'The detached updater, rollback and same-ID verification are not implemented yet.',
+    'agent-update-feature-disabled':'One-click updates are disabled in the control-plane configuration.',
+    'pinned-helper-image-unavailable':'The official detached updater helper image must be pinned to a published digest.',
+    'agent-already-current':'This host already reports the configured target release.'
+  };
+  return labels[code]||'Update blocked: '+code;
+}
+async function checkHostAgentUpdate(button){
+  const id=button.dataset.hostUpdateCheck;
+  const host=(snapshot.hosts||[]).find(h=>h.id===id);
+  if(!host||host.provider!=='docker')return message('Only Docker host agents can be inspected for image updates.','error');
+  button.disabled=true;
+  try{
+    const report=await j('/api/v1/hosts/'+encodeURIComponent(id)+'/agent-update-preflight');
+    if(report?.hostId!==id)throw new Error('The server returned a different host identity.');
+    hostUpdateChecks.set(id,{report,at:new Date().toLocaleString()});
+    renderHosts(snapshot.hosts||[],snapshot.workers||[],
+      new Map((snapshot.pools||[]).map(p=>[p.id,p])));
+    // One user action: run the server-side preflight and, only when
+    // eligible, request confirmation for the durable update. A blocked
+    // preflight is strictly read-only and shows the reason on the card.
+    if(report.canUpdate){
+      await startHostAgentUpdate({dataset:{hostUpdateStart:id},disabled:false});
+    }
+  }catch(e){message('Could not inspect '+host.name+' agent update: '+e.message,'error')}
+  finally{button.disabled=false}
+}
+
+async function startHostAgentUpdate(button){
+  const id=button.dataset.hostUpdateStart;
+  const host=(snapshot.hosts||[]).find(h=>h.id===id);
+  const report=hostUpdateChecks.get(id)?.report;
+  if(!host||!report||!report.canUpdate)return message('Server preflight did not authorize this update.','error');
+  if(!window.confirm('Update '+host.name+' ('+id+') to revision '+report.configuredTargetRevision+'? RunnerHub will drain this host, wait for running jobs and Docker cleanup, then replace the agent. Other hosts remain available.'))return;
+  button.disabled=true;
+  try{
+    const result=await j('/api/v1/hosts/'+encodeURIComponent(id)+'/update-agent',{method:'POST'});
+    if(result?.operation?.hostId!==id||!result?.operation?.operationId)throw new Error('The server did not confirm a durable update operation.');
+    hostUpdateChecks.delete(id);
+    hostUpdateOperations.set(id,result.operation);
+    message('Agent update started for '+host.name+'. Operation '+result.operation.operationId+' · '+result.operation.state+'.','success');
+    await refresh(true);
+  }catch(e){message('Agent update could not start: '+e.message,'error')}
+  finally{button.disabled=false}
+}
+async function inspectHostAgentUpdateOperation(button){
+  const id=button.dataset.hostUpdateStatus;
+  button.disabled=true;
+  try{
+    const op=await j('/api/v1/hosts/'+encodeURIComponent(id)+'/update-agent');
+    if(op?.hostId!==id||!op?.operationId)throw new Error('Unexpected host update operation.');
+    hostUpdateOperations.set(id,op);
+    renderHosts(snapshot.hosts||[],snapshot.workers||[],
+      new Map((snapshot.pools||[]).map(p=>[p.id,p])));
+  }catch(e){message('Could not inspect host agent update: '+e.message,'error')}
+  finally{button.disabled=false}
+}
 function renderHosts(hosts,workers=[],poolByID=new Map()){
   const hostsByID=new Map((hosts||[]).map(h=>[h.id,h]));
   const domainForHost=id=>{let current=id;const seen=new Set();while(current&&!seen.has(current)){seen.add(current);const host=hostsByID.get(current);if(!host)return 'host:'+current;if(String(host.state||'').toLowerCase()==='archived'&&host.mergedIntoHostId){current=host.mergedIntoHostId;continue}return host.placementDomainId?'domain:'+host.placementDomainId:'host:'+current}return 'host:'+id};
@@ -750,10 +825,34 @@ function renderHosts(hosts,workers=[],poolByID=new Map()){
     const offlineNote=state==='offline'
       ? '<div class="host-identity-note">Offline cause is not confirmed by heartbeat data. Check agent logs or use Repair / re-enroll.</div>'
       : '';
+    const activeUpdate=hostUpdateOperations.get(h.id);
+    const updateOperationNote=activeUpdate?'<div class="host-identity-note" role="status">'+
+      '<strong>Agent update operation</strong> · '+esc(activeUpdate.state||'unknown')+
+      ' · '+esc(activeUpdate.step||'')+
+      '<div>Operation: <code>'+esc(activeUpdate.operationId||'')+'</code> · Target: <code>'+
+      esc(String(activeUpdate.targetRevision||'').slice(0,8))+'</code></div>'+
+      (['review','rolled-back'].includes(activeUpdate.state)?
+       '<div>Host remains drained until the update outcome is reviewed.</div>':'')+
+      '</div>':'';
+    const updateCheck=hostUpdateChecks.get(h.id);
+    const updateNote=updateCheck?'<div class="host-identity-note" role="status">'+
+      '<strong>Agent update preflight</strong> · checked '+esc(updateCheck.at)+
+      '<div>Installed revision: <code>'+esc(updateCheck.report.installedRevision||'unknown')+
+      '</code> · Target revision: <code>'+esc(updateCheck.report.configuredTargetRevision||'not configured')+'</code> · Configured image: <code>'+esc(updateCheck.report.configuredTargetImage||'not configured')+'</code></div>'+
+      '<div>Active worker reservations: '+esc(String(updateCheck.report.activeWorkers||0))+
+      ' (cleanup: '+esc(String(updateCheck.report.cleanupReservations||0))+')</div>'+
+      (updateCheck.report.canUpdate?'<div>Ready to start a graceful update. Existing jobs will finish before replacement.</div>':'<div>Update unavailable until:</div>')+'<ul>'+
+      (updateCheck.report.blockers||[]).map(code=>'<li>'+esc(hostAgentUpdateBlockerLabel(code))+'</li>').join('')+
+      '</ul>'+
+      '</div>':'';
     const badgeClass=state==='online'?'badge':state==='offline'?'badge warn':'badge neutral';
     return '<article class="host-card" data-host-id="'+esc(h.id)+'">'+
       '<div class="host-card-top"><div class="host-heading"><strong>'+esc(h.name)+'</strong> '+
       '<span class="'+badgeClass+'">'+esc(h.state||'unknown')+'</span></div>'+
+      (state==='online'&&String(h.provider||'').toLowerCase()==='docker'
+       ? '<button type="button" class="secondary compact" data-host-update-check="'+esc(h.id)+'">Update agent</button>' : '')+
+      (state!=='archived'&&String(h.provider||'').toLowerCase()==='docker'
+       ? '<button type="button" class="secondary compact" data-host-update-status="'+esc(h.id)+'">Update status</button>' : '')+
       (state==='archived'?'':'<button type="button" class="secondary compact" data-host-recover="'+esc(h.id)+'">Repair / re-enroll</button>')+
       (state==='offline'?'<button type="button" class="secondary compact" data-host-archive="'+esc(h.id)+'">Archive old host</button>':'')+
       (state==='offline'&&mergeTargets.length?'<button type="button" class="secondary compact" data-host-archive="'+esc(h.id)+'" data-host-merge="true">Merge into active host</button>':'')+
@@ -764,7 +863,7 @@ function renderHosts(hosts,workers=[],poolByID=new Map()){
       (h.placementDomainId?'<div class="host-identity-note">Shared physical placement domain <code>'+esc(h.placementDomainId)+'</code>; reservations shown here include every agent in that domain.</div>':'')+
       '<div class="host-meta">Workers: '+used.busy+' busy / '+used.active+' active · Agent revision: '+
       '<code title="'+esc(version)+'">'+esc(version?version.slice(0,8):'unknown')+'</code></div>'+
-      sameNameNote+sharedCapacityNote+offlineNote+mergedNote+previousNote+
+      sameNameNote+sharedCapacityNote+offlineNote+mergedNote+previousNote+updateNote+updateOperationNote+
       (state==='archived'?'':'<details class="host-settings" data-host-settings="'+esc(h.id)+'"><summary>Capacity and scheduling settings</summary>'+
       '<div class="host-resources">'+(h.placementDomainId?'Shared placement-domain resources':'Agent capacity')+' · CPU: '+esc(capacity?.cpuMillis?cpuCores(used.cpu)+' / '+cpuCores(capacity.cpuMillis)+' cores':'unknown')+
       ' · RAM: '+esc(capacity?.memoryBytes?gib(used.ram)+' / '+gib(capacity.memoryBytes)+' GiB':'unknown')+

@@ -21,6 +21,12 @@ COPY internal/ ./internal/
 COPY cmd/runnerhub-agent/ ./cmd/runnerhub-agent/
 RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" -o /out/runnerhub-agent ./cmd/runnerhub-agent
 
+FROM root-deps AS updater-build
+ARG VERSION
+COPY internal/ ./internal/
+COPY cmd/runnerhub-agent-updater/ ./cmd/runnerhub-agent-updater/
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/runnerhub-agent-updater ./cmd/runnerhub-agent-updater
+
 FROM root-deps AS deployer-build
 ARG VERSION
 COPY internal/ ./internal/
@@ -69,6 +75,14 @@ COPY deploy/docker/secret-file.sh /usr/local/lib/runnerhub/secret-file.sh
 COPY deploy/docker/agent-entrypoint.sh /usr/local/bin/runnerhub-agent-entrypoint
 RUN chmod 0755 /usr/local/bin/runnerhub-agent-entrypoint
 ENTRYPOINT ["/usr/local/bin/runnerhub-agent-entrypoint"]
+
+# Run the update coordinator separately from the container it replaces.
+# Never mount the host filesystem except the agent's persistent credential
+# directory (read only); the updater controls only the Docker socket.
+FROM docker:29.8.1-cli@sha256:018edbc908e08fcc9dbf029c812c34251e9b4719e6f71ca0e5eae2a987d014ca AS updater
+RUN apk add --no-cache ca-certificates
+COPY --from=updater-build /out/runnerhub-agent-updater /usr/local/bin/runnerhub-agent-updater
+ENTRYPOINT ["/usr/local/bin/runnerhub-agent-updater"]
 
 FROM debian:bookworm-slim AS bootstrap
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl jq openssl && rm -rf /var/lib/apt/lists/*

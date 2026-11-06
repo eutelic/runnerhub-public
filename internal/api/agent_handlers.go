@@ -59,22 +59,34 @@ func (s *Service) results(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Authenticate against the worker's exact owning host. A keyed lookup
-	// avoids decoding every historical worker on each result delivery.
-	worker, err := s.Store.GetWorker(r.Context(), in.WorkerID)
-	if errors.Is(err, store.ErrNotFound) {
+	// Worker results are authenticated against the worker's host. Update
+	// commands have an operation ID instead of a worker ID, so resolve their
+	// host from the exact persisted command before checking the bearer token.
+	hostID := ""
+	if command, err := s.Store.GetCommand(r.Context(), in.CommandID); err == nil &&
+		command.Command.Type == agent.CommandUpdateAgent {
+		if command.Command.WorkerID != in.WorkerID {
+			unauthorizedAgent(w)
+			return
+		}
+		hostID = command.HostID
+	} else {
+		worker, err := s.Store.GetWorker(r.Context(), in.WorkerID)
+		if errors.Is(err, store.ErrNotFound) {
+			unauthorizedAgent(w)
+			return
+		}
+		if err != nil {
+			problem(w, http.StatusInternalServerError, err)
+			return
+		}
+		hostID = worker.HostID
+	}
+	if hostID == "" || s.Hub == nil || !s.Hub.Authenticate(hostID, bearer(r)) {
 		unauthorizedAgent(w)
 		return
 	}
-	if err != nil {
-		problem(w, http.StatusInternalServerError, err)
-		return
-	}
-	if worker.HostID == "" || !s.Hub.Authenticate(worker.HostID, bearer(r)) {
-		unauthorizedAgent(w)
-		return
-	}
-	if err := s.Hub.HandleResult(r.Context(), worker.HostID, in); err != nil {
+	if err := s.Hub.HandleResult(r.Context(), hostID, in); err != nil {
 		problem(w, http.StatusBadRequest, err)
 		return
 	}

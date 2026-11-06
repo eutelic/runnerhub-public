@@ -25,6 +25,7 @@ case "$ref" in
   *runnerhub-bootstrap:*) image=bootstrap ;;
   *runnerhub-scaleset:*) image=scaleset ;;
   *runnerhub-deployer:*) image=deployer ;;
+  *runnerhub-agent-updater:*) image=agent-updater ;;
   *) echo 'unknown image' >&2; exit 1 ;;
 esac
 
@@ -46,6 +47,7 @@ case "$image" in
   bootstrap) amd_char=e; arm_char=f ;;
   scaleset) amd_char=1; arm_char=2 ;;
   deployer) amd_char=4; arm_char=5 ;;
+  agent-updater) amd_char=6; arm_char=7 ;;
 esac
 
 amd="sha256:$(repeat_hex "$amd_char")"
@@ -75,7 +77,7 @@ chmod +x "$tmp/bin/docker"
 
 PATH="$tmp/bin:$PATH" bash -n "$verify"
 PATH="$tmp/bin:$PATH" bash "$verify" --source-tag sha-deadbeef --target-tag latest > "$tmp/success.log"
-for image in control agent bootstrap scaleset deployer; do
+for image in control agent bootstrap scaleset deployer agent-updater; do
   grep -Fq "ghcr.io/eutelic/runnerhub-$image:latest matches ghcr.io/eutelic/runnerhub-$image:sha-deadbeef" "$tmp/success.log"
 done
 grep -Fq '[ ok ] coherent RunnerHub image promotion verified: sha-deadbeef -> latest' "$tmp/success.log"

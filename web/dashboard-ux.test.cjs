@@ -921,3 +921,79 @@ test('TrueNAS auto-publish selects only an unambiguous GHCR image owner',()=>{
   assert.match(catalogHTML,/Not available for catalog\/wizard apps: use manual redeploy instead\./);
   assert.match(catalogHTML,/data-deployer-auto="catalog-app"[^>]*disabled/);
 });
+
+test('host agent update inspection is read-only and explains safe blockers',async()=>{
+  const endpoint='/api/v1/hosts/host-compute/agent-update-preflight';
+  const {ctx,element,calls,requestOptions}=createDashboard({
+    [endpoint]:{
+      hostId:'host-compute',hostName:'compute',provider:'docker',hostState:'online',
+      installedRevision:'f8517937',configuredTargetRevision:'6fcbb42debb32475d9a6854b8e47e43dfe4e2bd0',configuredTargetImage:'ghcr.io/eutelic/runnerhub-agent:latest',
+      immutableTarget:false,activeWorkers:1,cleanupReservations:0,canUpdate:false,
+      blockers:['active-workers-or-cleanup','immutable-verified-target-required',
+        'agent-updater-not-advertised','update-executor-not-implemented']
+    }
+  });
+  ctx.demoHosts=[{id:'host-compute',name:'compute',provider:'docker',state:'online',
+    agentVersion:'f8517937',tags:{},capacity:{cpuMillis:4000,memoryBytes:4000000000}}];
+  ctx.updateButton={dataset:{hostUpdateCheck:'host-compute'},disabled:false};
+  await vm.runInContext(`snapshot.hosts=demoHosts; snapshot.workers=[]; snapshot.pools=[];
+    checkHostAgentUpdate(updateButton)`,ctx);
+  assert.ok(calls.includes(endpoint));
+  assert.equal(requestOptions.get(endpoint)?.method,undefined,'preflight must use GET');
+  assert.equal(ctx.updateButton.disabled,false);
+  const html=element('hosts').innerHTML;
+  assert.match(html,/Update agent/);
+  assert.match(html,/Agent update preflight/);
+  assert.match(html,/6fcbb42debb32475d9a6854b8e47e43dfe4e2bd0/);
+  assert.match(html,/Workers or cleanup reservations are still active/);
+  assert.match(html,/detached updater, rollback and same-ID verification/);
+  assert.doesNotMatch(html,/data-host-update-agent=/);
+});
+
+test('host update inspection is not offered to native or offline agents',()=>{
+  const {ctx,element}=createDashboard();
+  ctx.demoHosts=[
+    {id:'process-1',name:'compute-android',provider:'process',state:'online',capacity:{cpuMillis:3000}},
+    {id:'docker-old',name:'compute-old',provider:'docker',state:'offline',capacity:{cpuMillis:3000}}
+  ];
+  vm.runInContext('renderHosts(demoHosts,[],new Map())',ctx);
+  assert.doesNotMatch(element('hosts').innerHTML,/data-host-update-check=/);
+});
+
+test('one-click agent update appears only after approved preflight and records durable operation',async()=>{
+  const id='host-compute';
+  const route='/api/v1/hosts/'+id+'/update-agent';
+  const operation={hostId:id,operationId:'update-abc',state:'draining',step:'waiting-for-workers',
+    targetRevision:'b'.repeat(40)};
+  const preflight='/api/v1/hosts/'+id+'/agent-update-preflight';
+  const report={hostId:id,canUpdate:true,configuredTargetRevision:'b'.repeat(40),
+    configuredTargetImage:'ghcr.io/eutelic/runnerhub-agent@sha256:'+'a'.repeat(64),blockers:[]};
+  const {ctx,element,calls,requestOptions}=createDashboard({
+    [preflight]:report,[route]:{operation,reused:false}
+  });
+  ctx.demoHost={id,name:'compute',provider:'docker',state:'online',agentVersion:'old',capacity:{cpuMillis:5000,memoryBytes:4e9},tags:{}};
+  vm.runInContext('snapshot.hosts=[demoHost];snapshot.workers=[];snapshot.pools=[];renderHosts(snapshot.hosts,[],new Map())',ctx);
+  assert.match(element('hosts').innerHTML,/data-host-update-check="host-compute"/);
+  ctx.updateStartButton={dataset:{hostUpdateCheck:id},disabled:false};
+  await vm.runInContext('checkHostAgentUpdate(updateStartButton)',ctx);
+  assert.ok(calls.includes(preflight),'one click should perform preflight');
+  assert.equal(requestOptions.get(preflight)?.method,undefined,'preflight must use GET');
+  assert.ok(calls.includes(route),'approved preflight should start the update');
+  assert.equal(requestOptions.get(route)?.method,'POST');
+  assert.equal(ctx.updateStartButton.disabled,false);
+  // The dashboard may refresh the authenticated snapshot after the POST.
+  // The durable operation identity is retrieved independently via GET.
+  vm.runInContext('snapshot.hosts=[demoHost];hostUpdateOperations.set("host-compute",{hostId:"host-compute",operationId:"update-abc",state:"draining",step:"waiting-for-workers",targetRevision:"bbbb"});renderHosts(snapshot.hosts,[],new Map())',ctx);
+  assert.match(element('hosts').innerHTML,/update-abc/);
+});
+
+test('inactive agent updater never displays a mutable update action',()=>{
+  const {ctx,element}=createDashboard();
+  ctx.demoHost={id:'host-compute',name:'compute',provider:'docker',state:'online',
+    agentVersion:'old',capacity:{cpuMillis:5000,memoryBytes:4e9},tags:{}};
+  vm.runInContext(`snapshot.hosts=[demoHost];snapshot.workers=[];snapshot.pools=[];
+    hostUpdateChecks.set("host-compute",{report:{canUpdate:false,blockers:["agent-update-feature-disabled"]},at:"now"});
+    renderHosts(snapshot.hosts,[],new Map())`,ctx);
+  assert.doesNotMatch(element('hosts').innerHTML,/data-host-update-start=/);
+  assert.match(element('hosts').innerHTML,/One-click updates are disabled/);
+});

@@ -13,7 +13,7 @@ Usage:
     [--target-tag latest] \
     [--registry ghcr.io/eutelic]
 
-Verifies that all five target-tag RunnerHub images publish linux/amd64 and
+Verifies that all six target-tag RunnerHub images publish linux/amd64 and
 linux/arm64 using the exact same platform manifest digests as the source tag.
 This is intended to verify coherent registry-side promotion and rollback sets.
 EOF
@@ -65,7 +65,7 @@ tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 chmod 0700 "$tmp"
 
-for image in control agent bootstrap scaleset deployer; do
+for image in control agent bootstrap scaleset deployer agent-updater; do
   source_ref="$registry/runnerhub-$image:$source_tag"
   target_ref="$registry/runnerhub-$image:$target_tag"
   source_json="$tmp/$image-source.json"

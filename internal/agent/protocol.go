@@ -32,7 +32,19 @@ const (
 	CommandInspect CommandType = "inspect"
 	CommandStop    CommandType = "stop"
 	CommandDelete  CommandType = "delete"
+	CommandUpdateAgent CommandType = "update-agent"
 )
+
+// AgentUpdateSpec is never an arbitrary Docker execution request. It is
+// generated only from a durable operation targeting the current host ID.
+// The host launcher must independently verify both pinned official images.
+type AgentUpdateSpec struct {
+ HostID string `json:"hostId"`
+ OperationID string `json:"operationId"`
+ TargetImage string `json:"targetImage"`
+ TargetRevision string `json:"targetRevision"`
+ HelperImage string `json:"helperImage"`
+}
 
 type Command struct {
 	ID        string                 `json:"id"`
@@ -41,6 +53,7 @@ type Command struct {
 	Provider  string                 `json:"provider"`
 	Spec      *provider.WorkerSpec   `json:"spec,omitempty"`
 	Handle    *provider.WorkerHandle `json:"handle,omitempty"`
+	AgentUpdate *AgentUpdateSpec `json:"agentUpdate,omitempty"`
 	CreatedAt time.Time              `json:"createdAt"`
 }
 type CommandResult struct {
