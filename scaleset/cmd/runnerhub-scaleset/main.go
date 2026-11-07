@@ -305,10 +305,11 @@ type runnerHubClient struct {
 }
 
 type workerResponse struct {
-	ID         string `json:"id"`
-	PoolID     string `json:"poolId"`
-	RunnerName string `json:"runnerName"`
-	State      string `json:"state"`
+	ID             string `json:"id"`
+	PoolID         string `json:"poolId"`
+	RunnerName     string `json:"runnerName"`
+	GitHubRunnerID int64  `json:"githubRunnerId,omitempty"`
+	State          string `json:"state"`
 }
 
 type poolResponse struct {
@@ -563,6 +564,12 @@ func (s *scaler) HandleDesiredRunnerCount(ctx context.Context, count int) (int, 
 
 		runnerID := int64(jit.Runner.ID)
 		wr, err := s.hub.create(ctx, name, jit.EncodedJITConfig, runnerID)
+		if err == nil && (wr.ID == "" || wr.PoolID != s.hub.poolID || wr.RunnerName != name ||
+			wr.GitHubRunnerID != runnerID || !activeState(wr.State)) {
+			// A stale/replayed 202 response must never become a phantom
+			// active runner in the scale-set listener's local accounting.
+			err = fmt.Errorf("RunnerHub returned an inactive or mismatched scale worker response")
+		}
 		if err != nil {
 			// The request may have reached RunnerHub even if the response was lost.
 			// Recover by runner name before removing the GitHub JIT registration.

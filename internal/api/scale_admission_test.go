@@ -55,15 +55,30 @@ func TestScaleAdmissionRedeliveryIsIdempotentAcrossControllerRestart(t *testing.
 		!strings.Contains(err.Error(),"identity conflict") {
 		t.Fatalf("different GitHub runner reused the admission: %v",err)
 	}
-	// Replayed assignments cannot create another worker even after cleanup
-	// removes the old instance from current capacity accounting.
+	// Returning a terminal worker as 202 success would make the listener
+	// count a non-existent runner and delay actual job pickup. All terminal
+	// lifecycle states must reject the replay without creating new records.
+	for _, state := range []core.WorkerState{
+		core.WorkerFailed, core.WorkerCompleted, core.WorkerCleanupPending,
+		core.WorkerDeleting, core.WorkerDeleted,
+	} {
+		first.State = state
+		if err := db.UpsertWorker(ctx,first); err != nil { t.Fatal(err) }
+		if _,err := restarted.enqueueWorker(ctx,pool,"jit-runner-abc",123,"encoded-jit","acme/app",""); err == nil ||
+			!strings.Contains(err.Error(),"admission is terminal") {
+			t.Fatalf("terminal %s replay accepted: %v",state,err)
+		}
+		workers,err := db.ListWorkers(ctx)
+		if err != nil { t.Fatal(err) }
+		if len(workers)!=1 { t.Fatalf("duplicate scale worker records after %s: %+v",state,workers) }
+	}
+	// The replay blocker remains durable even when no host capacity is
+	// reserved for the old worker.
 	first.State = core.WorkerDeleted
 	if err := db.UpsertWorker(ctx,first); err != nil { t.Fatal(err) }
-	deletedReplay,err := restarted.enqueueWorker(ctx,pool,"jit-runner-abc",123,"encoded-jit","acme/app","")
-	if err != nil || deletedReplay.ID != first.ID { t.Fatalf("deleted-worker replay: %+v %v",deletedReplay,err) }
-	workers,err := db.ListWorkers(ctx)
-	if err != nil { t.Fatal(err) }
-	if len(workers)!=1 { t.Fatalf("duplicate scale worker records: %+v",workers) }
+	newRunner,err := restarted.enqueueWorker(ctx,pool,"jit-runner-new",456,"new-jit","acme/app","")
+	if err != nil { t.Fatalf("new runner should be admitted after cleanup: %v",err) }
+	if newRunner.ID == first.ID { t.Fatal("new job reused a terminal worker ID") }
 }
 
 func TestScaleAdmissionIdentityRejectsMissingGitHubRunnerID(t *testing.T) {
