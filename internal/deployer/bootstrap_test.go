@@ -76,8 +76,8 @@ func TestBootstrapManagerInstallWritesPrivateConfigAndInstallsApp(t *testing.T) 
 	if len(result.WorkflowToken) != 64 {
 		t.Fatalf("expected 64-char workflow token, got %d", len(result.WorkflowToken))
 	}
-	if !strings.Contains(fake.compose, `published: "8789"`) {
-		t.Fatal("default deployment port missing from generated Compose")
+	if !strings.Contains(fake.compose, `published: "8790"`) {
+		t.Fatal("default deployment port 8790 missing from generated Compose")
 	}
 	if fake.app != "runnerhub-deployer" {
 		t.Fatalf("unexpected installed app %q", fake.app)

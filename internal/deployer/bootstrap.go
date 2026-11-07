@@ -24,7 +24,7 @@ const (
 	defaultBootstrapRoot = "/data/deployer-bootstrap"
 	defaultDeployerApp   = "runnerhub-deployer"
 	defaultTargetID      = "runnerhub"
-	defaultDeployPort    = 8789
+	defaultDeployPort    = 8790
 )
 
 var appNamePattern = regexp.MustCompile(`^[a-z]([-a-z0-9]*[a-z0-9])?$`)
