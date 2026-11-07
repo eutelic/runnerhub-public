@@ -513,15 +513,15 @@ exit 1`
 	if aggregateParent != "" {
 		if err := p.verifyContainerCgroupParent(ctx, runnerID, aggregateParent); err != nil {
 			p.disableAggregateResourceGroups()
-			_, _ = p.run.Run(ctx, p.cfg.DockerBinary, "rm", "-f", dindName)
-			_, _ = p.run.Run(ctx, p.cfg.DockerBinary, "rm", "-f", runnerID)
+			_, _ = p.run.Run(ctx, p.cfg.DockerBinary, "rm", "-f", "-v", dindName)
+			_, _ = p.run.Run(ctx, p.cfg.DockerBinary, "rm", "-f", "-v", runnerID)
 			_ = os.RemoveAll(secretDir)
 			return "", fmt.Errorf("verify aggregate runner cgroup: %w", err)
 		}
 		if err := p.verifyContainerCgroupParent(ctx, dindName, aggregateParent); err != nil {
 			p.disableAggregateResourceGroups()
-			_, _ = p.run.Run(ctx, p.cfg.DockerBinary, "rm", "-f", dindName)
-			_, _ = p.run.Run(ctx, p.cfg.DockerBinary, "rm", "-f", runnerID)
+			_, _ = p.run.Run(ctx, p.cfg.DockerBinary, "rm", "-f", "-v", dindName)
+			_, _ = p.run.Run(ctx, p.cfg.DockerBinary, "rm", "-f", "-v", runnerID)
 			_ = os.RemoveAll(secretDir)
 			return "", fmt.Errorf("verify aggregate DinD cgroup: %w", err)
 		}
