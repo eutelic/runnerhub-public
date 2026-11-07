@@ -672,17 +672,19 @@ type managedConfig struct {
 }
 
 type managedListener struct {
-	cancel      context.CancelFunc
-	fingerprint string
-	ready       bool
-	stopping    bool
+	cancel         context.CancelFunc
+	fingerprint    string
+	ready          bool
+	stopping       bool
+	recoveryDetail string
 }
 
 type listenerRetryState struct {
-	attempt     int
-	nextAttempt time.Time
-	fingerprint string
-	lastFailure string
+	attempt      int
+	nextAttempt  time.Time
+	fingerprint  string
+	lastFailure  string
+	firstFailure time.Time
 }
 
 // Keep the last failure visible across manager reconciliation ticks, even
@@ -694,6 +696,20 @@ func listenerRetryStatus(retry listenerRetryState) string {
 		detail += "; last failure: " + retry.lastFailure
 	}
 	return detail
+}
+
+// Record a successful 409 recovery as a resolved incident, never as a warning.
+// Only fixed failure classifications are accepted in server-backed status.
+func listenerRecoveryStatus(retry listenerRetryState, at time.Time) string {
+	if retry.attempt == 0 || retry.lastFailure != "GitHub message session conflict (409)" {
+		return ""
+	}
+	elapsed := at.Sub(retry.firstFailure)
+	if retry.firstFailure.IsZero() || elapsed < 0 {
+		elapsed = 0
+	}
+	return fmt.Sprintf("recovered from transient GitHub message session conflict (409) after %d retries in %s at %s",
+		retry.attempt, elapsed.Round(time.Second), at.UTC().Format(time.RFC3339))
 }
 
 func listenerFailureSummary(err error) string {
@@ -790,6 +806,12 @@ func messageSessionCloseResult(runErr, closeErr error) error {
 		return closeErr
 	}
 	return errors.Join(runErr, closeErr)
+}
+
+// Never interpolate the upstream message-session close error into a
+// server-backed status or audit field; it may include tokens or headers.
+func blockedSessionCloseDetail(_ error) string {
+	return "GitHub message session close failed; replacement blocked pending manager restart"
 }
 
 func blockListenerOnSessionCloseFailure(active map[string]managedListener, key string, resultErr error) bool {
@@ -946,7 +968,11 @@ func runDynamicManager(ctx context.Context, base config) error {
 			if running.ready {
 				state = "ready"
 			}
-			_ = hub.scaleSetStatus(ctx, key, state, "")
+			detail := ""
+			if running.ready {
+				detail = running.recoveryDetail
+			}
+			_ = hub.scaleSetStatus(ctx, key, state, detail)
 		}
 		// Launch one new listener per GitHub App installation per cycle.
 		// Starting every configured repository at once produces a burst of
@@ -1046,16 +1072,21 @@ func runDynamicManager(ctx context.Context, base config) error {
 					continue
 				}
 				running.ready = true
+				if retry, ok := retries[result.key]; ok && retry.fingerprint == result.fingerprint {
+					running.recoveryDetail = listenerRecoveryStatus(retry, time.Now())
+				}
 				active[result.key] = running
 				delete(retries, result.key)
-				_ = hub.scaleSetStatus(ctx, result.key, "ready", "")
+				_ = hub.scaleSetStatus(ctx, result.key, "ready", running.recoveryDetail)
 				updateReadiness()
 				continue
 			}
 			if blockListenerOnSessionCloseFailure(active, result.key, result.err) {
-				detail := "message session close failed; replacement is blocked: " + result.err.Error()
+				// Upstream Close errors can include request/credential material.
+				// Never persist or log the raw error in a dashboard or audit entry.
+				detail := blockedSessionCloseDetail(result.err)
 				_ = hub.scaleSetStatus(ctx, result.key, "error", detail)
-				slog.Error("blocking scale-set listener replacement after message session close failure", "pool", result.key, "error", result.err)
+				slog.Error("blocking scale-set listener replacement after message session close failure", "pool", result.key, "failure", listenerFailureSummary(result.err))
 				updateReadiness()
 				continue
 			}
@@ -1078,9 +1109,13 @@ func runDynamicManager(ctx context.Context, base config) error {
 						nextAttempt = until
 					}
 				}
+				firstFailure := prev.firstFailure
+				if firstFailure.IsZero() {
+					firstFailure = time.Now()
+				}
 				retries[result.key] = listenerRetryState{
 					attempt: attempt, nextAttempt: nextAttempt, fingerprint: result.fingerprint,
-					lastFailure: listenerFailureSummary(result.err),
+					lastFailure: listenerFailureSummary(result.err), firstFailure: firstFailure,
 				}
 				detail := listenerRetryStatus(retries[result.key])
 				if item, ok := desired[result.key]; ok {
