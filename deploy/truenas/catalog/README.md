@@ -25,8 +25,9 @@ Before upstream submission:
 4. Copy `ix-dev/community/runnerhub` into a fork of `truenas/apps`.
 5. Run the upstream app CI/copy-lib tooling so `templates/library`, generated
    metadata, and the current library hash are refreshed.
-6. Run the upstream port validator. The staging default is 30559 as of
-   November 6, 2026; upstream assigned 30557 to `community/cbzforge`.
+6. Run the upstream port validator. The staging default is 30590 as of
+   November 7, 2026; upstream assigned 30559 to `community/dnsalsa-connector`.
+   The new default is provisional until the upstream port validator passes.
    Recheck upstream before submission because reserved ports can change. This
    changes only the catalog's **default for new installations** and does not
    change the port of an existing TrueNAS Custom App deployment.
