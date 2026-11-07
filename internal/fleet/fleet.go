@@ -12,15 +12,19 @@ func minResources(a,b core.Resources)core.Resources{min:=func(x,y int64)int64{if
 // It is NOT a global claim for concurrent pools that compete for the same
 // unreserved physical slot; the server-side admission lock remains mandatory.
 func EligibleCapacityCeiling(pool core.RunnerPool, hosts []core.Host, workers []core.Worker, now time.Time) int {
-	fresh := make([]core.Host, 0, len(hosts))
-	for _, host := range hosts {
-		if host.State != core.HostOnline || host.LastSeenAt.IsZero() ||
-			now.Sub(host.LastSeenAt) >= time.Minute {
-			continue
+	// Keep the full host identity ledger for reservation accounting.
+	// Filtering stale/archived aliases out before SummarizeCapacity loses
+	// placement-domain and merge mappings for workers still assigned there,
+	// potentially advertising the same physical capacity twice.
+	eligible := append([]core.Host(nil), hosts...)
+	for i := range eligible {
+		host := &eligible[i]
+		if host.State == core.HostOnline &&
+			(host.LastSeenAt.IsZero() || now.Sub(host.LastSeenAt) >= time.Minute) {
+			host.State = core.HostOffline
 		}
-		fresh = append(fresh, host)
 	}
-	limit := scheduler.SummarizeCapacity(pool, fresh, workers).CapacityLimit
+	limit := scheduler.SummarizeCapacity(pool, eligible, workers).CapacityLimit
 	if limit < 0 { limit = 0 }
 	if pool.MaxConcurrency < 0 { return 0 }
 	if limit > pool.MaxConcurrency { return pool.MaxConcurrency }
