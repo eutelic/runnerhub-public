@@ -37,6 +37,9 @@ def snapshot(run=docker):
     root = run("info", "--format", "{{.DockerRootDir}}").strip()
     if not root or not Path(root).is_absolute():
         raise ValueError("Docker returned an invalid root directory")
+    daemon_id = run("info", "--format", "{{.ID}}").strip()
+    if not daemon_id:
+        raise ValueError("Docker returned no daemon ID; refusing unverifiable snapshots")
     container_output = run(
         "ps", "-a", "--no-trunc", "--filter", "label=io.runnerhub.worker",
         "--format",
@@ -69,10 +72,11 @@ def snapshot(run=docker):
         filesystem = None
 
     return {
-        "schemaVersion": 1,
+        "schemaVersion": 2,
         "capturedAtUTC": datetime.now(timezone.utc).isoformat(),
         "host": socket.gethostname(),
         "dockerRootDir": root,
+        "dockerDaemonId": daemon_id,
         "dockerFilesystem": filesystem,
         "dockerStorageSummary": storage,
         "runnerhubContainers": containers,
@@ -82,6 +86,7 @@ def snapshot(run=docker):
             "Unattached Docker volumes cannot be attributed to RunnerHub without independent ownership evidence.",
             "Filesystem and Docker storage changes may be caused by unrelated workloads.",
             "Container image tags are not proof of the deployed immutable image digest.",
+            "The filesystem measurement is local; run on the physical Docker daemon host, not through a remote context.",
             "A worker's deleted state in RunnerHub does not prove physical Docker reclamation.",
         ],
     }
@@ -89,10 +94,12 @@ def snapshot(run=docker):
 
 def compare(before, after):
     for value in (before, after):
-        if value.get("schemaVersion") != 1:
+        if value.get("schemaVersion") != 2:
             raise ValueError("unrecognized Docker cleanup audit schema")
     if before["host"] != after["host"] or before["dockerRootDir"] != after["dockerRootDir"]:
         raise ValueError("snapshots must come from the same host and Docker root")
+    if not before.get("dockerDaemonId") or before["dockerDaemonId"] != after.get("dockerDaemonId"):
+        raise ValueError("snapshots must come from the same Docker daemon")
     initial = set(before["danglingDockerVolumes"])
     final = set(after["danglingDockerVolumes"])
     before_containers = {c["id"] for c in before["runnerhubContainers"]}
@@ -104,6 +111,7 @@ def compare(before, after):
         free_delta = last_disk["freeBytes"] - first_disk["freeBytes"]
     return {
         "host": before["host"],
+        "dockerDaemonId": before["dockerDaemonId"],
         "before": before["capturedAtUTC"],
         "after": after["capturedAtUTC"],
         "runnerhubContainerCountBefore": len(before_containers),

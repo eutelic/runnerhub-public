@@ -11,6 +11,7 @@ class DockerCleanupAuditTests(unittest.TestCase):
         sidecar_id = "b" * 64
         commands = {
             ("info", "--format", "{{.DockerRootDir}}"): "/tmp",
+            ("info", "--format", "{{.ID}}"): "daemon-one",
             (
                 "ps", "-a", "--no-trunc", "--filter", "label=io.runnerhub.worker",
                 "--format",
@@ -29,12 +30,13 @@ class DockerCleanupAuditTests(unittest.TestCase):
 
         result = audit.snapshot(run=fake_run)
         self.assertEqual(result["dockerRootDir"], "/tmp")
+        self.assertEqual(result["dockerDaemonId"], "daemon-one")
         self.assertEqual(len(result["runnerhubContainers"]), 2)
         self.assertEqual(result["orphanRunnerhubSidecarIds"], [sidecar_id])
         self.assertEqual(len(result["danglingDockerVolumes"]), 2)
         self.assertIn("persistent-backup", result["danglingDockerVolumes"])
         self.assertEqual(result["dockerStorageSummary"][0]["Type"], "Local Volumes")
-        self.assertEqual(len(calls), 4)
+        self.assertEqual(len(calls), 5)
         for cmd in calls:
             self.assertNotIn(cmd[0], ("rm", "prune", "run", "stop"))
             self.assertNotIn("rm", cmd)
@@ -42,7 +44,8 @@ class DockerCleanupAuditTests(unittest.TestCase):
 
     def test_compare_preserves_uncertain_ownership_and_checks_host_identity(self):
         before = {
-            "schemaVersion": 1,
+            "schemaVersion": 2,
+            "dockerDaemonId": "daemon-one",
             "host": "compute",
             "dockerRootDir": "/var/lib/docker",
             "capturedAtUTC": "2026-11-07T13:00:00Z",
@@ -61,6 +64,11 @@ class DockerCleanupAuditTests(unittest.TestCase):
         self.assertEqual(comparison["dockerFilesystemFreeBytesDelta"], -1_000)
         self.assertEqual(comparison["remainingOriginalRunnerhubContainerIds"], [])
         self.assertIn("Neither new dangling volumes", comparison["conclusion"])
+        self.assertEqual(comparison["dockerDaemonId"], "daemon-one")
+        other_daemon = copy.deepcopy(after)
+        other_daemon["dockerDaemonId"] = "daemon-two"
+        with self.assertRaisesRegex(ValueError, "same Docker daemon"):
+            audit.compare(before, other_daemon)
         after["host"] = "truenas"
         with self.assertRaisesRegex(ValueError, "same host"):
             audit.compare(before, after)
@@ -68,11 +76,22 @@ class DockerCleanupAuditTests(unittest.TestCase):
     def test_malformed_container_records_fail_closed(self):
         def fake_run(*args):
             if args[0] == "info":
-                return "/tmp"
+                return "daemon-one" if args[-1] == "{{.ID}}" else "/tmp"
             return "bad-container-row"
 
         with self.assertRaisesRegex(ValueError, "unparseable"):
             audit.snapshot(run=fake_run)
+
+    def test_blank_daemon_identity_fails_closed(self):
+        def fake_run(*args):
+            return "" if args[-1] == "{{.ID}}" else "/tmp"
+
+        with self.assertRaisesRegex(ValueError, "no daemon ID"):
+            audit.snapshot(run=fake_run)
+
+    def test_legacy_snapshots_fail_closed(self):
+        with self.assertRaisesRegex(ValueError, "unrecognized"):
+            audit.compare({"schemaVersion": 1}, {"schemaVersion": 1})
 
 
 if __name__ == "__main__":
