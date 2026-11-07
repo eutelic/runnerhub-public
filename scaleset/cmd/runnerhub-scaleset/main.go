@@ -1239,6 +1239,12 @@ func runListener(ctx context.Context, c config, onReady func()) (runErr error) {
 		return errors.New("min runners exceeds effective pool maximum")
 	}
 
+	// Validate capacity support before creating a GitHub message session.
+	// Older controllers missing capacityLimit must be upgraded first.
+	initialCapacity, err := hub.advertisedCapacity(ctx, c.MaxRunners)
+	if err != nil {
+		return fmt.Errorf("initial scale-set capacity: %w", err)
+	}
 	names, err := hub.activeWorkers(ctx)
 	if err != nil {
 		return fmt.Errorf("recover active workers: %w", err)
@@ -1264,12 +1270,6 @@ func runListener(ctx context.Context, c config, onReady func()) (runErr error) {
 	l, err := listener.New(sessions, listener.Config{ScaleSetID: set.ID, MaxRunners: c.MaxRunners, Logger: slog.Default()})
 	if err != nil {
 		return fmt.Errorf("listener: %w", err)
-	}
-	// Static pool concurrency is not a physical host capacity guarantee.
-	// Fail closed if the controller cannot supply a fresh, explicit bound.
-	initialCapacity, err := hub.advertisedCapacity(ctx, c.MaxRunners)
-	if err != nil {
-		return fmt.Errorf("initial scale-set capacity: %w", err)
 	}
 	l.SetMaxRunners(initialCapacity)
 	capacityCtx, stopCapacity := context.WithCancel(ctx)
