@@ -34,6 +34,7 @@ func (s *Service) poolHealthAll(w http.ResponseWriter, r *http.Request) {
         if maintenance.Paused {
             health.Healthy = false
             health.Reasons = append(health.Reasons, "RunnerHub maintenance: new CI admissions paused for self-redeployment")
+            health.CapacityLimit = min(health.CapacityLimit, health.ActiveWorkers)
         }
         result = append(result, health)
     }

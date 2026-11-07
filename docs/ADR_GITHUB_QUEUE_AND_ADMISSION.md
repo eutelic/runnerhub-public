@@ -99,3 +99,37 @@ Document GitHub routing semantics before turning this on.
 - https://github.com/actions/scaleset#autoscaling
 - https://github.com/actions/scaleset#how-the-message-api-works
 - https://docs.github.com/en/actions/reference/runners/self-hosted-runners
+
+
+## 2026-11-07 capacity-advertisement implementation
+
+The pinned `github.com/actions/scaleset/listener` v0.5.0 supports
+`Listener.SetMaxRunners(int)` while `Run` is active. RunnerHub now reports a
+live per-pool `capacityLimit` with its pool-health response, bounded by:
+
+- the configured pool max concurrency;
+- already-reserved workers in the pool (including jobs that are running while
+  their host becomes unavailable);
+- free CPU/memory/disk/GPU on *recently seen* eligible hosts, accounting for
+  resources reserved by **all** pools and alias placement domains;
+- the conservative DinD x2 envelopes on hosts without verified aggregate
+  cgroup-v2 containment;
+- maintenance-mode fencing, where no spare slots are advertised.
+
+The scale-set process fetches this limit **before opening its GitHub message
+session**, and refreshes it every 10 seconds independently of job message
+arrival. A missing/malformed field fails closed instead of falling back to
+static, potentially fictitious pool concurrency. **Upgrade the controller
+first**; older controllers do not expose this field. A transient refresh
+error retains the last verified limit; the control-plane scheduler still
+independently enforces fresh host/resource admission.
+
+This remains a **per-pool upper bound**, not a distributed atomic claim on a
+shared physical slot. Separate pools may simultaneously see the same free slot
+until one wins the serialized server admission. Address global fairness and
+any competing-pool over-advertisement under internal follow-up with measured evidence.
+SDK long-polling can delay when a new maximum takes effect at GitHub; runtime
+updates do not guarantee instantaneous GitHub queue dispatch or a reduction
+in queue p95 until tested against production workloads.
+
+Reference: https://pkg.go.dev/github.com/actions/scaleset@v0.5.0/listener

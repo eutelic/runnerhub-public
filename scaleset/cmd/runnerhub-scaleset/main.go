@@ -318,8 +318,9 @@ type poolResponse struct {
 }
 
 type poolHealthResponse struct {
-	Healthy bool     `json:"healthy"`
-	Reasons []string `json:"reasons,omitempty"`
+	Healthy       bool     `json:"healthy"`
+	Reasons       []string `json:"reasons,omitempty"`
+	CapacityLimit *int     `json:"capacityLimit"`
 }
 
 type runnerHubHTTPError struct {
@@ -1245,6 +1246,12 @@ func runListener(ctx context.Context, c config, onReady func()) (runErr error) {
 		return errors.New("min runners exceeds effective pool maximum")
 	}
 
+	// Validate capacity support before creating a GitHub message session.
+	// Older controllers missing capacityLimit must be upgraded first.
+	initialCapacity, err := hub.advertisedCapacity(ctx, c.MaxRunners)
+	if err != nil {
+		return fmt.Errorf("initial scale-set capacity: %w", err)
+	}
 	names, err := hub.activeWorkers(ctx)
 	if err != nil {
 		return fmt.Errorf("recover active workers: %w", err)
@@ -1271,6 +1278,10 @@ func runListener(ctx context.Context, c config, onReady func()) (runErr error) {
 	if err != nil {
 		return fmt.Errorf("listener: %w", err)
 	}
+	l.SetMaxRunners(initialCapacity)
+	capacityCtx, stopCapacity := context.WithCancel(ctx)
+	defer stopCapacity()
+	go refreshAdvertisedCapacity(capacityCtx, hub, c.MaxRunners, l, initialCapacity, 10*time.Second)
 	sc := &scaler{
 		names:      names,
 		min:        c.MinRunners,
@@ -1282,7 +1293,7 @@ func runListener(ctx context.Context, c config, onReady func()) (runErr error) {
 		logger:     slog.Default(),
 	}
 
-	slog.Info("scale-set listener ready", "name", c.Name, "scaleSetID", set.ID, "pool", c.PoolID, "maxRunners", c.MaxRunners)
+	slog.Info("scale-set listener ready", "name", c.Name, "scaleSetID", set.ID, "pool", c.PoolID, "maxRunners", c.MaxRunners, "advertisedCapacity", initialCapacity)
 	if onReady != nil {
 		onReady()
 	}
