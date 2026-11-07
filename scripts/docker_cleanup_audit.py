@@ -38,8 +38,8 @@ def snapshot(run=docker):
     if not root or not Path(root).is_absolute():
         raise ValueError("Docker returned an invalid root directory")
     daemon_id = run("info", "--format", "{{.ID}}").strip()
-    if not daemon_id:
-        raise ValueError("Docker returned no daemon ID; refusing unverifiable snapshots")
+    if not daemon_id or daemon_id == "<no value>":
+        raise ValueError("Docker returned no daemon ID (or an unknown value); refusing unverifiable snapshots")
     container_output = run(
         "ps", "-a", "--no-trunc", "--filter", "label=io.runnerhub.worker",
         "--format",
@@ -55,12 +55,33 @@ def snapshot(run=docker):
             fields,
         )))
     containers.sort(key=lambda item: item["id"])
-    container_ids = {container["id"] for container in containers}
-    orphan_sidecars = [
-        c["id"] for c in containers
-        if c["role"] == "dind" and
-        (not c["parentId"] or c["parentId"] not in container_ids)
-    ]
+    containers_by_id = {container["id"]: container for container in containers}
+
+    # Duplicate IDs make parent ownership ambiguous. Do not silently trust one.
+    if len(containers_by_id) != len(containers):
+        raise ValueError("Docker returned duplicate RunnerHub container IDs")
+
+    orphan_reasons = []
+    for container in containers:
+        if container["role"] != "dind":
+            continue
+        parent_id = container["parentId"]
+        parent = containers_by_id.get(parent_id)
+        if not parent_id or parent is None:
+            reason = "missing_parent"
+        elif parent["role"] != "runner":
+            reason = "parent_not_runner"
+        elif parent["workerId"] != container["workerId"]:
+            reason = "worker_mismatch"
+        else:
+            continue
+        orphan_reasons.append({
+            "id": container["id"],
+            "parentId": parent_id,
+            "workerId": container["workerId"],
+            "reason": reason,
+        })
+    orphan_sidecars = [item["id"] for item in orphan_reasons]
     dangling = sorted(set(parse_lines(
         run("volume", "ls", "--filter", "dangling=true", "--format", "{{.Name}}")
     )))
@@ -81,6 +102,7 @@ def snapshot(run=docker):
         "dockerStorageSummary": storage,
         "runnerhubContainers": containers,
         "orphanRunnerhubSidecarIds": sorted(orphan_sidecars),
+        "orphanRunnerhubSidecarReasons": orphan_reasons,
         "danglingDockerVolumes": dangling,
         "limitations": [
             "Unattached Docker volumes cannot be attributed to RunnerHub without independent ownership evidence.",
@@ -102,6 +124,8 @@ def compare(before, after):
         raise ValueError("snapshots must come from the same Docker daemon")
     initial = set(before["danglingDockerVolumes"])
     final = set(after["danglingDockerVolumes"])
+    initial_orphans = set(before["orphanRunnerhubSidecarIds"])
+    final_orphans = set(after["orphanRunnerhubSidecarIds"])
     before_containers = {c["id"] for c in before["runnerhubContainers"]}
     after_containers = {c["id"] for c in after["runnerhubContainers"]}
     first_disk = before.get("dockerFilesystem")
@@ -118,7 +142,11 @@ def compare(before, after):
         "runnerhubContainerCountAfter": len(after_containers),
         "newRunnerhubContainerIds": sorted(after_containers - before_containers),
         "remainingOriginalRunnerhubContainerIds": sorted(before_containers & after_containers),
-        "orphanSidecarIdsAfter": after["orphanRunnerhubSidecarIds"],
+        "orphanSidecarIdsAfter": sorted(final_orphans),
+        "orphanSidecarCountBefore": len(initial_orphans),
+        "orphanSidecarCountAfter": len(final_orphans),
+        "newOrphanSidecarIds": sorted(final_orphans - initial_orphans),
+        "resolvedOrphanSidecarIds": sorted(initial_orphans - final_orphans),
         "danglingVolumeCountBefore": len(initial),
         "danglingVolumeCountAfter": len(final),
         "newDanglingVolumeNamesUnattributed": sorted(final - initial),
