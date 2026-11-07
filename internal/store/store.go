@@ -25,6 +25,13 @@ type NonDeletedWorkerReader interface {
 	ListNonDeletedWorkers(context.Context) ([]core.Worker, error)
 }
 
+// ScaleWorkerReader is an optional indexed lookup for durable scale-set
+// admissions. Deleted workers are intentionally included so redelivered JIT
+// requests cannot re-create a historical runner identity.
+type ScaleWorkerReader interface {
+	GetScaleWorker(context.Context, string, string) (core.Worker, error)
+}
+
 // CIWorkerCandidateReader returns only workers that can contribute to recent CI findings.
 type CIWorkerCandidateReader interface {
 	ListCIWorkerCandidates(context.Context, time.Time, time.Time) ([]core.Worker, error)

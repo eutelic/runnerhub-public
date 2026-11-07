@@ -13,6 +13,8 @@ CREATE TABLE IF NOT EXISTS workers(id TEXT PRIMARY KEY, data BLOB NOT NULL, upda
 CREATE INDEX IF NOT EXISTS idx_workers_updated_history ON workers(updated_at DESC,id DESC);
 -- Live control-plane paths must never scan historical deleted workers.
 CREATE INDEX IF NOT EXISTS idx_workers_non_deleted ON workers(updated_at DESC,id DESC) WHERE COALESCE(json_extract(data,'$.state'),'') != 'deleted';
+-- Include deleted rows so an old GitHub JIT runner cannot be created twice after restart.
+CREATE INDEX IF NOT EXISTS idx_workers_scale_identity ON workers(json_extract(data,'$.poolId'),json_extract(data,'$.runnerName')) WHERE COALESCE(json_extract(data,'$.runnerName'),'') != '';
 CREATE INDEX IF NOT EXISTS idx_workers_ci_candidates ON workers(julianday(CASE WHEN COALESCE(json_extract(data,'$.completedAt'),'') NOT IN ('','0001-01-01T00:00:00Z') THEN json_extract(data,'$.completedAt') ELSE json_extract(data,'$.failedAt') END)) WHERE COALESCE(json_extract(data,'$.repository'),'') != '' AND CAST(COALESCE(json_extract(data,'$.workflowRunId'),0) AS INTEGER)>0 AND COALESCE(json_extract(data,'$.startedAt'),'') != '' AND (CASE WHEN COALESCE(json_extract(data,'$.completedAt'),'') NOT IN ('','0001-01-01T00:00:00Z') THEN json_extract(data,'$.completedAt') ELSE json_extract(data,'$.failedAt') END) != '';
 CREATE TABLE IF NOT EXISTS audit_events(id INTEGER PRIMARY KEY AUTOINCREMENT, actor TEXT NOT NULL, action TEXT NOT NULL, resource_type TEXT NOT NULL, resource_id TEXT NOT NULL, result TEXT NOT NULL, safe_detail TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS idx_audit_created_at ON audit_events(created_at DESC);
