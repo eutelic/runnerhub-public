@@ -317,8 +317,9 @@ type poolResponse struct {
 }
 
 type poolHealthResponse struct {
-	Healthy bool     `json:"healthy"`
-	Reasons []string `json:"reasons,omitempty"`
+	Healthy       bool     `json:"healthy"`
+	Reasons       []string `json:"reasons,omitempty"`
+	CapacityLimit *int     `json:"capacityLimit"`
 }
 
 type runnerHubHTTPError struct {
@@ -1264,6 +1265,16 @@ func runListener(ctx context.Context, c config, onReady func()) (runErr error) {
 	if err != nil {
 		return fmt.Errorf("listener: %w", err)
 	}
+	// Static pool concurrency is not a physical host capacity guarantee.
+	// Fail closed if the controller cannot supply a fresh, explicit bound.
+	initialCapacity, err := hub.advertisedCapacity(ctx, c.MaxRunners)
+	if err != nil {
+		return fmt.Errorf("initial scale-set capacity: %w", err)
+	}
+	l.SetMaxRunners(initialCapacity)
+	capacityCtx, stopCapacity := context.WithCancel(ctx)
+	defer stopCapacity()
+	go refreshAdvertisedCapacity(capacityCtx, hub, c.MaxRunners, l, initialCapacity, 10*time.Second)
 	sc := &scaler{
 		names:      names,
 		min:        c.MinRunners,
@@ -1275,7 +1286,7 @@ func runListener(ctx context.Context, c config, onReady func()) (runErr error) {
 		logger:     slog.Default(),
 	}
 
-	slog.Info("scale-set listener ready", "name", c.Name, "scaleSetID", set.ID, "pool", c.PoolID, "maxRunners", c.MaxRunners)
+	slog.Info("scale-set listener ready", "name", c.Name, "scaleSetID", set.ID, "pool", c.PoolID, "maxRunners", c.MaxRunners, "advertisedCapacity", initialCapacity)
 	if onReady != nil {
 		onReady()
 	}
