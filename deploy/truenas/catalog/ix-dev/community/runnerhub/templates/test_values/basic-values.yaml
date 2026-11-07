@@ -9,12 +9,12 @@ github:
   app_slug: disabled-for-catalog-ci
   client_secret: disabled-for-catalog-ci
   private_key: disabled-for-catalog-ci
-  public_url: http://127.0.0.1:30559
+  public_url: http://127.0.0.1:30590
 
 network:
   web_port:
     bind_mode: published
-    port_number: 30559
+    port_number: 30590
     host_ips:
       - 127.0.0.1
 
