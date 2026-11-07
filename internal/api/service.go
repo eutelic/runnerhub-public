@@ -122,7 +122,31 @@ func(s *Service)updateHost(w http.ResponseWriter,r *http.Request){h,err:=s.Store
 func(s *Service)bulkDrain(w http.ResponseWriter,r *http.Request){hosts,err:=s.Store.ListHosts(r.Context());if err!=nil{problem(w,500,err);return};n:=0;for _,h:=range hosts{if h.State==core.HostOnline{h.State=core.HostDraining;if s.Store.UpsertHost(r.Context(),h)==nil{n++}}};_=s.Store.AppendAudit(r.Context(),core.AuditEvent{Actor:actor(r.Context()),Action:"bulk_drain",ResourceType:"host",Result:"ok",SafeDetail:fmt.Sprintf("%d hosts",n)});writeJSON(w,200,map[string]int{"drained":n})}
 type imageUpdateRequest struct{Image string `json:"image"`;RequireDigest bool `json:"requireDigest"`}
 func(s *Service)updatePoolImage(w http.ResponseWriter,r *http.Request){s.poolMutationMu.Lock();defer s.poolMutationMu.Unlock();p,err:=s.Store.GetPool(r.Context(),r.PathValue("id"));if err!=nil{problem(w,404,err);return};before:=p;var in imageUpdateRequest;if !decode(w,r,&in){return};if in.RequireDigest{if err:=images.ValidatePinned(in.Image);err!=nil{problem(w,400,err);return}};p.Image=strings.TrimSpace(in.Image);resetLearningForConfigChange(&before,&p);if err:=core.ValidateRunnerPool(p);err!=nil{problem(w,400,err);return};if err:=s.Policy.ValidatePool(p);err!=nil{problem(w,403,err);return};if err:=s.Store.UpsertPool(r.Context(),p);err!=nil{problem(w,500,err);return};_=s.Store.AppendAudit(r.Context(),core.AuditEvent{Actor:actor(r.Context()),Action:"update_pool_image",ResourceType:"pool",ResourceID:p.ID,Result:"ok",SafeDetail:p.Image});writeJSON(w,200,p)}
-func(s *Service)poolHealth(w http.ResponseWriter,r *http.Request){p,err:=s.Store.GetPool(r.Context(),r.PathValue("id"));if err!=nil{problem(w,404,err);return};hosts,err:=s.Store.ListHosts(r.Context());if err!=nil{problem(w,500,err);return};workers,err:=s.Store.ListWorkers(r.Context());if err!=nil{problem(w,500,err);return};health:=fleet.PoolHealth(p,hosts,workers,time.Now().UTC());maintenance,err:=s.maintenanceState(r.Context());if err!=nil{problem(w,503,err);return};if maintenance.Paused{health.Healthy=false;health.Reasons=append(health.Reasons,"RunnerHub maintenance: new CI admissions paused for self-redeployment")};writeJSON(w,200,health)}
+func (s *Service) poolHealth(w http.ResponseWriter, r *http.Request) {
+	p, err := s.Store.GetPool(r.Context(), r.PathValue("id"))
+	if err != nil { problem(w, 404, err); return }
+	hosts, err := s.Store.ListHosts(r.Context())
+	if err != nil { problem(w, 500, err); return }
+	var workers []core.Worker
+	if live, ok := s.Store.(store.NonDeletedWorkerReader); ok {
+		workers, err = live.ListNonDeletedWorkers(r.Context())
+	} else {
+		workers, err = s.Store.ListWorkers(r.Context())
+	}
+	if err != nil { problem(w, 500, err); return }
+	health := fleet.PoolHealth(p, hosts, workers, time.Now().UTC())
+	maintenance, err := s.maintenanceState(r.Context())
+	if err != nil { problem(w, 503, err); return }
+	if maintenance.Paused {
+		health.Healthy = false
+		health.Reasons = append(health.Reasons,
+			"RunnerHub maintenance: new CI admissions paused for self-redeployment")
+		// Keep currently admitted jobs visible; do not advertise spare
+		// physical slots during the global maintenance gate.
+		health.CapacityLimit = min(health.CapacityLimit, health.ActiveWorkers)
+	}
+	writeJSON(w, 200, health)
+}
 func(s *Service)runtimeHealth(w http.ResponseWriter,r *http.Request){pools,err:=s.Store.ListPools(r.Context());if err!=nil{problem(w,500,err);return};workers,err:=s.Store.ListWorkers(r.Context());if err!=nil{problem(w,500,err);return};writeJSON(w,200,fleet.RuntimeHealthByPool(pools,workers,time.Now().UTC()))}
 type poolLatencySummary struct {
 	Queue        string `json:"queue"`
