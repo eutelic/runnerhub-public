@@ -316,3 +316,46 @@ func TestBootstrapManagerRetainsSecretWhenTrueNASInstallStillPending(t *testing.
 		t.Fatal("pending installation did not retain the correct API key")
 	}
 }
+
+
+type portConflictInstaller struct{}
+
+func (portConflictInstaller) EnsureCustomApp(context.Context, string, string) error {
+	return fmt.Errorf("%w: host bind failed", ErrAppPortConflict)
+}
+func (portConflictInstaller) FindAppMount(context.Context, string, string) (string, error) {
+	return "/mnt/tank/runnerhub/data", nil
+}
+
+func TestBootstrapPortConflictIsActionableAndRollsBackSecrets(t *testing.T) {
+	root := t.TempDir()
+	manager := &BootstrapManager{
+		Root: root,
+		MaintenanceToken: "admin-key",
+		NewClient: func(TrueNASConfig) (TrueNASBootstrapClient, error) {
+			return portConflictInstaller{}, nil
+		},
+	}
+	_, err := manager.Install(context.Background(), BootstrapRequest{
+		Endpoint: "wss://truenas.example/api/current",
+		Port: 8790,
+		Username: "deployer",
+		APIKey: "new-secret",
+		HostDataPath: "/mnt/tank/runnerhub/data",
+		RunnerHubApp: "runnerhub",
+		HealthURL: "http://truenas.example:8788/healthz",
+	})
+	if !errors.Is(err, ErrAppPortConflict) ||
+		!strings.Contains(err.Error(), "redeployer port 8790") ||
+		!strings.Contains(err.Error(), "choose a different port") {
+		t.Fatalf("expected actionable port conflict: %v", err)
+	}
+	for _, path := range []string{
+		"state.json", "config/deployments.json", "secrets/truenas-api-key",
+		"secrets/runnerhub-maintenance-key",
+	} {
+		if _, statErr := os.Stat(filepath.Join(root, path)); !os.IsNotExist(statErr) {
+			t.Fatalf("failed install must not retain changed %s: %v", path, statErr)
+		}
+	}
+}

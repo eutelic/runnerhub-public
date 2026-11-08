@@ -31,6 +31,10 @@ type TrueNASImageRedeployer interface {
 // while TrueNAS may still try to bind mount them.
 var ErrAppInstallMayBeInProgress = errors.New("TrueNAS app install may still be in progress")
 
+// ErrAppPortConflict means TrueNAS positively reported an install job failure
+// caused by a host-port bind collision. Never infer this from remote TCP probes.
+var ErrAppPortConflict = errors.New("TrueNAS reported an occupied application port")
+
 type TrueNASConfig struct {
 	Endpoint           string
 	Username           string
@@ -56,6 +60,8 @@ type rpcError struct {
 }
 
 type rpcResponse struct {
+	Method  string          `json:"method,omitempty"`
+	Params  json.RawMessage `json:"params,omitempty"`
 	JSONRPC string          `json:"jsonrpc"`
 	ID      json.RawMessage `json:"id,omitempty"`
 	Result  json.RawMessage `json:"result,omitempty"`
@@ -450,22 +456,34 @@ func (c *TrueNASClient) EnsureCustomApp(ctx context.Context, app, compose string
 		break
 	}
 
+	var installJobResult json.RawMessage
+	var installJobID int64
 	if exists {
-		if err := c.call(ctx, conn, "app.update", []any{
+		if err := c.callWithJob(ctx, conn, "app.update", []any{
 			app,
 			map[string]any{"custom_compose_config_string": compose},
-		}, nil); err != nil {
+		}, &installJobResult, &installJobID); err != nil {
 			return fmt.Errorf("%w: update TrueNAS custom app %q: %w", ErrAppInstallMayBeInProgress, app, err)
 		}
 	} else {
-		if err := c.call(ctx, conn, "app.create", []any{
+		if err := c.callWithJob(ctx, conn, "app.create", []any{
 			map[string]any{
 				"app_name":                     app,
 				"custom_app":                   true,
 				"custom_compose_config_string": compose,
 			},
-		}, nil); err != nil {
+		}, &installJobResult, &installJobID); err != nil {
 			return fmt.Errorf("%w: create TrueNAS custom app %q: %w", ErrAppInstallMayBeInProgress, app, err)
+		}
+	}
+
+	// Job methods can report their ID in a collection_update notification or
+	// as a numeric response. Keep the ID so terminal failures can be reported
+	// without waiting for an unrelated 2-minute app-state timeout.
+	if installJobID == 0 && len(installJobResult) > 0 {
+		var returnedID int64
+		if json.Unmarshal(installJobResult, &returnedID) == nil && returnedID > 0 {
+			installJobID = returnedID
 		}
 	}
 
@@ -486,6 +504,36 @@ func (c *TrueNASClient) EnsureCustomApp(ctx context.Context, app, compose string
 	deadline := time.NewTimer(waitTimeout)
 	defer deadline.Stop()
 	for {
+		jobPending := false
+		if installJobID > 0 {
+			var jobs []struct {
+				ID          int64  `json:"id"`
+				State       string `json:"state"`
+				Error       string `json:"error"`
+				LogsExcerpt string `json:"logs_excerpt"`
+			}
+			// A service account might lack CORE_READ; in that case, retain the
+			// existing app-state polling behavior instead of guessing job status.
+			if err := c.call(ctx, conn, "core.get_jobs", []any{[]any{[]any{"id", "=", installJobID}}}, &jobs); err == nil {
+				for _, job := range jobs {
+					if job.ID != installJobID {
+						continue
+					}
+					if job.State == "FAILED" || job.State == "ABORTED" {
+						if trueNASPortBindConflict(job.Error, job.LogsExcerpt) {
+							return fmt.Errorf("%w: app %q install job failed to bind a host port", ErrAppPortConflict, app)
+						}
+						// Job errors/logs can contain credentials or host details; never
+						// return the raw text to the dashboard.
+						return fmt.Errorf("TrueNAS app %q install job %s; inspect job history on TrueNAS", app, strings.ToLower(job.State))
+					}
+					if job.State == "RUNNING" || job.State == "WAITING" {
+						jobPending = true
+					}
+				}
+			}
+		}
+
 		var instances []trueNASAppInfo
 		if err := c.call(ctx, conn, "app.query", []any{[]any{}, map[string]any{}}, &instances); err != nil {
 			return fmt.Errorf("%w: inspect TrueNAS app %q: %w", ErrAppInstallMayBeInProgress, app, err)
@@ -496,7 +544,9 @@ func (c *TrueNASClient) EnsureCustomApp(ctx context.Context, app, compose string
 			}
 			switch instance.State {
 			case "RUNNING":
-				return nil
+				if !jobPending {
+					return nil
+				}
 			case "CRASHED", "STOPPED", "ERROR":
 				// TrueNAS reports a terminal state, so creation is no longer
 				// pending; the caller can safely restore previous bootstrap files.
@@ -504,6 +554,8 @@ func (c *TrueNASClient) EnsureCustomApp(ctx context.Context, app, compose string
 			}
 			break
 		}
+
+
 
 		select {
 		case <-ctx.Done():
@@ -515,7 +567,29 @@ func (c *TrueNASClient) EnsureCustomApp(ctx context.Context, app, compose string
 	}
 }
 
+func trueNASPortBindConflict(details ...string) bool {
+	for _, detail := range details {
+		lower := strings.ToLower(detail)
+		for _, marker := range []string{
+			"port is already allocated", "port has already been allocated",
+			"address already in use", "port is already in use",
+			"port is in use", "port already allocated",
+		} {
+			if strings.Contains(lower, marker) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func (c *TrueNASClient) call(ctx context.Context, conn *websocket.Conn, method string, params any, out any) error {
+	return c.callWithJob(ctx, conn, method, params, out, nil)
+}
+
+// callWithJob records only the ID of a job correlated to this exact RPC
+// request; unrelated notifications must never affect its outcome.
+func (c *TrueNASClient) callWithJob(ctx context.Context, conn *websocket.Conn, method string, params any, out any, jobID *int64) error {
 	id := c.nextID.Add(1)
 	request := map[string]any{
 		"jsonrpc": "2.0",
@@ -537,6 +611,24 @@ func (c *TrueNASClient) call(ctx context.Context, conn *websocket.Conn, method s
 			return err
 		}
 		if len(response.ID) == 0 {
+			if jobID != nil && response.Method == "collection_update" {
+				var event struct {
+					Collection string `json:"collection"`
+					Fields struct {
+						ID int64 `json:"id"`
+						MessageIDs []json.RawMessage `json:"message_ids"`
+					} `json:"fields"`
+				}
+				if json.Unmarshal(response.Params, &event) == nil && event.Collection == "core.get_jobs" && event.Fields.ID > 0 {
+					for _, rawID := range event.Fields.MessageIDs {
+						var numeric uint64
+						if json.Unmarshal(rawID, &numeric) == nil && numeric == id {
+							*jobID = event.Fields.ID
+							break
+						}
+					}
+				}
+			}
 			continue
 		}
 		var responseID uint64

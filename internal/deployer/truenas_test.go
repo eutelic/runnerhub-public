@@ -511,3 +511,171 @@ func TestTrueNASListAppsIncludesImagesForPublishingSafety(t *testing.T) {
 		t.Fatalf("unexpected TrueNAS inventory: %+v", apps)
 	}
 }
+
+
+func TestTrueNASInstallJobFailureReportsSafePortConflict(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		jobError string
+		wantPortConflict bool
+	}{
+		{
+			name: "loopback Docker port binding",
+			jobError: "driver failed programming external connectivity: Bind for 127.0.0.1:8790 failed: port is already allocated; SECRET_TOKEN=do-not-print",
+			wantPortConflict: true,
+		},
+		{
+			name: "unrelated failed job",
+			jobError: "compose failed due to SECRET_TOKEN=do-not-print",
+			wantPortConflict: false,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			upgrader := websocket.Upgrader{}
+			server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				conn, err := upgrader.Upgrade(w, r, nil)
+				if err != nil { t.Errorf("websocket upgrade: %v", err); return }
+				defer conn.Close()
+				for {
+					var req struct {
+						ID uint64 `json:"id"`
+						Method string `json:"method"`
+						Params json.RawMessage `json:"params"`
+					}
+					if err := conn.ReadJSON(&req); err != nil { return }
+					var result any
+					switch req.Method {
+					case "auth.login_ex":
+						result = map[string]any{"response_type": "SUCCESS"}
+					case "app.query":
+						result = []any{}
+					case "app.create":
+						// This unrelated notification must not supply the job ID.
+						_ = conn.WriteJSON(map[string]any{
+							"jsonrpc": "2.0", "method": "collection_update",
+							"params": map[string]any{
+								"collection": "core.get_jobs", "msg": "added",
+								"fields": map[string]any{"id": 999, "message_ids": []uint64{req.ID + 1}},
+							},
+						})
+						_ = conn.WriteJSON(map[string]any{
+							"jsonrpc": "2.0", "method": "collection_update",
+							"params": map[string]any{
+								"collection": "core.get_jobs", "msg": "added",
+								"fields": map[string]any{"id": 777, "message_ids": []uint64{req.ID}},
+							},
+						})
+						result = nil
+					case "core.get_jobs":
+						if !strings.Contains(string(req.Params), "777") {
+							t.Errorf("job lookup used wrong job ID: %s", req.Params)
+						}
+						result = []map[string]any{{"id": 777, "state": "FAILED", "error": tc.jobError}}
+					default:
+						t.Errorf("unexpected TrueNAS method %q", req.Method)
+						return
+					}
+					if err := conn.WriteJSON(map[string]any{"jsonrpc": "2.0", "id": req.ID, "result": result}); err != nil { return }
+				}
+			}))
+			defer server.Close()
+			client, err := NewTrueNASClient(TrueNASConfig{
+				Endpoint: "wss" + strings.TrimPrefix(server.URL, "https"),
+				Username: "deployer", APIKey: "secret", InsecureSkipVerify: true,
+			})
+			if err != nil { t.Fatal(err) }
+			client.appPollInterval = time.Millisecond
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			err = client.EnsureCustomApp(ctx, "runnerhub-deployer", "services:\n  deployer: {}")
+			if err == nil { t.Fatal("expected terminal job failure") }
+			if errors.Is(err, ErrAppPortConflict) != tc.wantPortConflict {
+				t.Fatalf("unexpected port conflict classification: %v", err)
+			}
+			if strings.Contains(err.Error(), "SECRET_TOKEN") || strings.Contains(err.Error(), "do-not-print") {
+				t.Fatalf("raw TrueNAS job error leaked: %v", err)
+			}
+		})
+	}
+}
+
+func TestTrueNASPortBindConflictDoesNotMisclassifyGenericErrors(t *testing.T) {
+	for _, tc := range []struct { message string; want bool }{
+		{"failed to bind: address already in use", true},
+		{"port has already been allocated", true},
+		{"authentication failed", false},
+		{"job is still running", false},
+	} {
+		if got := trueNASPortBindConflict(tc.message); got != tc.want {
+			t.Errorf("conflict(%q)=%v, want %v", tc.message, got, tc.want)
+		}
+	}
+}
+
+
+func TestTrueNASExistingAppIsNotReadyUntilInstallJobFinishes(t *testing.T) {
+	for _, tc := range []struct{
+		name string
+		fail bool
+	}{
+		{name:"update job failed while old app still RUNNING",fail:true},
+		{name:"update job pending before succeeding",fail:false},
+	} {
+		t.Run(tc.name,func(t *testing.T) {
+			var lookups atomic.Int32
+			upgrader := websocket.Upgrader{}
+			server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter,r *http.Request) {
+				conn,err:=upgrader.Upgrade(w,r,nil)
+				if err!=nil{t.Error(err);return}
+				defer conn.Close()
+				for {
+					var req struct{ID uint64 `json:"id"`;Method string `json:"method"`}
+					if err:=conn.ReadJSON(&req);err!=nil{return}
+					var result any
+					switch req.Method {
+					case "auth.login_ex":
+						result=map[string]any{"response_type":"SUCCESS"}
+					case "app.query":
+						result=[]map[string]any{{"id":"runnerhub-deployer","name":"runnerhub-deployer","custom_app":true,"state":"RUNNING"}}
+					case "app.update":
+						_ = conn.WriteJSON(map[string]any{
+							"jsonrpc":"2.0","method":"collection_update",
+							"params":map[string]any{
+								"collection":"core.get_jobs",
+								"fields":map[string]any{"id":424,"message_ids":[]uint64{req.ID}},
+							},
+						})
+					case "core.get_jobs":
+						n:=lookups.Add(1)
+						state:="SUCCESS"
+						if tc.fail || n==1 {state="RUNNING"}
+						if tc.fail {state="FAILED"}
+						result=[]map[string]any{{"id":424,"state":state,"error":"Bind for 127.0.0.1:8790 failed: port is already allocated"}}
+					default:
+						t.Errorf("unexpected method %s",req.Method)
+						return
+					}
+					if err:=conn.WriteJSON(map[string]any{"jsonrpc":"2.0","id":req.ID,"result":result});err!=nil{return}
+				}
+			}))
+			defer server.Close()
+			client,err:=NewTrueNASClient(TrueNASConfig{
+				Endpoint:"wss"+strings.TrimPrefix(server.URL,"https"),
+				Username:"deployer",APIKey:"secret",InsecureSkipVerify:true,
+			})
+			if err!=nil{t.Fatal(err)}
+			client.appPollInterval=time.Millisecond
+			ctx,cancel:=context.WithTimeout(context.Background(),time.Second)
+			defer cancel()
+			err=client.EnsureCustomApp(ctx,"runnerhub-deployer","services: {}")
+			if tc.fail {
+				if !errors.Is(err,ErrAppPortConflict){t.Fatalf("old RUNNING app masked failed update: %v",err)}
+			} else if err!=nil {
+				t.Fatal(err)
+			}
+			if !tc.fail && lookups.Load()<2 {
+				t.Fatalf("returned ready before update job succeeded: checked %d times",lookups.Load())
+			}
+		})
+	}
+}

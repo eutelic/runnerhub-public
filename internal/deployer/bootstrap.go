@@ -287,6 +287,9 @@ func (m *BootstrapManager) Install(ctx context.Context, req BootstrapRequest) (B
 
 	compose := bootstrapCompose(hostRoot, req.Endpoint, req.Username, req.InsecureSkipVerify, req.Port)
 	if err := client.EnsureCustomApp(ctx, defaultDeployerApp, compose); err != nil {
+		if errors.Is(err, ErrAppPortConflict) {
+			return rollback(fmt.Errorf("redeployer port %d is occupied on the TrueNAS host; choose a different port: %w", req.Port, err))
+		}
 		if errors.Is(err, ErrAppInstallMayBeInProgress) {
 			// TrueNAS can still be creating the app asynchronously. The new
 			// Custom App may mount this API-key path after this request returns;
