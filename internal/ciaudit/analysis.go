@@ -100,11 +100,25 @@ func Summarize(jobs []JobExecution, findings []Finding) Report {
 	}
 
 	var report Report
+	// Replayed/paginated worker history can contain the same execution more than
+	// once. Count each stable worker ID only once to avoid inflating both the
+	// measured denominator and the reported waste.
+	// Prefer the most complete observation of a replayed execution. An older
+	// page may contain an earlier completion timestamp; choosing the first
+	// occurrence would make totals depend on pagination order.
+	selected := make(map[string]JobExecution, len(jobs))
 	for _, job := range jobs {
 		if !validJob(job) {
 			continue
 		}
-
+		previous, exists := selected[job.ID]
+		if !exists || job.StartedAt.After(previous.StartedAt) ||
+			(job.StartedAt.Equal(previous.StartedAt) && (job.CompletedAt.After(previous.CompletedAt) ||
+				(job.CompletedAt.Equal(previous.CompletedAt) && job.Usage.Samples > previous.Usage.Samples))) {
+			selected[job.ID] = job
+		}
+	}
+	for _, job := range selected {
 		full := []Interval{{Start: job.StartedAt, End: job.CompletedAt}}
 		report.Total = addTotals(report.Total, measure(job, full))
 

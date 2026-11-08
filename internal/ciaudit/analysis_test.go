@@ -162,3 +162,53 @@ func TestStaleSnapshotPublicationFinding(t *testing.T) {
 		t.Fatal("immutable release publication must not be classified as stale snapshot waste")
 	}
 }
+
+func TestSummarizeDoesNotDoubleCountReplayedWorkerHistory(t *testing.T) {
+	base := time.Date(2026, 11, 8, 12, 0, 0, 0, time.UTC)
+	job := JobExecution{ID: "worker-replayed", StartedAt: base, CompletedAt: base.Add(2 * time.Minute), Resources: core.Resources{CPUMillis: 2000}}
+	finding := Finding{JobID: job.ID, DetectorID: "post-merge-validation", Class: EvidenceConfirmed, Interval: Interval{Start: base.Add(time.Minute), End: job.CompletedAt}}
+	got := Summarize([]JobExecution{job, job}, []Finding{finding})
+	assertNear(t, got.Total.RunnerSeconds, 120)
+	assertNear(t, got.Total.AllocatedCPUSeconds, 240)
+	assertNear(t, got.ConfirmedWaste.RunnerSeconds, 60)
+	assertNear(t, got.ConfirmedWastePct, 50)
+}
+
+func TestSummarizePrefersCompleteReplayRegardlessOfOrder(t *testing.T) {
+	base := time.Date(2026, 11, 8, 12, 0, 0, 0, time.UTC)
+	partial := JobExecution{ID: "worker-replayed", StartedAt: base, CompletedAt: base.Add(time.Minute)}
+	complete := partial
+	complete.CompletedAt = base.Add(3 * time.Minute)
+	finding := Finding{JobID: partial.ID, Class: EvidenceConfirmed, Interval: Interval{Start: base.Add(2 * time.Minute), End: complete.CompletedAt}}
+	for _, jobs := range [][]JobExecution{{partial, complete}, {complete, partial}} {
+		got := Summarize(jobs, []Finding{finding})
+		assertNear(t, got.Total.RunnerSeconds, 180)
+		assertNear(t, got.ConfirmedWaste.RunnerSeconds, 60)
+		assertNear(t, got.ConfirmedWastePct, 100.0/3.0)
+	}
+}
+
+func TestSummarizeReplaySelectionIndependentOfOrder(t *testing.T) {
+	base := time.Date(2026, 11, 8, 10, 0, 0, 0, time.UTC)
+	old := JobExecution{ID: "replayed", StartedAt: base, CompletedAt: base.Add(time.Minute), Resources: core.Resources{CPUMillis: 1000}}
+	newer := old
+	newer.StartedAt = base.Add(time.Minute)
+	newer.CompletedAt = base.Add(3 * time.Minute)
+	newer.Resources.CPUMillis = 2000
+	for _, jobs := range [][]JobExecution{{old, newer}, {newer, old}} {
+		got := Summarize(jobs, nil)
+		assertNear(t, got.Total.RunnerSeconds, 120)
+		assertNear(t, got.Total.AllocatedCPUSeconds, 240)
+	}
+}
+
+func TestSummarizeReplayPrefersMoreTelemetryAtEqualCompletion(t *testing.T) {
+	base := time.Date(2026, 11, 8, 10, 0, 0, 0, time.UTC)
+	partial := JobExecution{ID: "replayed", StartedAt: base, CompletedAt: base.Add(time.Minute)}
+	complete := partial
+	complete.Usage = core.ResourceUsageSummary{Samples: 4, AverageCPUMillis: 500}
+	for _, jobs := range [][]JobExecution{{partial, complete}, {complete, partial}} {
+		got := Summarize(jobs, nil)
+		assertNear(t, got.Total.EstimatedCPUSeconds, 30)
+	}
+}
