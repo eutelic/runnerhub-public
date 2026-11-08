@@ -1459,7 +1459,13 @@ function renderFleetAlerts(hosts,pools,workers,statuses,runtime,fresh=true){
   const container=document.getElementById('fleet-alerts');
   if(!container)return;
   if(!fresh){
-    container.innerHTML='<div class="muted small">Alert watch paused: some fleet data is stale. Check the refresh warning above.</div>';
+    // An outage is not evidence that a condition persisted throughout the gap.
+    // Restart the observation window once fresh telemetry resumes.
+    if(fleetAlertFirstSeen.size){
+      fleetAlertFirstSeen.clear();
+      persistFleetAlertFirstSeen();
+    }
+    container.innerHTML='<div class="muted small">Alert watch paused: some fleet data is stale. Sustained-alert timers will restart after refresh.</div>';
     return;
   }
   const now=Date.now();

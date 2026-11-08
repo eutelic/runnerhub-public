@@ -543,6 +543,18 @@ test('sustained fleet alert survives a page reload and resets after recovery',()
   vm.runInContext(offline,second.ctx);
   assert.match(second.element('fleet-alerts').innerHTML,/being observed/);
 });
+test('stale fleet telemetry resets persisted sustained-alert timers',()=>{
+  const {ctx,element,storage}=createDashboard();
+  const offline=`renderFleetAlerts([{id:'h1',name:'compute',state:'offline'}],[],[],[],[])`;
+  vm.runInContext(offline,ctx);
+  vm.runInContext(`fleetAlertFirstSeen.set('host:h1',Date.now()-6*60*1000);persistFleetAlertFirstSeen()`,ctx);
+  vm.runInContext(`renderFleetAlerts([],[],[],[],[],false)`,ctx);
+  assert.match(element('fleet-alerts').innerHTML,/timers will restart/);
+  assert.equal(JSON.parse(storage.get('runnerhub-fleet-alert-first-seen-v1')).length,0);
+  vm.runInContext(offline,ctx);
+  assert.match(element('fleet-alerts').innerHTML,/being observed/);
+  assert.doesNotMatch(element('fleet-alerts').innerHTML,/Host compute offline/);
+});
 test('muted incidents remain visible and may be unmuted immediately',()=>{
   const {ctx,element,storage}=createDashboard();
   vm.runInContext(`fleetAlertFirstSeen.set('host:h1',Date.now()-6*60*1000)`,ctx);
