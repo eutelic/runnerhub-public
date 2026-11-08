@@ -16,6 +16,7 @@ on:
       - 'web/**'
       - 'migrations/**'
       - 'scripts/**'
+      - 'tools/**'
       - 'go.mod'
       - 'go.sum'
   pull_request:
@@ -33,6 +34,7 @@ on:
       - 'web/**'
       - 'migrations/**'
       - 'scripts/**'
+      - 'tools/**'
       - 'go.mod'
       - 'go.sum'
 permissions:
@@ -131,6 +133,14 @@ jobs:
             outputs.agent = prefixSucceeded('agent-crossbuild');
             for (const [name, value] of Object.entries(outputs)) core.setOutput(name, String(value));
             core.info(`Tree-identical PR #${merged.number} run ${source.id} provides reusable validation: ${JSON.stringify(outputs)}`);
+
+  cold-start-benchmark-tests:
+    needs: plan
+    runs-on: runnerhub
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Validate offline cold-start benchmark aggregation
+        run: python3 -m unittest discover -s tools -p 'test_runner_cold_start_benchmark.py'
 
   dashboard-regressions:
     needs: plan
