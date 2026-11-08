@@ -3,7 +3,7 @@
 package store
 
 import("context";"sync";"time";"github.com/eutelic/runnerhub/internal/agent";"github.com/eutelic/runnerhub/internal/core")
-type SQLite struct{mu sync.Mutex;hosts map[string]core.Host;pools map[string]core.RunnerPool;workers map[string]core.Worker;audit []core.AuditEvent;commands map[string]CommandRecord;operations map[string]Operation}
+type SQLite struct{mu sync.Mutex;hosts map[string]core.Host;pools map[string]core.RunnerPool;workers map[string]core.Worker;audit []core.AuditEvent;commands map[string]CommandRecord;operations map[string]Operation;providerDeleteSeen map[string]bool}
 func OpenSQLite(string)(*SQLite,error){return &SQLite{hosts:map[string]core.Host{},pools:map[string]core.RunnerPool{},workers:map[string]core.Worker{},commands:map[string]CommandRecord{},operations:map[string]Operation{}},nil}
 func(s *SQLite)Close()error{return nil}
 func(s *SQLite)UpsertHost(_ context.Context,v core.Host)error{s.mu.Lock();defer s.mu.Unlock();if old,ok:=s.hosts[v.ID];ok&&old.State==core.HostArchived{return ErrHostArchived};s.hosts[v.ID]=v;return nil}
@@ -21,3 +21,16 @@ func(s *SQLite)EnqueueCommand(_ context.Context,hostID string,c agent.Command)er
 func(s *SQLite)LeaseCommands(_ context.Context,hostID string,now,leaseUntil time.Time,limit int)([]agent.Command,error){s.mu.Lock();defer s.mu.Unlock();if limit<=0{limit=20};var out []agent.Command;for id,rec:=range s.commands{if len(out)>=limit||rec.HostID!=hostID||!rec.AckedAt.IsZero()||(!rec.LeaseUntil.IsZero()&&rec.LeaseUntil.After(now)){continue};rec.LeaseUntil=leaseUntil;rec.Attempts++;s.commands[id]=rec;out=append(out,rec.Command)};return out,nil}
 func(s *SQLite)GetCommand(_ context.Context,id string)(CommandRecord,error){s.mu.Lock();defer s.mu.Unlock();v,ok:=s.commands[id];if !ok{return CommandRecord{},ErrNotFound};return v,nil}
 func(s *SQLite)AckCommand(_ context.Context,id string,at time.Time)error{s.mu.Lock();defer s.mu.Unlock();v,ok:=s.commands[id];if !ok{return ErrNotFound};if v.AckedAt.IsZero(){v.AckedAt=at;v.LeaseUntil=time.Time{};v.Command.Spec=nil;v.Command.Handle=nil;s.commands[id]=v};return nil}
+
+// RecordProviderDeleteResult mirrors SQLite's atomic replay guard for local tests.
+func (s *SQLite) RecordProviderDeleteResult(_ context.Context, commandID, hostID, workerID string, event core.AuditEvent) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rec, ok := s.commands[commandID]
+	if !ok || rec.HostID != hostID || rec.Command.WorkerID != workerID || rec.Command.Type != agent.CommandDelete { return false, nil }
+	if s.providerDeleteSeen == nil { s.providerDeleteSeen = make(map[string]bool) }
+	if s.providerDeleteSeen[commandID] { return false, nil }
+	s.providerDeleteSeen[commandID] = true
+	s.audit = append(s.audit,event)
+	return true, nil
+}

@@ -62,6 +62,9 @@ type CommandResult struct {
 	OK        bool                   `json:"ok"`
 	Handle    *provider.WorkerHandle `json:"handle,omitempty"`
 	State     *provider.WorkerState  `json:"state,omitempty"`
+// ProviderDeleteDurationNanos measures the agent-side provider Delete call only.
+	// Zero means unavailable (for example, an older agent); it does not imply success.
+	ProviderDeleteDurationNanos int64 `json:"providerDeleteDurationNanos,omitempty"`
 	SafeError string                 `json:"safeError,omitempty"`
 	At        time.Time              `json:"at"`
 }

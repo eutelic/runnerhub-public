@@ -18,6 +18,13 @@ type Snapshot struct {
 	LifecycleFailure uint64        `json:"lifecycleFailure"`
 	ProvisionTotal   time.Duration `json:"provisionTotal"`
 	CleanupTotal     time.Duration `json:"cleanupTotal"`
+	// ProviderDelete* are process-local counts of authenticated agent command
+	// results; they do not independently prove physical Docker resource reclamation.
+	ProviderDeleteAttempts uint64 `json:"providerDeleteAttempts"`
+	ProviderDeleteFailures uint64 `json:"providerDeleteFailures"`
+	ProviderDeleteMeasured uint64 `json:"providerDeleteMeasured"`
+	ProviderDeleteDurationTotal time.Duration `json:"providerDeleteDurationTotal"`
+	Scope string `json:"scope"`
 	QueueSamples     uint64        `json:"queueSamples"`
 	QueueTotal       time.Duration `json:"queueTotal"`
 }
@@ -50,6 +57,22 @@ func (m *Metrics) Lifecycle(ok bool, provision, cleanup time.Duration) {
 	}
 	m.s.ProvisionTotal += provision
 	m.s.CleanupTotal += cleanup
+}
+
+// ProviderDeletion records one accepted agent-side provider delete result.
+// Duration is optional because older agents do not report it. The count and
+// latency describe command outcomes, not host-volume ownership or reclamation.
+func (m *Metrics) ProviderDeletion(ok bool, duration time.Duration) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.s.ProviderDeleteAttempts++
+	if !ok {
+		m.s.ProviderDeleteFailures++
+	}
+	if duration > 0 && duration <= 24*time.Hour {
+		m.s.ProviderDeleteMeasured++
+		m.s.ProviderDeleteDurationTotal += duration
+	}
 }
 
 func (m *Metrics) Queue(poolID string, d time.Duration) {
@@ -85,7 +108,9 @@ func (m *Metrics) Queue(poolID string, d time.Duration) {
 func (m *Metrics) Snapshot() Snapshot {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return m.s
+	out := m.s
+	out.Scope = "process-local-volatile"
+	return out
 }
 
 func (m *Metrics) PoolSnapshot(poolID string) PoolSnapshot {

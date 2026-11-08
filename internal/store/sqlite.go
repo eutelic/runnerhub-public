@@ -17,6 +17,8 @@ CREATE INDEX IF NOT EXISTS idx_workers_non_deleted ON workers(updated_at DESC,id
 CREATE INDEX IF NOT EXISTS idx_workers_scale_identity ON workers(json_extract(data,'$.poolId'),json_extract(data,'$.runnerName')) WHERE COALESCE(json_extract(data,'$.runnerName'),'') != '';
 CREATE INDEX IF NOT EXISTS idx_workers_ci_candidates ON workers(julianday(CASE WHEN COALESCE(json_extract(data,'$.completedAt'),'') NOT IN ('','0001-01-01T00:00:00Z') THEN json_extract(data,'$.completedAt') ELSE json_extract(data,'$.failedAt') END)) WHERE COALESCE(json_extract(data,'$.repository'),'') != '' AND CAST(COALESCE(json_extract(data,'$.workflowRunId'),0) AS INTEGER)>0 AND COALESCE(json_extract(data,'$.startedAt'),'') != '' AND (CASE WHEN COALESCE(json_extract(data,'$.completedAt'),'') NOT IN ('','0001-01-01T00:00:00Z') THEN json_extract(data,'$.completedAt') ELSE json_extract(data,'$.failedAt') END) != '';
 CREATE TABLE IF NOT EXISTS audit_events(id INTEGER PRIMARY KEY AUTOINCREMENT, actor TEXT NOT NULL, action TEXT NOT NULL, resource_type TEXT NOT NULL, resource_id TEXT NOT NULL, result TEXT NOT NULL, safe_detail TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL);
+-- Retain command IDs for durable, exactly-once result observation across retries/restarts.
+CREATE TABLE IF NOT EXISTS provider_delete_results(command_id TEXT PRIMARY KEY, observed_at TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS idx_audit_created_at ON audit_events(created_at DESC);
 CREATE TABLE IF NOT EXISTS agent_commands(id TEXT PRIMARY KEY, host_id TEXT NOT NULL, worker_id TEXT NOT NULL, command_type TEXT NOT NULL, payload BLOB NOT NULL, created_at TEXT NOT NULL, lease_until TEXT, attempts INTEGER NOT NULL DEFAULT 0, acked_at TEXT);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_commands_active_semantic ON agent_commands(host_id, worker_id, command_type) WHERE acked_at IS NULL;
@@ -70,3 +72,26 @@ func(s *SQLite)EnqueueCommand(ctx context.Context,hostID string,c agent.Command)
 func(s *SQLite)LeaseCommands(ctx context.Context,hostID string,now,leaseUntil time.Time,limit int)([]agent.Command,error){if limit<=0||limit>100{limit=20};tx,err:=s.db.BeginTx(ctx,nil);if err!=nil{return nil,err};defer tx.Rollback();rows,err:=tx.QueryContext(ctx,`SELECT id,payload FROM agent_commands WHERE host_id=? AND acked_at IS NULL AND (lease_until IS NULL OR lease_until<=?) ORDER BY created_at,id LIMIT ?`,hostID,now.UTC().Format(time.RFC3339Nano),limit);if err!=nil{return nil,err};type leased struct{id string;cmd agent.Command};var got []leased;for rows.Next(){var id string;var payload []byte;if err:=rows.Scan(&id,&payload);err!=nil{rows.Close();return nil,err};var c agent.Command;if err:=json.Unmarshal(payload,&c);err!=nil{rows.Close();return nil,err};got=append(got,leased{id:id,cmd:c})};if err:=rows.Close();err!=nil{return nil,err};if err:=rows.Err();err!=nil{return nil,err};for _,item:=range got{if _,err:=tx.ExecContext(ctx,`UPDATE agent_commands SET lease_until=?,attempts=attempts+1 WHERE id=? AND acked_at IS NULL`,leaseUntil.UTC().Format(time.RFC3339Nano),item.id);err!=nil{return nil,err}};if err:=tx.Commit();err!=nil{return nil,err};out:=make([]agent.Command,0,len(got));for _,item:=range got{out=append(out,item.cmd)};return out,nil}
 func(s *SQLite)GetCommand(ctx context.Context,id string)(CommandRecord,error){var hostID,workerID,typ string;var payload []byte;var lease,ack sql.NullString;var attempts int;err:=s.db.QueryRowContext(ctx,`SELECT host_id,worker_id,command_type,payload,lease_until,attempts,acked_at FROM agent_commands WHERE id=?`,id).Scan(&hostID,&workerID,&typ,&payload,&lease,&attempts,&ack);if errors.Is(err,sql.ErrNoRows){return CommandRecord{},ErrNotFound};if err!=nil{return CommandRecord{},err};c:=agent.Command{ID:id,WorkerID:workerID,Type:agent.CommandType(typ)};if len(payload)>0{var stored agent.Command;if json.Unmarshal(payload,&stored)==nil{c=stored;c.ID=id;c.WorkerID=workerID;c.Type=agent.CommandType(typ)}};rec:=CommandRecord{HostID:hostID,Command:c,Attempts:attempts};if lease.Valid{rec.LeaseUntil,_=time.Parse(time.RFC3339Nano,lease.String)};if ack.Valid{rec.AckedAt,_=time.Parse(time.RFC3339Nano,ack.String)};return rec,nil}
 func(s *SQLite)AckCommand(ctx context.Context,id string,at time.Time)error{stamp:=at.UTC().Format(time.RFC3339Nano);res,err:=s.db.ExecContext(ctx,`UPDATE agent_commands SET acked_at=?,lease_until=NULL,payload='{}' WHERE id=? AND acked_at IS NULL`,stamp,id);if err!=nil{return err};n,err:=res.RowsAffected();if err!=nil{return err};if n==0{var ack sql.NullString;err:=s.db.QueryRowContext(ctx,"SELECT acked_at FROM agent_commands WHERE id=?",id).Scan(&ack);if errors.Is(err,sql.ErrNoRows){return ErrNotFound};if err!=nil{return err}};cutoff:=at.Add(-24*time.Hour).UTC().Format(time.RFC3339Nano);_,_=s.db.ExecContext(ctx,`DELETE FROM agent_commands WHERE acked_at IS NOT NULL AND acked_at<?`,cutoff);return nil}
+
+// RecordProviderDeleteResult claims a delete command exactly once and inserts
+// its audit event in the same SQLite transaction. A post-callback ACK failure
+// cannot create duplicate audit evidence on redelivery.
+func (s *SQLite) RecordProviderDeleteResult(ctx context.Context, commandID, hostID, workerID string, event core.AuditEvent) (bool, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil { return false, err }
+	defer tx.Rollback()
+	at := time.Now().UTC()
+	res, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO provider_delete_results(command_id,observed_at)
+SELECT id,? FROM agent_commands WHERE id=? AND host_id=? AND worker_id=? AND command_type=?`, at.Format(time.RFC3339Nano), commandID, hostID, workerID, string(agent.CommandDelete))
+	if err != nil { return false, err }
+	inserted, err := res.RowsAffected()
+	if err != nil { return false, err }
+	if inserted == 0 { return false, nil }
+	if event.CreatedAt.IsZero() { event.CreatedAt = at }
+	_, err = tx.ExecContext(ctx,
+		`INSERT INTO audit_events(actor,action,resource_type,resource_id,result,safe_detail,created_at) VALUES(?,?,?,?,?,?,?)`,
+		event.Actor,event.Action,event.ResourceType,event.ResourceID,event.Result,event.SafeDetail,event.CreatedAt.UTC().Format(time.RFC3339Nano))
+	if err != nil { return false, err }
+	if err := tx.Commit(); err != nil { return false, err }
+	return true, nil
+}

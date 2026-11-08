@@ -52,6 +52,13 @@ type MaintenanceStore interface {
  SetMaintenance(context.Context,MaintenanceState) error
 }
 
+// ProviderDeleteResultRecorder atomically records the first authenticated
+// deletion command result and its audit event. Replayed callbacks return false.
+// It is deliberately optional for store wrappers that do not persist agent results.
+type ProviderDeleteResultRecorder interface {
+	RecordProviderDeleteResult(context.Context, string, string, string, core.AuditEvent) (bool, error)
+}
+
 type Store interface {
 	UpsertHost(context.Context, core.Host) error
 	GetHost(context.Context, string) (core.Host, error)

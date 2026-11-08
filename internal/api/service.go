@@ -428,6 +428,7 @@ func(s *Service)HandleAgentResult(ctx context.Context,hostID string,res agent.Co
 		wk.FailedAt=now
 		_=s.Store.AppendAudit(ctx,core.AuditEvent{Actor:"agent:"+hostID,Action:"command_result",ResourceType:"worker",ResourceID:wk.ID,Result:"error",SafeDetail:wk.FailureReason})
 		if err:=s.Store.UpsertWorker(ctx,wk);err!=nil{return err}
+		if err:=s.recordProviderDeleteResult(ctx,hostID,res);err!=nil{return err}
 		return s.enqueueTerminalCleanup(ctx,&wk)
 	}
 	if res.Handle!=nil{
@@ -466,7 +467,36 @@ func(s *Service)HandleAgentResult(ctx context.Context,hostID string,res agent.Co
 	}
 	if res.Handle==nil&&res.State==nil&&wk.State==core.WorkerCleanupPending{wk.State=core.WorkerDeleted;wk.ProviderHandle=""}
 	if err:=s.Store.UpsertWorker(ctx,wk);err!=nil{return err}
+	if err:=s.recordProviderDeleteResult(ctx,hostID,res);err!=nil{return err}
 	if terminal{_ = s.maybeAutoTunePool(ctx,wk.PoolID);return s.enqueueTerminalCleanup(ctx,&wk)}
+	return nil
+}
+// recordProviderDeleteResult captures an authenticated agent's response to a
+// durable delete command. It does not claim independent Docker volume or
+// filesystem reclamation; production acceptance still requires host inventories.
+// recordProviderDeleteResult captures authenticated agent acknowledgements of
+// provider Delete calls, not independent evidence of disk/volume reclamation.
+// Durably claim the command before updating process-local counters: a callback
+// replay after an ACK failure must not inflate metrics or duplicate audit rows.
+func(s *Service)recordProviderDeleteResult(ctx context.Context,hostID string,res agent.CommandResult)error{
+	if s.Store==nil||res.CommandID==""{return nil}
+	rec,err:=s.Store.GetCommand(ctx,res.CommandID)
+	if err!=nil||rec.Command.Type!=agent.CommandDelete||rec.HostID!=hostID||rec.Command.WorkerID!=res.WorkerID{return nil}
+	recorder,ok:=s.Store.(store.ProviderDeleteResultRecorder)
+	if !ok{return errors.New("provider deletion audit requires an idempotent recorder")}
+	result:="agent_reported_failure"
+	if res.OK{result="agent_reported_success"}
+	durationNanos:=res.ProviderDeleteDurationNanos
+	if durationNanos<=0||durationNanos>int64(24*time.Hour){durationNanos=0}
+	detail:="provider delete result; command_id="+res.CommandID+"; duration unavailable from agent"
+	if durationNanos>0{
+		detail=fmt.Sprintf("provider delete result; command_id=%s; agent_duration_ns=%d",res.CommandID,durationNanos)
+	}
+	inserted,err:=recorder.RecordProviderDeleteResult(ctx,res.CommandID,hostID,res.WorkerID,core.AuditEvent{
+		Actor:"agent:"+hostID,Action:"provider_delete_result",ResourceType:"worker",ResourceID:res.WorkerID,Result:result,SafeDetail:detail,
+	})
+	if err!=nil{return err}
+	if inserted&&s.Metrics!=nil{s.Metrics.ProviderDeletion(res.OK,time.Duration(durationNanos))}
 	return nil
 }
 func successfulJobResult(result string)bool{
