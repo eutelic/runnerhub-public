@@ -536,6 +536,28 @@ func (s *scaler) Scale(ctx context.Context, message *scaleset.RunnerScaleSetMess
 	return nil
 }
 
+// desiredRunnerTarget bounds warm capacity before adding assigned jobs.
+// Avoid integer overflow when GitHub reports an unexpectedly large count,
+// and never let malformed negative counts reduce the configured warm floor.
+func desiredRunnerTarget(minIdle, maxRunners, assigned int) int {
+	if maxRunners <= 0 {
+		return 0
+	}
+	if minIdle < 0 {
+		minIdle = 0
+	}
+	if minIdle > maxRunners {
+		minIdle = maxRunners
+	}
+	if assigned < 0 {
+		assigned = 0
+	}
+	if assigned >= maxRunners-minIdle {
+		return maxRunners
+	}
+	return minIdle + assigned
+}
+
 func (s *scaler) HandleDesiredRunnerCount(ctx context.Context, count int) (int, error) {
 	// RunnerHub independently reconciles failed/disappeared provider workers. Re-read
 	// active state on every desired-count delivery so a runner that died before job
@@ -544,7 +566,7 @@ func (s *scaler) HandleDesiredRunnerCount(ctx context.Context, count int) (int, 
 		return s.count(), fmt.Errorf("refresh RunnerHub active workers: %w", err)
 	}
 
-	target := min(s.max, s.min+count)
+	target := desiredRunnerTarget(s.min, s.max, count)
 	for s.count() < target {
 		hasCapacity, reasons, err := s.hub.poolHasCapacity(ctx)
 		if err != nil {
