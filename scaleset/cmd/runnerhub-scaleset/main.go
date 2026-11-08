@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -720,6 +721,8 @@ func listenerRecoveryStatus(retry listenerRetryState, at time.Time) string {
 		retry.attempt, elapsed.Round(time.Second), at.UTC().Format(time.RFC3339))
 }
 
+var http409Token = regexp.MustCompile(`(?:^|[^a-z0-9])(?:(?:http(?:/[^ ]+)?[ :]+|status(?: code)?[ :=]+|response[ :]+)409|409[ :]+conflict)(?:[^0-9]|$)`)
+
 func listenerFailureSummary(err error) string {
 	if err == nil {
 		return ""
@@ -730,7 +733,7 @@ func listenerFailureSummary(err error) string {
 	switch {
 	case strings.Contains(message, "scale-set worker not found"):
 		return "scale-set worker not found (404)"
-	case strings.Contains(message, "409") || strings.Contains(message, "conflict"):
+	case http409Token.MatchString(message) || strings.Contains(message, "message session conflict") || strings.Contains(message, "message-session conflict"):
 		return "GitHub message session conflict (409)"
 	case strings.Contains(message, "429"):
 		return "upstream rate limited (429)"

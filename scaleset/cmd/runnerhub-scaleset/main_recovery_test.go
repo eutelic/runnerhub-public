@@ -55,3 +55,28 @@ func TestBlockedSessionCloseStatusNeverPersistsUpstreamSecrets(t *testing.T) {
 		t.Fatalf("raw upstream error was not classified safely: %q", classified)
 	}
 }
+
+func TestListenerFailureSummaryDoesNotInventSessionConflict(t *testing.T) {
+	cases := []struct {
+		err  string
+		want string
+	}{
+		{"409 Conflict opening message session", "GitHub message session conflict (409)"},
+		{"message-session conflict during reconnect", "GitHub message session conflict (409)"},
+		{"capacity reservation conflict", "listener operation failed (details withheld)"},
+		{"retry attempt 4096 failed", "listener operation failed (details withheld)"},
+		{"worker 1409 unavailable", "listener operation failed (details withheld)"},
+		{"worker 409 unavailable", "listener operation failed (details withheld)"},
+		{"retry #409 failed", "listener operation failed (details withheld)"},
+		{"status code 409: conflict", "GitHub message session conflict (409)"},
+		{"HTTP/2 409 Conflict", "GitHub message session conflict (409)"},
+		{"HTTP 409: message session unavailable", "GitHub message session conflict (409)"},
+		{"configuration conflict with existing runner", "listener operation failed (details withheld)"},
+		{"403 Conflict authorization denied", "upstream authorization denied (403)"},
+	}
+	for _, tc := range cases {
+		if got := listenerFailureSummary(errors.New(tc.err)); got != tc.want {
+			t.Errorf("failure %q classified as %q; want %q", tc.err, got, tc.want)
+		}
+	}
+}
