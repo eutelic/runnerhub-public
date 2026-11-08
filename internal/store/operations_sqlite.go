@@ -26,7 +26,9 @@ CREATE UNIQUE INDEX IF NOT EXISTS operations_one_active_target
 	ON operations(kind,target) WHERE state IN ('queued','working','waiting');
 CREATE INDEX IF NOT EXISTS operations_recent ON operations(updated_at DESC);
 `)
-	if err != nil { return err }
+	if err != nil {
+		return err
+	}
 	return s.markInterruptedOnStartup(ctx)
 }
 
@@ -34,31 +36,46 @@ CREATE INDEX IF NOT EXISTS operations_recent ON operations(updated_at DESC);
 // Recovered operations cannot truthfully remain "working"; their remote
 // outcome must be checked before another enrollment is attempted.
 func (s *SQLite) markInterruptedOnStartup(ctx context.Context) error {
-	rows, err := s.db.QueryContext(ctx,`SELECT data FROM operations WHERE state IN ('queued','working','waiting')`)
-	if err != nil { return err }
-	var active []Operation
-	for rows.Next(){
-		var raw []byte
-		if err:=rows.Scan(&raw);err!=nil{rows.Close();return err}
-		var op Operation
-		if err:=json.Unmarshal(raw,&op);err!=nil{rows.Close();return err}
-		active=append(active,op)
+	rows, err := s.db.QueryContext(ctx, `SELECT data FROM operations WHERE state IN ('queued','working','waiting')`)
+	if err != nil {
+		return err
 	}
-	if err:=rows.Err();err!=nil{rows.Close();return err}
+	var active []Operation
+	for rows.Next() {
+		var raw []byte
+		if err := rows.Scan(&raw); err != nil {
+			rows.Close()
+			return err
+		}
+		var op Operation
+		if err := json.Unmarshal(raw, &op); err != nil {
+			rows.Close()
+			return err
+		}
+		active = append(active, op)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
 	rows.Close()
-	for _,op:=range active {
-		now:=time.Now().UTC()
-		op.State="unknown"
-		op.Step="server-restarted"
-		op.Detail="The control plane restarted during enrollment. Verify the remote agent before retrying."
-		op.UpdatedAt=now
-		op.EndedAt=&now
-		op.Events=append(op.Events,OperationEvent{State:"unknown",Step:op.Step,At:now})
-		raw,err:=json.Marshal(op)
-		if err!=nil{return err}
-		_,err=s.db.ExecContext(ctx,`UPDATE operations SET state='unknown',data=?,updated_at=? WHERE id=? AND state IN ('queued','working','waiting')`,
-			raw,now.Format(time.RFC3339Nano),op.ID)
-		if err!=nil{return err}
+	for _, op := range active {
+		now := time.Now().UTC()
+		op.State = "unknown"
+		op.Step = "server-restarted"
+		op.Detail = "The control plane restarted during enrollment. Verify the remote agent before retrying."
+		op.UpdatedAt = now
+		op.EndedAt = &now
+		op.Events = append(op.Events, OperationEvent{State: "unknown", Step: op.Step, At: now})
+		raw, err := json.Marshal(op)
+		if err != nil {
+			return err
+		}
+		_, err = s.db.ExecContext(ctx, `UPDATE operations SET state='unknown',data=?,updated_at=? WHERE id=? AND state IN ('queued','working','waiting')`,
+			raw, now.Format(time.RFC3339Nano), op.ID)
+		if err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -99,7 +116,7 @@ func (s *SQLite) expireInterruptedOperations(ctx context.Context) error {
 		now := time.Now().UTC()
 		op.UpdatedAt = now
 		op.EndedAt = &now
-		op.Events = append(op.Events, OperationEvent{State:op.State, Step:op.Step, At:now})
+		op.Events = append(op.Events, OperationEvent{State: op.State, Step: op.Step, At: now})
 		raw, err := json.Marshal(op)
 		if err != nil {
 			return err

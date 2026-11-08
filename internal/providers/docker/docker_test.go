@@ -564,12 +564,12 @@ func TestJITBindMountFileIsReadableByNonRootRunner(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := p.Create(context.Background(), provider.WorkerSpec{
-		WorkerID: "w1",
-		PoolID: "p1",
+		WorkerID:   "w1",
+		PoolID:     "p1",
 		RunnerName: "r1",
-		JITConfig: "secret",
-		Image: "img",
-		Isolation: core.IsolationContainerTrusted,
+		JITConfig:  "secret",
+		Image:      "img",
+		Isolation:  core.IsolationContainerTrusted,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -658,7 +658,6 @@ func TestSanitizeDiagnosticsStopsBeforeWorkflowOutput(t *testing.T) {
 	}
 }
 
-
 func TestInspectReportsCombinedRunnerAndDinDUsage(t *testing.T) {
 	f := &fakeRunner{fn: func(_ string, a ...string) (string, error) {
 		joined := strings.Join(a, " ")
@@ -698,8 +697,8 @@ func TestParseDockerBytes(t *testing.T) {
 	tests := map[string]int64{
 		"512MiB": 512 << 20,
 		"1.5GiB": 3 << 29,
-		"250MB": 250000000,
-		"0B": 0,
+		"250MB":  250000000,
+		"0B":     0,
 	}
 	for input, want := range tests {
 		got, err := parseDockerBytes(input)
@@ -711,7 +710,6 @@ func TestParseDockerBytes(t *testing.T) {
 		}
 	}
 }
-
 
 func TestContainerUsageReportsAggregateAndPerContainerEnvelope(t *testing.T) {
 	f := &fakeRunner{fn: func(_ string, a ...string) (string, error) {
@@ -735,7 +733,6 @@ func TestContainerUsageReportsAggregateAndPerContainerEnvelope(t *testing.T) {
 		t.Fatalf("per-container envelope=%+v", usage)
 	}
 }
-
 
 func TestAggregateUsageReadsLogicalWorkerCgroup(t *testing.T) {
 	stateDir := t.TempDir()
@@ -837,7 +834,6 @@ func TestUnifiedCgroupPath(t *testing.T) {
 	}
 }
 
-
 func TestInspectFailsClosedWhenAggregateCgroupDisappears(t *testing.T) {
 	stateDir := t.TempDir()
 	cgroupRoot := t.TempDir()
@@ -898,9 +894,13 @@ func TestInspectRunnerExit143ReportsFailureForCanceledPublisherCleanup(t *testin
 		}
 	}}
 	p, err := newWithRunner(Config{StateDir: t.TempDir(), AllowedImages: []string{"img"}}, f)
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	state, err := p.Inspect(context.Background(), provider.WorkerHandle{ProviderID: "runner-143"})
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	if state.State != core.WorkerFailed || state.ExitCode == nil || *state.ExitCode != 143 {
 		t.Fatalf("runner exit state=%+v, want failed with exit 143", state)
 	}
@@ -908,4 +908,3 @@ func TestInspectRunnerExit143ReportsFailureForCanceledPublisherCleanup(t *testin
 		t.Fatalf("safe detail=%q", state.SafeDetail)
 	}
 }
-

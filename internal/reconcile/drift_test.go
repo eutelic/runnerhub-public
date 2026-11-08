@@ -24,7 +24,6 @@ func (missingGH) DeleteRunner(context.Context, core.GitHubScope, int64) error {
 	return githubrunner.ErrNotFound
 }
 
-
 type busyGH struct {
 	runner githubrunner.Runner
 }
@@ -154,7 +153,6 @@ func TestRegisteringRunnerGetsShortNotFoundGrace(t *testing.T) {
 	}
 }
 
-
 func TestRegisteringRunnerGraceUsesStableRegistrationStart(t *testing.T) {
 	ctx := context.Background()
 	st, err := store.OpenSQLite(":memory:")
@@ -188,7 +186,6 @@ func TestRegisteringRunnerGraceUsesStableRegistrationStart(t *testing.T) {
 		t.Fatalf("fresh UpdatedAt incorrectly extended registration grace, state=%s", got.State)
 	}
 }
-
 
 func TestBusyStartedRunnerMayDisappearFromGitHubBeforeProviderExit(t *testing.T) {
 	ctx := context.Background()

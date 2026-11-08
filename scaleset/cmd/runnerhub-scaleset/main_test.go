@@ -107,7 +107,7 @@ func TestSyncActiveWorkersDropsFailedAndRecoversLiveWorkers(t *testing.T) {
 			return
 		}
 		if got := r.URL.Query().Get("excludeDeleted"); got != "true" {
-			t.Fatalf("scale-set worker recovery did not request the indexed snapshot: %q",got)
+			t.Fatalf("scale-set worker recovery did not request the indexed snapshot: %q", got)
 		}
 		if got := r.Header.Get("Authorization"); got != "Bearer admin" {
 			t.Fatalf("authorization=%q", got)
@@ -470,7 +470,7 @@ func TestScaleSetClientConstructionDoesNotPanicOnCustomRetries(t *testing.T) {
 		t.Fatalf("generate test GitHub App key: %v", err)
 	}
 	privateKey := pem.EncodeToMemory(&pem.Block{
-		Type: "RSA PRIVATE KEY",
+		Type:  "RSA PRIVATE KEY",
 		Bytes: x509.MarshalPKCS1PrivateKey(key),
 	})
 	cfg := config{
@@ -545,7 +545,7 @@ func TestGitHubCooldownWaitRespectsCancellation(t *testing.T) {
 
 func TestListenerRetryStatusRetainsRootCause(t *testing.T) {
 	retry := listenerRetryState{
-		attempt: 3,
+		attempt:     3,
 		nextAttempt: time.Date(2026, 11, 4, 23, 22, 0, 0, time.UTC),
 		lastFailure: "handle started job: runnerhub /api/v1/scale-events returned 404: scale-set worker not found",
 	}
@@ -572,30 +572,29 @@ func TestListenerRetryStatusRetainsRootCause(t *testing.T) {
 	}
 }
 
-
 func TestScaleLateStartedJobDoesNotCrashListener(t *testing.T) {
 	tests := []struct {
-		name string
-		eventStatus int
-		workerStatus int
+		name          string
+		eventStatus   int
+		workerStatus  int
 		activeWorkers []workerResponse
-		wantError bool
-		wantLookup bool
-		wantTracked bool
+		wantError     bool
+		wantLookup    bool
+		wantTracked   bool
 	}{
 		{name: "stale missing worker", eventStatus: http.StatusNotFound, workerStatus: http.StatusOK, wantLookup: true},
 		{
-			name: "404 but worker still active",
-			eventStatus: http.StatusNotFound,
-			workerStatus: http.StatusOK,
+			name:          "404 but worker still active",
+			eventStatus:   http.StatusNotFound,
+			workerStatus:  http.StatusOK,
 			activeWorkers: []workerResponse{{ID: "live", PoolID: "pool-docker", RunnerName: "runner-1", State: "busy"}},
-			wantError: true, wantLookup: true, wantTracked: true,
+			wantError:     true, wantLookup: true, wantTracked: true,
 		},
 		{
-			name: "404 and lookup unavailable",
-			eventStatus: http.StatusNotFound,
+			name:         "404 and lookup unavailable",
+			eventStatus:  http.StatusNotFound,
 			workerStatus: http.StatusInternalServerError,
-			wantError: true, wantLookup: true, wantTracked: true,
+			wantError:    true, wantLookup: true, wantTracked: true,
 		},
 		{name: "non 404 error", eventStatus: http.StatusInternalServerError, wantError: true, wantTracked: true},
 		{name: "normal started job", eventStatus: http.StatusOK, wantTracked: true},
@@ -637,8 +636,8 @@ func TestScaleLateStartedJobDoesNotCrashListener(t *testing.T) {
 			}))
 			defer srv.Close()
 			sc := &scaler{
-				names: map[string]string{"runner-1": "old-worker"},
-				hub: runnerHubClient{base: srv.URL, poolID: "pool-docker", http: srv.Client()},
+				names:  map[string]string{"runner-1": "old-worker"},
+				hub:    runnerHubClient{base: srv.URL, poolID: "pool-docker", http: srv.Client()},
 				logger: slog.Default(),
 			}
 			message := &scaleset.RunnerScaleSetMessage{

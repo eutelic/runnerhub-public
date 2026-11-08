@@ -4,8 +4,8 @@ package machinebootstrap
 // service and Linux account. It never stops or replaces the existing
 // runnerhub-agent Docker container, preserving ordinary RunnerHub CI.
 func startAndroidNativeScript(req Request, token, tokenPath string) string {
-  return commonScript(req) + "\nTOKEN=" + shellQuote(token) + "\nTOKEN_PATH=" + shellQuote(tokenPath) + "\n" +
-`set -eu
+	return commonScript(req) + "\nTOKEN=" + shellQuote(token) + "\nTOKEN_PATH=" + shellQuote(tokenPath) + "\n" +
+		`set -eu
 NATIVE_USER=runnerhub-android
 NATIVE_HOME=/var/lib/runnerhub-android
 STATE_DIR="$NATIVE_HOME/state"
@@ -168,10 +168,10 @@ sudo_cmd systemctl enable --now "$SERVICE"
 echo "Native Android KVM agent started; awaiting its first verified RunnerHub heartbeat."`
 }
 func finalizeAndroidNativeScript(req Request, tokenPath string) string {
-  req.RegistryUsername=""
-  req.RegistryPassword=""
-  return commonScript(req) + "\nTOKEN_PATH=" + shellQuote(tokenPath) + "\n" +
-`set -eu
+	req.RegistryUsername = ""
+	req.RegistryPassword = ""
+	return commonScript(req) + "\nTOKEN_PATH=" + shellQuote(tokenPath) + "\n" +
+		`set -eu
 sudo_cmd systemctl is-active --quiet runnerhub-android-agent
 # Enrollment is one-time. The agent's saved rotating host credential is kept.
 sudo_cmd rm -f /var/lib/runnerhub-android/state/enrollment-token
@@ -179,20 +179,20 @@ rm -f "$TOKEN_PATH"
 echo "Native Android KVM host enrolled and short-lived token removed."`
 }
 func cleanupAndroidNativeScript(req Request, tokenPath string) string {
-  req.RegistryUsername=""
-  req.RegistryPassword=""
-  return commonScript(req) + "\nTOKEN_PATH=" + shellQuote(tokenPath) + "\n" +
-`set -eu
+	req.RegistryUsername = ""
+	req.RegistryPassword = ""
+	return commonScript(req) + "\nTOKEN_PATH=" + shellQuote(tokenPath) + "\n" +
+		`set -eu
 # Never stop an already running service on a failed retry: the installer
 # refuses active services before writing credentials.
 sudo_cmd rm -f /var/lib/runnerhub-android/state/enrollment-token
 rm -f "$TOKEN_PATH"`
 }
 func diagnosticsAndroidNativeScript(req Request) string {
-  req.RegistryUsername=""
-  req.RegistryPassword=""
-  return commonScript(req) + "\n" +
-`set -eu
+	req.RegistryUsername = ""
+	req.RegistryPassword = ""
+	return commonScript(req) + "\n" +
+		`set -eu
 if command -v systemctl >/dev/null 2>&1; then
   sudo_cmd systemctl --no-pager status runnerhub-android-agent 2>&1 || true
   sudo_cmd journalctl -u runnerhub-android-agent -n 30 --no-pager 2>&1 || true

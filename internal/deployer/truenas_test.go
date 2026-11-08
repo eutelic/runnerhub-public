@@ -115,57 +115,98 @@ func TestTrueNASRedeployWaitsForJobResponse(t *testing.T) {
 }
 
 func TestTrueNASImageRedeployUpdatesAndVerifiesDigest(t *testing.T) {
- image:="ghcr.io/eutelic/runnerhub-control@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
- up:=websocket.Upgrader{}
- applied:=false
- server:=httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter,r *http.Request){
-  conn,err:=up.Upgrade(w,r,nil);if err!=nil{t.Errorf("upgrade: %v",err);return}
-  defer conn.Close()
-  for i:=0;i<5;i++{
-   var req struct{ID uint64 `json:"id"`;Method string `json:"method"`;Params json.RawMessage `json:"params"`}
-   if err:=conn.ReadJSON(&req);err!=nil{t.Errorf("read: %v",err);return}
-   var result any
-   switch req.Method{
-    case "auth.login_ex":result=map[string]any{"response_type":"SUCCESS"}
-    case "app.get_instance":
-     if !strings.Contains(string(req.Params),"retrieve_config"){t.Errorf("expected retrieve_config option: %s",req.Params)}
-     current:="ghcr.io/eutelic/runnerhub-control:latest"
-     if applied{current=image}
-     var containerDetails []any
-     if applied{containerDetails=[]any{map[string]any{"service_name":"control","image":image}}}
-     result=map[string]any{
-      "name":"runnerhub","id":"runnerhub","state":"RUNNING","custom_app":true,
-      "config":map[string]any{"services":map[string]any{"control":map[string]any{"image":current,"ports":[]any{"8788:8080"}},"agent":map[string]any{"image":"ghcr.io/eutelic/runnerhub-agent:latest"}}},
-      "active_workloads":map[string]any{"container_details":containerDetails},
-     }
-    case "app.update":
-     if !strings.Contains(string(req.Params),image)||!strings.Contains(string(req.Params),"custom_compose_config"){t.Errorf("pinned config update not submitted: %s",req.Params)}
-     applied=true
-     result=map[string]any{"state":"RUNNING"}
-    default:t.Errorf("unexpected method %q",req.Method);return
-   }
-   if err:=conn.WriteJSON(map[string]any{"jsonrpc":"2.0","id":req.ID,"result":result});err!=nil{t.Errorf("write: %v",err);return}
-  }
- }))
- defer server.Close()
- client,err:=NewTrueNASClient(TrueNASConfig{Endpoint:"wss"+strings.TrimPrefix(server.URL,"https"),Username:"deployer",APIKey:"secret",InsecureSkipVerify:true})
- if err!=nil{t.Fatal(err)}
- ctx,cancel:=context.WithTimeout(context.Background(),5*time.Second);defer cancel()
- if err:=client.RedeployImageAndWait(ctx,"runnerhub",image);err!=nil{t.Fatal(err)}
+	image := "ghcr.io/eutelic/runnerhub-control@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	up := websocket.Upgrader{}
+	applied := false
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := up.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade: %v", err)
+			return
+		}
+		defer conn.Close()
+		for i := 0; i < 5; i++ {
+			var req struct {
+				ID     uint64          `json:"id"`
+				Method string          `json:"method"`
+				Params json.RawMessage `json:"params"`
+			}
+			if err := conn.ReadJSON(&req); err != nil {
+				t.Errorf("read: %v", err)
+				return
+			}
+			var result any
+			switch req.Method {
+			case "auth.login_ex":
+				result = map[string]any{"response_type": "SUCCESS"}
+			case "app.get_instance":
+				if !strings.Contains(string(req.Params), "retrieve_config") {
+					t.Errorf("expected retrieve_config option: %s", req.Params)
+				}
+				current := "ghcr.io/eutelic/runnerhub-control:latest"
+				if applied {
+					current = image
+				}
+				var containerDetails []any
+				if applied {
+					containerDetails = []any{map[string]any{"service_name": "control", "image": image}}
+				}
+				result = map[string]any{
+					"name": "runnerhub", "id": "runnerhub", "state": "RUNNING", "custom_app": true,
+					"config":           map[string]any{"services": map[string]any{"control": map[string]any{"image": current, "ports": []any{"8788:8080"}}, "agent": map[string]any{"image": "ghcr.io/eutelic/runnerhub-agent:latest"}}},
+					"active_workloads": map[string]any{"container_details": containerDetails},
+				}
+			case "app.update":
+				if !strings.Contains(string(req.Params), image) || !strings.Contains(string(req.Params), "custom_compose_config") {
+					t.Errorf("pinned config update not submitted: %s", req.Params)
+				}
+				applied = true
+				result = map[string]any{"state": "RUNNING"}
+			default:
+				t.Errorf("unexpected method %q", req.Method)
+				return
+			}
+			if err := conn.WriteJSON(map[string]any{"jsonrpc": "2.0", "id": req.ID, "result": result}); err != nil {
+				t.Errorf("write: %v", err)
+				return
+			}
+		}
+	}))
+	defer server.Close()
+	client, err := NewTrueNASClient(TrueNASConfig{Endpoint: "wss" + strings.TrimPrefix(server.URL, "https"), Username: "deployer", APIKey: "secret", InsecureSkipVerify: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := client.RedeployImageAndWait(ctx, "runnerhub", image); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestPinRunnerHubComposeConfigPreservesOtherServices(t *testing.T) {
- image:="ghcr.io/eutelic/runnerhub-control@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
- before:=map[string]any{"services":map[string]any{
-  "control":map[string]any{"image":"ghcr.io/eutelic/runnerhub-control:latest","volumes":[]any{"/mnt/data:/data"}},
-  "agent":map[string]any{"image":"ghcr.io/eutelic/runnerhub-agent:latest"},
- },"x-runnerhub-images":map[string]any{"control":"ghcr.io/eutelic/runnerhub-control:latest"}}
- updated,err:=pinRunnerHubComposeConfig(before,image);if err!=nil{t.Fatal(err)}
- services:=updated["services"].(map[string]any)
- if services["control"].(map[string]any)["image"]!=image{t.Fatal("control image not pinned")}
- if services["agent"].(map[string]any)["image"]!="ghcr.io/eutelic/runnerhub-agent:latest"{t.Fatal("unrelated service changed")}
- if before["services"].(map[string]any)["control"].(map[string]any)["image"]==image{t.Fatal("mutated the original config")}
- if updated["x-runnerhub-images"].(map[string]any)["control"]!=image{t.Fatal("control extension not pinned")}
+	image := "ghcr.io/eutelic/runnerhub-control@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	before := map[string]any{"services": map[string]any{
+		"control": map[string]any{"image": "ghcr.io/eutelic/runnerhub-control:latest", "volumes": []any{"/mnt/data:/data"}},
+		"agent":   map[string]any{"image": "ghcr.io/eutelic/runnerhub-agent:latest"},
+	}, "x-runnerhub-images": map[string]any{"control": "ghcr.io/eutelic/runnerhub-control:latest"}}
+	updated, err := pinRunnerHubComposeConfig(before, image)
+	if err != nil {
+		t.Fatal(err)
+	}
+	services := updated["services"].(map[string]any)
+	if services["control"].(map[string]any)["image"] != image {
+		t.Fatal("control image not pinned")
+	}
+	if services["agent"].(map[string]any)["image"] != "ghcr.io/eutelic/runnerhub-agent:latest" {
+		t.Fatal("unrelated service changed")
+	}
+	if before["services"].(map[string]any)["control"].(map[string]any)["image"] == image {
+		t.Fatal("mutated the original config")
+	}
+	if updated["x-runnerhub-images"].(map[string]any)["control"] != image {
+		t.Fatal("control extension not pinned")
+	}
 }
 
 func TestTrueNASFindAppMountPrefersControlDataBind(t *testing.T) {
@@ -376,7 +417,9 @@ func TestTrueNASInstallWaitsForDelayedAppRegistration(t *testing.T) {
 		Endpoint: "wss" + strings.TrimPrefix(server.URL, "https"),
 		Username: "deployer", APIKey: "secret", InsecureSkipVerify: true,
 	})
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	client.appPollInterval = time.Millisecond
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
@@ -393,24 +436,35 @@ func TestTrueNASInstallTimeoutRetainsPendingClassification(t *testing.T) {
 	upgrader := websocket.Upgrader{}
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		conn, err := upgrader.Upgrade(w, r, nil)
-		if err != nil { t.Errorf("upgrade: %v", err); return }
+		if err != nil {
+			t.Errorf("upgrade: %v", err)
+			return
+		}
 		defer conn.Close()
 		for {
 			var req struct {
-				ID uint64 `json:"id"`
+				ID     uint64 `json:"id"`
 				Method string `json:"method"`
 			}
-			if err := conn.ReadJSON(&req); err != nil { return }
+			if err := conn.ReadJSON(&req); err != nil {
+				return
+			}
 			var result any
 			switch req.Method {
-			case "auth.login_ex": result = map[string]any{"response_type": "SUCCESS"}
+			case "auth.login_ex":
+				result = map[string]any{"response_type": "SUCCESS"}
 			case "app.query":
 				queries.Add(1)
 				result = []any{} // TrueNAS has not yet registered its async app
-			case "app.create": result = nil
-			default: t.Errorf("unexpected method: %s", req.Method); return
+			case "app.create":
+				result = nil
+			default:
+				t.Errorf("unexpected method: %s", req.Method)
+				return
 			}
-			if err := conn.WriteJSON(map[string]any{"jsonrpc": "2.0", "id": req.ID, "result": result}); err != nil { return }
+			if err := conn.WriteJSON(map[string]any{"jsonrpc": "2.0", "id": req.ID, "result": result}); err != nil {
+				return
+			}
 		}
 	}))
 	defer server.Close()
@@ -418,7 +472,9 @@ func TestTrueNASInstallTimeoutRetainsPendingClassification(t *testing.T) {
 		Endpoint: "wss" + strings.TrimPrefix(server.URL, "https"),
 		Username: "deployer", APIKey: "secret", InsecureSkipVerify: true,
 	})
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	client.appPollInterval = time.Millisecond
 	client.appWaitTimeout = 30 * time.Millisecond
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
@@ -432,64 +488,96 @@ func TestTrueNASInstallTimeoutRetainsPendingClassification(t *testing.T) {
 	}
 }
 
-
 func TestTrueNASImmutableImagePreflightRequiresFullAdmin(t *testing.T) {
- for _,tc:=range []struct{name string;roles []string;allow bool}{
-  {"apps-write-only",[]string{"APPS_READ","APPS_WRITE"},false},
-  {"full-admin",[]string{"FULL_ADMIN"},true},
- }{
-  t.Run(tc.name,func(t *testing.T){
-   up:=websocket.Upgrader{}
-   server:=httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter,r *http.Request){
-    conn,err:=up.Upgrade(w,r,nil);if err!=nil{t.Error(err);return}
-    defer conn.Close()
-    for {
-     var req struct{ID uint64 `json:"id"`;Method string `json:"method"`}
-     if err:=conn.ReadJSON(&req);err!=nil{return}
-     var out any
-     switch req.Method {
-     case "auth.login_ex":out=map[string]any{"response_type":"SUCCESS"}
-     case "auth.me":out=map[string]any{"roles":tc.roles}
-     case "app.get_instance":
-      out=map[string]any{"id":"runnerhub","name":"runnerhub","state":"RUNNING","custom_app":true,
-       "config":map[string]any{"services":map[string]any{
-        "control":map[string]any{"image":"ghcr.io/eutelic/runnerhub-control:latest"},
-       }},
-      }
-     default:t.Errorf("preflight made unexpected mutation or API call %q",req.Method);return
-     }
-     _=conn.WriteJSON(map[string]any{"jsonrpc":"2.0","id":req.ID,"result":out})
-    }
-   }))
-   defer server.Close()
-   client,err:=NewTrueNASClient(TrueNASConfig{Endpoint:"wss"+strings.TrimPrefix(server.URL,"https"),Username:"deployer",APIKey:"secret",InsecureSkipVerify:true})
-   if err!=nil{t.Fatal(err)}
-   ctx,cancel:=context.WithTimeout(context.Background(),5*time.Second);defer cancel()
-   image:="ghcr.io/eutelic/runnerhub-control@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-   err=client.VerifyImmutableImageUpdate(ctx,"runnerhub",image)
-   if tc.allow&&err!=nil{t.Fatal(err)}
-   if !tc.allow&&(err==nil||!strings.Contains(err.Error(),"FULL_ADMIN")){t.Fatalf("expected role denial before pause; got %v",err)}
-  })
- }
+	for _, tc := range []struct {
+		name  string
+		roles []string
+		allow bool
+	}{
+		{"apps-write-only", []string{"APPS_READ", "APPS_WRITE"}, false},
+		{"full-admin", []string{"FULL_ADMIN"}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			up := websocket.Upgrader{}
+			server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				conn, err := up.Upgrade(w, r, nil)
+				if err != nil {
+					t.Error(err)
+					return
+				}
+				defer conn.Close()
+				for {
+					var req struct {
+						ID     uint64 `json:"id"`
+						Method string `json:"method"`
+					}
+					if err := conn.ReadJSON(&req); err != nil {
+						return
+					}
+					var out any
+					switch req.Method {
+					case "auth.login_ex":
+						out = map[string]any{"response_type": "SUCCESS"}
+					case "auth.me":
+						out = map[string]any{"roles": tc.roles}
+					case "app.get_instance":
+						out = map[string]any{"id": "runnerhub", "name": "runnerhub", "state": "RUNNING", "custom_app": true,
+							"config": map[string]any{"services": map[string]any{
+								"control": map[string]any{"image": "ghcr.io/eutelic/runnerhub-control:latest"},
+							}},
+						}
+					default:
+						t.Errorf("preflight made unexpected mutation or API call %q", req.Method)
+						return
+					}
+					_ = conn.WriteJSON(map[string]any{"jsonrpc": "2.0", "id": req.ID, "result": out})
+				}
+			}))
+			defer server.Close()
+			client, err := NewTrueNASClient(TrueNASConfig{Endpoint: "wss" + strings.TrimPrefix(server.URL, "https"), Username: "deployer", APIKey: "secret", InsecureSkipVerify: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			image := "ghcr.io/eutelic/runnerhub-control@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+			err = client.VerifyImmutableImageUpdate(ctx, "runnerhub", image)
+			if tc.allow && err != nil {
+				t.Fatal(err)
+			}
+			if !tc.allow && (err == nil || !strings.Contains(err.Error(), "FULL_ADMIN")) {
+				t.Fatalf("expected role denial before pause; got %v", err)
+			}
+		})
+	}
 }
 
 func TestTrueNASListAppsIncludesImagesForPublishingSafety(t *testing.T) {
 	upgrader := websocket.Upgrader{}
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		conn, err := upgrader.Upgrade(w, r, nil)
-		if err != nil { t.Errorf("upgrade: %v", err); return }
+		if err != nil {
+			t.Errorf("upgrade: %v", err)
+			return
+		}
 		defer conn.Close()
 		for i := 0; i < 2; i++ {
-			var req struct { ID uint64 `json:"id"`; Method string `json:"method"` }
-			if err := conn.ReadJSON(&req); err != nil { t.Errorf("read: %v", err); return }
+			var req struct {
+				ID     uint64 `json:"id"`
+				Method string `json:"method"`
+			}
+			if err := conn.ReadJSON(&req); err != nil {
+				t.Errorf("read: %v", err)
+				return
+			}
 			switch req.Method {
 			case "auth.login_ex":
-				_ = conn.WriteJSON(map[string]any{"jsonrpc":"2.0","id":req.ID,"result":map[string]any{"response_type":"SUCCESS"}})
+				_ = conn.WriteJSON(map[string]any{"jsonrpc": "2.0", "id": req.ID, "result": map[string]any{"response_type": "SUCCESS"}})
 			case "app.query":
-				_ = conn.WriteJSON(map[string]any{"jsonrpc":"2.0","id":req.ID,
-					"result":[]map[string]any{
-						{"name":"file-ingest","state":"RUNNING","active_workloads":map[string]any{
-							"images":[]string{"ghcr.io/eutelic/file-ingest:latest","redis:7"},
+				_ = conn.WriteJSON(map[string]any{"jsonrpc": "2.0", "id": req.ID,
+					"result": []map[string]any{
+						{"name": "file-ingest", "state": "RUNNING", "active_workloads": map[string]any{
+							"images": []string{"ghcr.io/eutelic/file-ingest:latest", "redis:7"},
 						}},
 					},
 				})
@@ -500,33 +588,36 @@ func TestTrueNASListAppsIncludesImagesForPublishingSafety(t *testing.T) {
 	}))
 	defer server.Close()
 	client, err := NewTrueNASClient(TrueNASConfig{
-		Endpoint:"wss"+strings.TrimPrefix(server.URL,"https"),
-		Username:"deployer",APIKey:"secret",InsecureSkipVerify:true,
+		Endpoint: "wss" + strings.TrimPrefix(server.URL, "https"),
+		Username: "deployer", APIKey: "secret", InsecureSkipVerify: true,
 	})
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	apps, err := client.ListApps(context.Background())
-	if err != nil { t.Fatal(err) }
-	if len(apps)!=1 || apps[0].Name!="file-ingest" || len(apps[0].Images)!=2 ||
-		apps[0].Images[0]!="ghcr.io/eutelic/file-ingest:latest" {
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(apps) != 1 || apps[0].Name != "file-ingest" || len(apps[0].Images) != 2 ||
+		apps[0].Images[0] != "ghcr.io/eutelic/file-ingest:latest" {
 		t.Fatalf("unexpected TrueNAS inventory: %+v", apps)
 	}
 }
 
-
 func TestTrueNASInstallJobFailureReportsSafePortConflict(t *testing.T) {
 	for _, tc := range []struct {
-		name string
-		jobError string
+		name             string
+		jobError         string
 		wantPortConflict bool
 	}{
 		{
-			name: "loopback Docker port binding",
-			jobError: "driver failed programming external connectivity: Bind for 127.0.0.1:8790 failed: port is already allocated; SECRET_TOKEN=do-not-print",
+			name:             "loopback Docker port binding",
+			jobError:         "driver failed programming external connectivity: Bind for 127.0.0.1:8790 failed: port is already allocated; SECRET_TOKEN=do-not-print",
 			wantPortConflict: true,
 		},
 		{
-			name: "unrelated failed job",
-			jobError: "compose failed due to SECRET_TOKEN=do-not-print",
+			name:             "unrelated failed job",
+			jobError:         "compose failed due to SECRET_TOKEN=do-not-print",
 			wantPortConflict: false,
 		},
 	} {
@@ -534,15 +625,20 @@ func TestTrueNASInstallJobFailureReportsSafePortConflict(t *testing.T) {
 			upgrader := websocket.Upgrader{}
 			server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				conn, err := upgrader.Upgrade(w, r, nil)
-				if err != nil { t.Errorf("websocket upgrade: %v", err); return }
+				if err != nil {
+					t.Errorf("websocket upgrade: %v", err)
+					return
+				}
 				defer conn.Close()
 				for {
 					var req struct {
-						ID uint64 `json:"id"`
-						Method string `json:"method"`
+						ID     uint64          `json:"id"`
+						Method string          `json:"method"`
 						Params json.RawMessage `json:"params"`
 					}
-					if err := conn.ReadJSON(&req); err != nil { return }
+					if err := conn.ReadJSON(&req); err != nil {
+						return
+					}
 					var result any
 					switch req.Method {
 					case "auth.login_ex":
@@ -575,7 +671,9 @@ func TestTrueNASInstallJobFailureReportsSafePortConflict(t *testing.T) {
 						t.Errorf("unexpected TrueNAS method %q", req.Method)
 						return
 					}
-					if err := conn.WriteJSON(map[string]any{"jsonrpc": "2.0", "id": req.ID, "result": result}); err != nil { return }
+					if err := conn.WriteJSON(map[string]any{"jsonrpc": "2.0", "id": req.ID, "result": result}); err != nil {
+						return
+					}
 				}
 			}))
 			defer server.Close()
@@ -583,12 +681,16 @@ func TestTrueNASInstallJobFailureReportsSafePortConflict(t *testing.T) {
 				Endpoint: "wss" + strings.TrimPrefix(server.URL, "https"),
 				Username: "deployer", APIKey: "secret", InsecureSkipVerify: true,
 			})
-			if err != nil { t.Fatal(err) }
+			if err != nil {
+				t.Fatal(err)
+			}
 			client.appPollInterval = time.Millisecond
 			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 			defer cancel()
 			err = client.EnsureCustomApp(ctx, "runnerhub-deployer", "services:\n  deployer: {}")
-			if err == nil { t.Fatal("expected terminal job failure") }
+			if err == nil {
+				t.Fatal("expected terminal job failure")
+			}
 			if errors.Is(err, ErrAppPortConflict) != tc.wantPortConflict {
 				t.Fatalf("unexpected port conflict classification: %v", err)
 			}
@@ -600,7 +702,10 @@ func TestTrueNASInstallJobFailureReportsSafePortConflict(t *testing.T) {
 }
 
 func TestTrueNASPortBindConflictDoesNotMisclassifyGenericErrors(t *testing.T) {
-	for _, tc := range []struct { message string; want bool }{
+	for _, tc := range []struct {
+		message string
+		want    bool
+	}{
 		{"failed to bind: address already in use", true},
 		{"port has already been allocated", true},
 		{"authentication failed", false},
@@ -612,69 +717,86 @@ func TestTrueNASPortBindConflictDoesNotMisclassifyGenericErrors(t *testing.T) {
 	}
 }
 
-
 func TestTrueNASExistingAppIsNotReadyUntilInstallJobFinishes(t *testing.T) {
-	for _, tc := range []struct{
+	for _, tc := range []struct {
 		name string
 		fail bool
 	}{
-		{name:"update job failed while old app still RUNNING",fail:true},
-		{name:"update job pending before succeeding",fail:false},
+		{name: "update job failed while old app still RUNNING", fail: true},
+		{name: "update job pending before succeeding", fail: false},
 	} {
-		t.Run(tc.name,func(t *testing.T) {
+		t.Run(tc.name, func(t *testing.T) {
 			var lookups atomic.Int32
 			upgrader := websocket.Upgrader{}
-			server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter,r *http.Request) {
-				conn,err:=upgrader.Upgrade(w,r,nil)
-				if err!=nil{t.Error(err);return}
+			server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				conn, err := upgrader.Upgrade(w, r, nil)
+				if err != nil {
+					t.Error(err)
+					return
+				}
 				defer conn.Close()
 				for {
-					var req struct{ID uint64 `json:"id"`;Method string `json:"method"`}
-					if err:=conn.ReadJSON(&req);err!=nil{return}
+					var req struct {
+						ID     uint64 `json:"id"`
+						Method string `json:"method"`
+					}
+					if err := conn.ReadJSON(&req); err != nil {
+						return
+					}
 					var result any
 					switch req.Method {
 					case "auth.login_ex":
-						result=map[string]any{"response_type":"SUCCESS"}
+						result = map[string]any{"response_type": "SUCCESS"}
 					case "app.query":
-						result=[]map[string]any{{"id":"runnerhub-deployer","name":"runnerhub-deployer","custom_app":true,"state":"RUNNING"}}
+						result = []map[string]any{{"id": "runnerhub-deployer", "name": "runnerhub-deployer", "custom_app": true, "state": "RUNNING"}}
 					case "app.update":
 						_ = conn.WriteJSON(map[string]any{
-							"jsonrpc":"2.0","method":"collection_update",
-							"params":map[string]any{
-								"collection":"core.get_jobs",
-								"fields":map[string]any{"id":424,"message_ids":[]uint64{req.ID}},
+							"jsonrpc": "2.0", "method": "collection_update",
+							"params": map[string]any{
+								"collection": "core.get_jobs",
+								"fields":     map[string]any{"id": 424, "message_ids": []uint64{req.ID}},
 							},
 						})
 					case "core.get_jobs":
-						n:=lookups.Add(1)
-						state:="SUCCESS"
-						if tc.fail || n==1 {state="RUNNING"}
-						if tc.fail {state="FAILED"}
-						result=[]map[string]any{{"id":424,"state":state,"error":"Bind for 127.0.0.1:8790 failed: port is already allocated"}}
+						n := lookups.Add(1)
+						state := "SUCCESS"
+						if tc.fail || n == 1 {
+							state = "RUNNING"
+						}
+						if tc.fail {
+							state = "FAILED"
+						}
+						result = []map[string]any{{"id": 424, "state": state, "error": "Bind for 127.0.0.1:8790 failed: port is already allocated"}}
 					default:
-						t.Errorf("unexpected method %s",req.Method)
+						t.Errorf("unexpected method %s", req.Method)
 						return
 					}
-					if err:=conn.WriteJSON(map[string]any{"jsonrpc":"2.0","id":req.ID,"result":result});err!=nil{return}
+					if err := conn.WriteJSON(map[string]any{"jsonrpc": "2.0", "id": req.ID, "result": result}); err != nil {
+						return
+					}
 				}
 			}))
 			defer server.Close()
-			client,err:=NewTrueNASClient(TrueNASConfig{
-				Endpoint:"wss"+strings.TrimPrefix(server.URL,"https"),
-				Username:"deployer",APIKey:"secret",InsecureSkipVerify:true,
+			client, err := NewTrueNASClient(TrueNASConfig{
+				Endpoint: "wss" + strings.TrimPrefix(server.URL, "https"),
+				Username: "deployer", APIKey: "secret", InsecureSkipVerify: true,
 			})
-			if err!=nil{t.Fatal(err)}
-			client.appPollInterval=time.Millisecond
-			ctx,cancel:=context.WithTimeout(context.Background(),time.Second)
-			defer cancel()
-			err=client.EnsureCustomApp(ctx,"runnerhub-deployer","services: {}")
-			if tc.fail {
-				if !errors.Is(err,ErrAppPortConflict){t.Fatalf("old RUNNING app masked failed update: %v",err)}
-			} else if err!=nil {
+			if err != nil {
 				t.Fatal(err)
 			}
-			if !tc.fail && lookups.Load()<2 {
-				t.Fatalf("returned ready before update job succeeded: checked %d times",lookups.Load())
+			client.appPollInterval = time.Millisecond
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			err = client.EnsureCustomApp(ctx, "runnerhub-deployer", "services: {}")
+			if tc.fail {
+				if !errors.Is(err, ErrAppPortConflict) {
+					t.Fatalf("old RUNNING app masked failed update: %v", err)
+				}
+			} else if err != nil {
+				t.Fatal(err)
+			}
+			if !tc.fail && lookups.Load() < 2 {
+				t.Fatalf("returned ready before update job succeeded: checked %d times", lookups.Load())
 			}
 		})
 	}

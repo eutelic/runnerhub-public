@@ -18,22 +18,22 @@ import (
 )
 
 type Request struct {
-	Address           string
-	User              string
-	Password          string
-	SudoPassword      string
-	PrivateKey        string
-	HostKeyFingerprint string
-	RegistryUsername  string
-	RegistryPassword  string
-	HostName          string
-	ControlPlaneURL   string
-	AgentImage              string
-	AgentUpdaterImage string
-	InstallDocker           bool
-	AllowInsecureHTTP       bool
-	AllowPrivilegedWorkers  bool
-	AndroidEmulator bool
+	Address                string
+	User                   string
+	Password               string
+	SudoPassword           string
+	PrivateKey             string
+	HostKeyFingerprint     string
+	RegistryUsername       string
+	RegistryPassword       string
+	HostName               string
+	ControlPlaneURL        string
+	AgentImage             string
+	AgentUpdaterImage      string
+	InstallDocker          bool
+	AllowInsecureHTTP      bool
+	AllowPrivilegedWorkers bool
+	AndroidEmulator        bool
 }
 
 type WaitForHost func(context.Context, string) (core.Host, error)
@@ -65,7 +65,9 @@ func (s SSH) Bootstrap(ctx context.Context, req Request, enrollmentToken string,
 	req.ControlPlaneURL = strings.TrimSpace(req.ControlPlaneURL)
 	req.AgentImage = strings.TrimSpace(req.AgentImage)
 	req.AgentUpdaterImage = strings.TrimSpace(req.AgentUpdaterImage)
-	if req.AgentUpdaterImage!="" && !pinnedUpdaterImage.MatchString(req.AgentUpdaterImage){return core.Host{},errors.New("updater image must be the official pinned digest")}
+	if req.AgentUpdaterImage != "" && !pinnedUpdaterImage.MatchString(req.AgentUpdaterImage) {
+		return core.Host{}, errors.New("updater image must be the official pinned digest")
+	}
 	if req.Address == "" || !safeHost.MatchString(req.Address) {
 		return core.Host{}, errors.New("valid machine address is required")
 	}
@@ -141,27 +143,35 @@ func (s SSH) Bootstrap(ctx context.Context, req Request, enrollmentToken string,
 	tokenPath := "/tmp/runnerhub-enrollment-" + safeName(req.HostName) + ".token"
 	start, finalize, diagnostics, cleanup := startScript(req, enrollmentToken, tokenPath), finalizeScript(req, tokenPath), diagnosticsScript(req), cleanupScript(tokenPath)
 	if req.AndroidEmulator {
-		if req.AllowPrivilegedWorkers {return core.Host{}, errors.New("native Android agent cannot enable publisher/DinD privileges")}
-		start = startAndroidNativeScript(req,enrollmentToken,tokenPath)
-		finalize = finalizeAndroidNativeScript(req,tokenPath)
+		if req.AllowPrivilegedWorkers {
+			return core.Host{}, errors.New("native Android agent cannot enable publisher/DinD privileges")
+		}
+		start = startAndroidNativeScript(req, enrollmentToken, tokenPath)
+		finalize = finalizeAndroidNativeScript(req, tokenPath)
 		diagnostics = diagnosticsAndroidNativeScript(req)
-		cleanup = cleanupAndroidNativeScript(req,tokenPath)
+		cleanup = cleanupAndroidNativeScript(req, tokenPath)
 	}
-	reportProgress(ctx,"configuring-remote-host")
-	if err:=run(start);err!=nil{
-		if req.AndroidEmulator{_ = run(cleanup)}
-		return core.Host{},err
+	reportProgress(ctx, "configuring-remote-host")
+	if err := run(start); err != nil {
+		if req.AndroidEmulator {
+			_ = run(cleanup)
+		}
+		return core.Host{}, err
 	}
-	reportProgress(ctx,"waiting-for-agent")
-	host,err:=wait(ctx,req.HostName)
-	if err!=nil{
-		output,_:=runOutput(diagnostics)
+	reportProgress(ctx, "waiting-for-agent")
+	host, err := wait(ctx, req.HostName)
+	if err != nil {
+		output, _ := runOutput(diagnostics)
 		_ = run(cleanup)
-		if output!=""{return core.Host{},fmt.Errorf("%w; agent diagnostics: %s",err,output)}
-		return core.Host{},err
+		if output != "" {
+			return core.Host{}, fmt.Errorf("%w; agent diagnostics: %s", err, output)
+		}
+		return core.Host{}, err
 	}
-	reportProgress(ctx,"cleaning-enrollment-secret")
-	if err:=run(finalize);err!=nil{return host,fmt.Errorf("host enrolled but enrollment-secret cleanup failed: %w",err)}
+	reportProgress(ctx, "cleaning-enrollment-secret")
+	if err := run(finalize); err != nil {
+		return host, fmt.Errorf("host enrolled but enrollment-secret cleanup failed: %w", err)
+	}
 	return host, nil
 }
 

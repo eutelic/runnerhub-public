@@ -2,7 +2,7 @@ package web
 
 import (
 	"os/exec"
-    "regexp"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -31,7 +31,6 @@ func TestDashboardStaticElementReferencesExist(t *testing.T) {
 	}
 }
 
-
 func TestDashboardIncludesVercelDeployPreset(t *testing.T) {
 	app, err := content.ReadFile("app.js")
 	if err != nil {
@@ -54,7 +53,6 @@ func TestDashboardIncludesVercelDeployPreset(t *testing.T) {
 		}
 	}
 }
-
 
 func TestDashboardIncludesRepositoryVisibilityFilters(t *testing.T) {
 	index, err := content.ReadFile("index.html")
@@ -89,72 +87,91 @@ func TestDashboardIncludesRepositoryVisibilityFilters(t *testing.T) {
 }
 
 func TestDiagnosticsReadinessScriptIsEmbedded(t *testing.T) {
-    page, err := content.ReadFile("diagnostics.html")
-    if err != nil { t.Fatal(err) }
-    logic, err := content.ReadFile("queue-diagnostics.js")
-    if err != nil { t.Fatal(err) }
-    glue, err := content.ReadFile("diagnostics.js")
-    if err != nil { t.Fatal(err) }
-    if !strings.Contains(string(page), "id=\"queue-readiness\"") {
-        t.Fatal("runner readiness section missing")
-    }
-    if !strings.Contains(string(page), "src=\"/queue-diagnostics.js\"") {
-        t.Fatal("runner readiness script not loaded")
-    }
-    if !strings.Contains(string(logic), "function summarize(") ||
-        !strings.Contains(string(glue), "showReadiness(pools,scalesets,poolHealth)") {
-        t.Fatal("queue readiness analysis not wired to authenticated endpoints")
-    }
+	page, err := content.ReadFile("diagnostics.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	logic, err := content.ReadFile("queue-diagnostics.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	glue, err := content.ReadFile("diagnostics.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(page), "id=\"queue-readiness\"") {
+		t.Fatal("runner readiness section missing")
+	}
+	if !strings.Contains(string(page), "src=\"/queue-diagnostics.js\"") {
+		t.Fatal("runner readiness script not loaded")
+	}
+	if !strings.Contains(string(logic), "function summarize(") ||
+		!strings.Contains(string(glue), "showReadiness(pools,scalesets,poolHealth)") {
+		t.Fatal("queue readiness analysis not wired to authenticated endpoints")
+	}
 }
 
 func TestQueueReadinessJavaScript(t *testing.T) {
-    node, err := exec.LookPath("node")
-    if err != nil {
-        t.Skip("node is unavailable in this runner; browser integration is covered by embed checks")
-    }
-    command := exec.Command(node, "--test", "queue-diagnostics.test.cjs")
-    output, err := command.CombinedOutput()
-    if err != nil {
-        t.Fatalf("Queue diagnostic JavaScript checks failed: %s: %v", string(output), err)
-    }
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("node is unavailable in this runner; browser integration is covered by embed checks")
+	}
+	command := exec.Command(node, "--test", "queue-diagnostics.test.cjs")
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("Queue diagnostic JavaScript checks failed: %s: %v", string(output), err)
+	}
 }
 
 func TestDashboardUXJavaScript(t *testing.T) {
-    node, err := exec.LookPath("node")
-    if err != nil {
-        t.Skip("node is unavailable; dashboard UX checks run where Node is installed")
-    }
-    command := exec.Command(node, "--test", "dashboard-ux.test.cjs")
-    output, err := command.CombinedOutput()
-    if err != nil {
-        t.Fatalf("Dashboard UX JavaScript checks failed: %s: %v", string(output), err)
-    }
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("node is unavailable; dashboard UX checks run where Node is installed")
+	}
+	command := exec.Command(node, "--test", "dashboard-ux.test.cjs")
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("Dashboard UX JavaScript checks failed: %s: %v", string(output), err)
+	}
 }
 
 func TestIncidentWorkbenchJavaScript(t *testing.T) {
-    node, err := exec.LookPath("node")
-    if err != nil { t.Skip("node is unavailable") }
-    command := exec.Command(node, "--test", "incident-workbench.test.cjs")
-    output, err := command.CombinedOutput()
-    if err != nil { t.Fatalf("incident workbench tests failed: %s: %v", string(output), err) }
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("node is unavailable")
+	}
+	command := exec.Command(node, "--test", "incident-workbench.test.cjs")
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("incident workbench tests failed: %s: %v", string(output), err)
+	}
 }
-
 
 func TestOperationsHistoryPageAndJavaScript(t *testing.T) {
 	page, err := content.ReadFile("operations.html")
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	logic, err := content.ReadFile("operations.js")
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	index, err := content.ReadFile("index.html")
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	if !strings.Contains(string(index), `href="/operations.html"`) ||
 		!strings.Contains(string(page), `src="/operations.js"`) ||
 		!strings.Contains(string(logic), "Last confirmed progress") {
 		t.Fatal("durable operations history is not linked and embedded")
 	}
 	node, err := exec.LookPath("node")
-	if err != nil { t.Skip("node is unavailable") }
+	if err != nil {
+		t.Skip("node is unavailable")
+	}
 	command := exec.Command(node, "--test", "operations.test.cjs")
 	output, err := command.CombinedOutput()
-	if err != nil { t.Fatalf("operation history tests failed: %s: %v", string(output), err) }
+	if err != nil {
+		t.Fatalf("operation history tests failed: %s: %v", string(output), err)
+	}
 }

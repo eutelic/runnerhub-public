@@ -21,7 +21,7 @@ type ImageDigestResolver interface {
 }
 
 type GHCRDigestResolver struct {
-	Client  *http.Client
+	Client *http.Client
 	// BaseURL is injected only in tests; production uses https://ghcr.io.
 	BaseURL string
 }
@@ -91,7 +91,7 @@ func (r GHCRDigestResolver) Digest(ctx context.Context, image string) (string, e
 		return "", fmt.Errorf("GHCR package cannot be verified anonymously (token HTTP %d); keep automatic deployment disabled", response.StatusCode)
 	}
 	var payload struct {
-		Token string `json:"token"`
+		Token       string `json:"token"`
 		AccessToken string `json:"access_token"`
 	}
 	if err := json.NewDecoder(io.LimitReader(response.Body, 16<<10)).Decode(&payload); err != nil {

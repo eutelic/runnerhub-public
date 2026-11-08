@@ -44,14 +44,14 @@ func (v ValidationIdentity) Key() (string, error) {
 }
 
 type ValidationCertificate struct {
-	Key            string         `json:"key"`
-	Result         string         `json:"result"`
-	CompletedAt    time.Time      `json:"completedAt"`
-	DefinitionHash string         `json:"definitionHash"`
-	InputHash      string         `json:"inputHash"`
-	ContextHash    string         `json:"contextHash"`
-	Freshness      FreshnessClass `json:"freshness"`
-	ArtifactDigests []string      `json:"artifactDigests,omitempty"`
+	Key             string         `json:"key"`
+	Result          string         `json:"result"`
+	CompletedAt     time.Time      `json:"completedAt"`
+	DefinitionHash  string         `json:"definitionHash"`
+	InputHash       string         `json:"inputHash"`
+	ContextHash     string         `json:"contextHash"`
+	Freshness       FreshnessClass `json:"freshness"`
+	ArtifactDigests []string       `json:"artifactDigests,omitempty"`
 }
 
 // HashParts provides a deterministic content hash for already-normalized

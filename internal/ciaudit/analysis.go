@@ -49,11 +49,11 @@ type JobExecution struct {
 }
 
 type ResourceTotals struct {
-	RunnerSeconds            float64 `json:"runnerSeconds"`
-	AllocatedCPUSeconds      float64 `json:"allocatedCpuSeconds"`
-	AllocatedRAMGiBSeconds   float64 `json:"allocatedRamGiBSeconds"`
-	EstimatedCPUSeconds      float64 `json:"estimatedCpuSeconds,omitempty"`
-	EstimatedRAMGiBSeconds   float64 `json:"estimatedRamGiBSeconds,omitempty"`
+	RunnerSeconds          float64 `json:"runnerSeconds"`
+	AllocatedCPUSeconds    float64 `json:"allocatedCpuSeconds"`
+	AllocatedRAMGiBSeconds float64 `json:"allocatedRamGiBSeconds"`
+	EstimatedCPUSeconds    float64 `json:"estimatedCpuSeconds,omitempty"`
+	EstimatedRAMGiBSeconds float64 `json:"estimatedRamGiBSeconds,omitempty"`
 }
 
 type Report struct {
@@ -164,7 +164,7 @@ func PostMergeFinding(job JobExecution, mergedAt time.Time, sideEffectFree bool)
 		start = job.StartedAt
 	}
 	return Finding{
-		JobID:      job.ID,
+		JobID:           job.ID,
 		DetectorID:      "post-merge-validation",
 		Class:           EvidenceConfirmed,
 		AnalysisVersion: AnalyzerVersion,
@@ -185,14 +185,13 @@ func SupersededFinding(job JobExecution, supersededAt time.Time, safeToSupersede
 		start = job.StartedAt
 	}
 	return Finding{
-		JobID:      job.ID,
+		JobID:           job.ID,
 		DetectorID:      "superseded-validation",
 		Class:           EvidenceConfirmed,
 		AnalysisVersion: AnalyzerVersion,
 		Interval:        Interval{Start: start, End: job.CompletedAt},
 	}, true
 }
-
 
 // StaleSnapshotPublicationFinding reports compute spent after a newer main
 // snapshot superseded a mutable branch publication. Immutable tag/release

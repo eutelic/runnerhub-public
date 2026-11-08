@@ -23,17 +23,17 @@ var autoRepositoryPattern = regexp.MustCompile("^[A-Za-z0-9_.-]{1,100}/[A-Za-z0-
 // enabling the switch starts with the current latest run as baseline, rather
 // than unexpectedly re-deploying an old release.
 type AutoPublishRule struct {
-	App         string    `json:"app"`
-	Repository  string    `json:"repository"`
-	Workflow    string    `json:"workflow"`
-	Image       string    `json:"image"`
-	Branch      string    `json:"branch"`
-	LastRunID   int64     `json:"lastRunId"`
-	LastAttempt int       `json:"lastAttempt"`
-	LastImageDigest string `json:"lastImageDigest,omitempty"`
-	LastResult  string    `json:"lastResult,omitempty"`
-	LastDetail  string    `json:"lastDetail,omitempty"`
-	UpdatedAt   time.Time `json:"updatedAt,omitempty"`
+	App             string    `json:"app"`
+	Repository      string    `json:"repository"`
+	Workflow        string    `json:"workflow"`
+	Image           string    `json:"image"`
+	Branch          string    `json:"branch"`
+	LastRunID       int64     `json:"lastRunId"`
+	LastAttempt     int       `json:"lastAttempt"`
+	LastImageDigest string    `json:"lastImageDigest,omitempty"`
+	LastResult      string    `json:"lastResult,omitempty"`
+	LastDetail      string    `json:"lastDetail,omitempty"`
+	UpdatedAt       time.Time `json:"updatedAt,omitempty"`
 }
 
 type autoRulesFile struct {
@@ -310,7 +310,9 @@ func (m *BootstrapManager) blockPublicationDigest(rule AutoPublishRule, detail s
 	m.autoMu.Lock()
 	defer m.autoMu.Unlock()
 	file, err := m.readAutoRulesLocked()
-	if err != nil { return err }
+	if err != nil {
+		return err
+	}
 	for i := range file.Rules {
 		saved := &file.Rules[i]
 		if saved.App != rule.App || saved.Repository != rule.Repository ||
@@ -321,7 +323,9 @@ func (m *BootstrapManager) blockPublicationDigest(rule AutoPublishRule, detail s
 		if saved.LastResult == "failed" || saved.LastResult == "recovery-required" || saved.LastResult == "deploying" {
 			return nil
 		}
-		if saved.LastResult == "blocked-image-digest" && saved.LastDetail == detail { return nil }
+		if saved.LastResult == "blocked-image-digest" && saved.LastDetail == detail {
+			return nil
+		}
 		saved.LastResult = "blocked-image-digest"
 		saved.LastDetail = detail
 		saved.UpdatedAt = time.Now().UTC()
@@ -378,7 +382,9 @@ func (m *BootstrapManager) autoPublicationNeedsReview(rule AutoPublishRule, now 
 // mistake an already-pinned release for a stale source image.
 func (m *BootstrapManager) MarkManualAutoPublishRecovery(ctx context.Context, app string) error {
 	rules, err := m.AutoPublishRules()
-	if err != nil { return err }
+	if err != nil {
+		return err
+	}
 	var rule *AutoPublishRule
 	for i := range rules {
 		if rules[i].App == app &&
@@ -387,44 +393,62 @@ func (m *BootstrapManager) MarkManualAutoPublishRecovery(ctx context.Context, ap
 			break
 		}
 	}
-	if rule == nil { return nil }
+	if rule == nil {
+		return nil
+	}
 
 	apps, err := m.ManagedApps(ctx)
-	if err != nil { return fmt.Errorf("verify TrueNAS app after manual recovery: %w", err) }
+	if err != nil {
+		return fmt.Errorf("verify TrueNAS app after manual recovery: %w", err)
+	}
 	base := strings.TrimSuffix(strings.ToLower(rule.Image), ":latest")
 	observed := ""
 	for _, candidate := range apps {
-		if candidate.Name != app { continue }
+		if candidate.Name != app {
+			continue
+		}
 		if !candidate.Enabled || candidate.Protected || !candidate.CustomApp || candidate.State != "RUNNING" {
 			return errors.New("manual recovery did not confirm a running, enabled custom TrueNAS app")
 		}
 		for _, installed := range candidate.Images {
 			ref := strings.ToLower(strings.TrimSpace(installed))
 			if ref == strings.ToLower(rule.Image) || strings.HasPrefix(ref, base+"@sha256:") {
-				if observed != "" { return errors.New("manual recovery found ambiguous matching TrueNAS images") }
+				if observed != "" {
+					return errors.New("manual recovery found ambiguous matching TrueNAS images")
+				}
 				observed = ref
 			}
 		}
 	}
-	if observed == "" { return errors.New("manual recovery cannot verify the app's running GHCR image") }
+	if observed == "" {
+		return errors.New("manual recovery cannot verify the app's running GHCR image")
+	}
 	baseline := ""
 	if observed == strings.ToLower(rule.Image) {
 		// A legacy :latest app requires a fresh current baseline after its
 		// explicit operator-initiated pull/redeploy completed successfully.
 		baseline, err = m.imageDigest(ctx, rule.Image)
-		if err != nil { return fmt.Errorf("verify GHCR baseline after manual recovery: %w", err) }
+		if err != nil {
+			return fmt.Errorf("verify GHCR baseline after manual recovery: %w", err)
+		}
 	} else {
 		baseline = strings.TrimPrefix(observed, base+"@")
 	}
-	if !ValidImageDigest(baseline) { return errors.New("manual recovery lacks a valid pinned or registry image digest") }
+	if !ValidImageDigest(baseline) {
+		return errors.New("manual recovery lacks a valid pinned or registry image digest")
+	}
 
 	m.autoMu.Lock()
 	defer m.autoMu.Unlock()
 	file, err := m.readAutoRulesLocked()
-	if err != nil { return err }
+	if err != nil {
+		return err
+	}
 	for i := range file.Rules {
 		saved := &file.Rules[i]
-		if saved.App != app { continue }
+		if saved.App != app {
+			continue
+		}
 		if saved.Repository != rule.Repository || saved.Workflow != rule.Workflow ||
 			saved.Branch != rule.Branch || saved.Image != rule.Image ||
 			saved.LastRunID != rule.LastRunID || saved.LastAttempt != rule.LastAttempt {
@@ -495,7 +519,7 @@ func (m *BootstrapManager) AutoPublishOnce(ctx context.Context, github githubrun
 			continue
 		}
 		imagePresent := false
-		previousPinned := strings.TrimSuffix(strings.ToLower(rule.Image), ":latest")+"@"+rule.LastImageDigest
+		previousPinned := strings.TrimSuffix(strings.ToLower(rule.Image), ":latest") + "@" + rule.LastImageDigest
 		for _, image := range imagesByApp[rule.App] {
 			if strings.EqualFold(strings.TrimSpace(image), rule.Image) ||
 				(ValidImageDigest(rule.LastImageDigest) && strings.EqualFold(strings.TrimSpace(image), previousPinned)) {

@@ -287,7 +287,7 @@ func (r *Reconciler) Once(ctx context.Context) (resultErr error) {
 							continue
 						}
 						if quarantined {
-						quarantinedRuns[key] = true
+							quarantinedRuns[key] = true
 							continue
 						}
 						errs = append(errs, fmt.Errorf("%s run %d attempt %d: %w", repository, worker.WorkflowRunID, attempt, err))

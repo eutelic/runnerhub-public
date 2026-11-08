@@ -53,10 +53,10 @@ func main() {
 
 	case "process":
 		p, err := processprovider.New(processprovider.Config{
-			HostID:    name,
-			RunnerDir: mustEnv("RUNNERHUB_RUNNER_DIR"),
-            AndroidEmulatorOnly: boolEnv("RUNNERHUB_ANDROID_EMULATOR_ONLY", false),
-			StateDir:  filepath.Join(stateDir, "process"),
+			HostID:              name,
+			RunnerDir:           mustEnv("RUNNERHUB_RUNNER_DIR"),
+			AndroidEmulatorOnly: boolEnv("RUNNERHUB_ANDROID_EMULATOR_ONLY", false),
+			StateDir:            filepath.Join(stateDir, "process"),
 		})
 		must(err)
 		providers[kind] = p
@@ -104,8 +104,8 @@ func main() {
 		if image := strings.TrimSpace(os.Getenv("RUNNERHUB_AGENT_UPDATER_IMAGE")); image != "" {
 			launcher := &agentupdatedocker.Launcher{
 				ApprovedHelperImage: image,
-				ControlURL: mustEnv("RUNNERHUB_CONTROL_PLANE_URL"),
-				AllowInsecureHTTP: boolEnv("RUNNERHUB_ALLOW_INSECURE_HTTP", false),
+				ControlURL:          mustEnv("RUNNERHUB_CONTROL_PLANE_URL"),
+				AllowInsecureHTTP:   boolEnv("RUNNERHUB_ALLOW_INSECURE_HTTP", false),
 			}
 			if err := launcher.Available(ctx); err == nil {
 				updater = launcher

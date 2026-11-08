@@ -634,8 +634,8 @@ func (p *Provider) Inspect(ctx context.Context, h provider.WorkerHandle) (provid
 		if usageErr != nil {
 			p.disableAggregateResourceGroups()
 			return provider.WorkerState{
-				State: core.WorkerFailed,
-				SafeDetail: "aggregate resource group unavailable",
+				State:       core.WorkerFailed,
+				SafeDetail:  "aggregate resource group unavailable",
 				Diagnostics: sanitizeDiagnostics(usageErr.Error()),
 			}, nil
 		}
@@ -748,11 +748,11 @@ func parseDockerBytes(value string) (int64, error) {
 	}
 	unit := strings.ToLower(m[2])
 	multipliers := map[string]float64{
-		"b": 1,
-		"kb": 1000,
-		"mb": 1000 * 1000,
-		"gb": 1000 * 1000 * 1000,
-		"tb": 1000 * 1000 * 1000 * 1000,
+		"b":   1,
+		"kb":  1000,
+		"mb":  1000 * 1000,
+		"gb":  1000 * 1000 * 1000,
+		"tb":  1000 * 1000 * 1000 * 1000,
 		"kib": 1 << 10,
 		"mib": 1 << 20,
 		"gib": 1 << 30,

@@ -20,13 +20,13 @@ type Snapshot struct {
 	CleanupTotal     time.Duration `json:"cleanupTotal"`
 	// ProviderDelete* are process-local counts of authenticated agent command
 	// results; they do not independently prove physical Docker resource reclamation.
-	ProviderDeleteAttempts uint64 `json:"providerDeleteAttempts"`
-	ProviderDeleteFailures uint64 `json:"providerDeleteFailures"`
-	ProviderDeleteMeasured uint64 `json:"providerDeleteMeasured"`
+	ProviderDeleteAttempts      uint64        `json:"providerDeleteAttempts"`
+	ProviderDeleteFailures      uint64        `json:"providerDeleteFailures"`
+	ProviderDeleteMeasured      uint64        `json:"providerDeleteMeasured"`
 	ProviderDeleteDurationTotal time.Duration `json:"providerDeleteDurationTotal"`
-	Scope string `json:"scope"`
-	QueueSamples     uint64        `json:"queueSamples"`
-	QueueTotal       time.Duration `json:"queueTotal"`
+	Scope                       string        `json:"scope"`
+	QueueSamples                uint64        `json:"queueSamples"`
+	QueueTotal                  time.Duration `json:"queueTotal"`
 }
 
 type PoolSnapshot struct {
@@ -124,7 +124,7 @@ type CostInput struct {
 	Hours             float64
 	EnergyPricePerKWh float64
 	HardwareMonthly   float64
-	Jobs               int
+	Jobs              int
 }
 
 type CostEstimate struct {
@@ -156,42 +156,41 @@ func RecommendConcurrency(avgQueue time.Duration, utilization float64, current i
 	return current
 }
 
-
 const (
-	resourceHistoryJobs = 50
-	resourceMinimumJobs = 5
-	resourceMinimumWellSampledJobs = 5
-	resourceHistoryMaxAge = 90 * 24 * time.Hour
-	cpuStepMillis int64 = 250
-	memoryStepBytes int64 = 512 << 20
-	minimumCPUMillis int64 = 500
-	minimumMemoryBytes int64 = 1 << 30
+	resourceHistoryJobs                  = 50
+	resourceMinimumJobs                  = 5
+	resourceMinimumWellSampledJobs       = 5
+	resourceHistoryMaxAge                = 90 * 24 * time.Hour
+	cpuStepMillis                  int64 = 250
+	memoryStepBytes                int64 = 512 << 20
+	minimumCPUMillis               int64 = 500
+	minimumMemoryBytes             int64 = 1 << 30
 )
 
 type ResourceRecommendation struct {
-	Jobs int `json:"jobs"`
-	WellSampledJobs int `json:"wellSampledJobs,omitempty"`
-	RejectedJobs int `json:"rejectedJobs,omitempty"`
-	StaleJobs int `json:"staleJobs,omitempty"`
-	Ready bool `json:"ready"`
-	Confidence string `json:"confidence"`
-	Current core.Resources `json:"current"`
-	Recommended core.Resources `json:"recommended"`
-	CPUPeakP95Millis int64 `json:"cpuPeakP95Millis,omitempty"`
-	CPUPeakMaxMillis int64 `json:"cpuPeakMaxMillis,omitempty"`
-	MemoryPeakP95Bytes int64 `json:"memoryPeakP95Bytes,omitempty"`
-	MemoryPeakMaxBytes int64 `json:"memoryPeakMaxBytes,omitempty"`
-	ResetAt *time.Time `json:"resetAt,omitempty"`
-	UsageBasis string `json:"usageBasis"`
-	Reason string `json:"reason"`
+	Jobs               int            `json:"jobs"`
+	WellSampledJobs    int            `json:"wellSampledJobs,omitempty"`
+	RejectedJobs       int            `json:"rejectedJobs,omitempty"`
+	StaleJobs          int            `json:"staleJobs,omitempty"`
+	Ready              bool           `json:"ready"`
+	Confidence         string         `json:"confidence"`
+	Current            core.Resources `json:"current"`
+	Recommended        core.Resources `json:"recommended"`
+	CPUPeakP95Millis   int64          `json:"cpuPeakP95Millis,omitempty"`
+	CPUPeakMaxMillis   int64          `json:"cpuPeakMaxMillis,omitempty"`
+	MemoryPeakP95Bytes int64          `json:"memoryPeakP95Bytes,omitempty"`
+	MemoryPeakMaxBytes int64          `json:"memoryPeakMaxBytes,omitempty"`
+	ResetAt            *time.Time     `json:"resetAt,omitempty"`
+	UsageBasis         string         `json:"usageBasis"`
+	Reason             string         `json:"reason"`
 }
 
 type usagePoint struct {
-	at time.Time
-	cpu int64
-	memory int64
+	at      time.Time
+	cpu     int64
+	memory  int64
 	samples uint64
-	oom bool
+	oom     bool
 }
 
 func workerTerminalAt(worker core.Worker) time.Time {
@@ -265,10 +264,10 @@ func RecommendResources(pool core.RunnerPool, workers []core.Worker) ResourceRec
 		usageBasis = "logical-worker-aggregate"
 	}
 	out := ResourceRecommendation{
-		Current: pool.Resources,
+		Current:     pool.Resources,
 		Recommended: pool.Resources,
-		UsageBasis: usageBasis,
-		Reason: "collecting completed-job usage samples",
+		UsageBasis:  usageBasis,
+		Reason:      "collecting completed-job usage samples",
 	}
 	if !pool.LearningResetAt.IsZero() {
 		reset := pool.LearningResetAt

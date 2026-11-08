@@ -12,7 +12,7 @@ func TestListenerRecoveryStatusDistinguishesRecovered409(t *testing.T) {
 	retry := listenerRetryState{
 		attempt:      2,
 		firstFailure: at.Add(-28 * time.Second),
-		lastFailure: "GitHub message session conflict (409)",
+		lastFailure:  "GitHub message session conflict (409)",
 	}
 	detail := listenerRecoveryStatus(retry, at)
 	for _, want := range []string{

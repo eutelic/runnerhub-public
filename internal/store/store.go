@@ -39,17 +39,17 @@ type CIWorkerCandidateReader interface {
 
 // MaintenanceState gates new worker admissions while existing jobs drain.
 type MaintenanceState struct {
- Paused bool `json:"paused"`
- Generation string `json:"generation,omitempty"`
- Reason string `json:"reason,omitempty"`
- RequestedBy string `json:"requestedBy,omitempty"`
- RequestedAt time.Time `json:"requestedAt,omitempty"`
+	Paused      bool      `json:"paused"`
+	Generation  string    `json:"generation,omitempty"`
+	Reason      string    `json:"reason,omitempty"`
+	RequestedBy string    `json:"requestedBy,omitempty"`
+	RequestedAt time.Time `json:"requestedAt,omitempty"`
 }
 
 // MaintenanceStore persists the global admission gate across restarts.
 type MaintenanceStore interface {
- GetMaintenance(context.Context) (MaintenanceState,error)
- SetMaintenance(context.Context,MaintenanceState) error
+	GetMaintenance(context.Context) (MaintenanceState, error)
+	SetMaintenance(context.Context, MaintenanceState) error
 }
 
 // ProviderDeleteResultRecorder atomically records the first authenticated

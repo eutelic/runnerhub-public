@@ -15,20 +15,20 @@ import (
 )
 
 type ciEfficiencyCoverage struct {
-	ExecutionLedger                   bool       `json:"executionLedger"`
-	WasteFindings                     bool       `json:"wasteFindings"`
-	ExecutionJobs                     int        `json:"executionJobs"`
-	QueueSamples                      int        `json:"queueSamples"`
-	QueueCoveragePercent              float64    `json:"queueCoveragePercent"`
+	ExecutionLedger                   bool           `json:"executionLedger"`
+	WasteFindings                     bool           `json:"wasteFindings"`
+	ExecutionJobs                     int            `json:"executionJobs"`
+	QueueSamples                      int            `json:"queueSamples"`
+	QueueCoveragePercent              float64        `json:"queueCoveragePercent"`
 	ValidationIdentityJobs            int            `json:"validationIdentityJobs"`
 	ValidationIdentityCoveragePercent float64        `json:"validationIdentityCoveragePercent"`
 	ValidationExcludedJobs            int            `json:"validationExcludedJobs"`
 	ValidationPendingJobs             int            `json:"validationPendingJobs"`
 	ValidationExclusions              map[string]int `json:"validationExclusions,omitempty"`
-	FindingsWindowStart               *time.Time `json:"findingsWindowStart,omitempty"`
-	FindingsLookbackSeconds           int64      `json:"findingsLookbackSeconds,omitempty"`
-	AnalysisWindowComplete            bool       `json:"analysisWindowComplete"`
-	Detail                            string     `json:"detail,omitempty"`
+	FindingsWindowStart               *time.Time     `json:"findingsWindowStart,omitempty"`
+	FindingsLookbackSeconds           int64          `json:"findingsLookbackSeconds,omitempty"`
+	AnalysisWindowComplete            bool           `json:"analysisWindowComplete"`
+	Detail                            string         `json:"detail,omitempty"`
 }
 
 type ciEfficiencyAnalyzerStatus struct {
@@ -73,17 +73,17 @@ type ciEfficiencyFindingDetail struct {
 }
 
 type ciEfficiencyResponse struct {
-	AnalysisVersion string               `json:"analysisVersion"`
-	Repository      string               `json:"repository"`
-	Window          string               `json:"window"`
-	WindowStart     time.Time            `json:"windowStart"`
-	WindowEnd       time.Time            `json:"windowEnd"`
-	Jobs            int                  `json:"jobs"`
-	Execution       ciaudit.ResourceTotals `json:"execution"`
-	Waste           ciEfficiencyWaste    `json:"waste"`
-	Queue           ciEfficiencyQueue    `json:"queue"`
-	Coverage        ciEfficiencyCoverage       `json:"coverage"`
-	Analyzer        ciEfficiencyAnalyzerStatus `json:"analyzer"`
+	AnalysisVersion string                      `json:"analysisVersion"`
+	Repository      string                      `json:"repository"`
+	Window          string                      `json:"window"`
+	WindowStart     time.Time                   `json:"windowStart"`
+	WindowEnd       time.Time                   `json:"windowEnd"`
+	Jobs            int                         `json:"jobs"`
+	Execution       ciaudit.ResourceTotals      `json:"execution"`
+	Waste           ciEfficiencyWaste           `json:"waste"`
+	Queue           ciEfficiencyQueue           `json:"queue"`
+	Coverage        ciEfficiencyCoverage        `json:"coverage"`
+	Analyzer        ciEfficiencyAnalyzerStatus  `json:"analyzer"`
 	Findings        []ciEfficiencyFindingDetail `json:"findings,omitempty"`
 }
 
@@ -162,7 +162,6 @@ func ciAnalyzerStatus(status *cireconcile.Status, analysisVersion string) (ciEff
 	}
 	return out, snapshot.Lookback
 }
-
 
 func summarizeCIEfficiencyAt(repository, windowName string, window time.Duration, now time.Time, workers []core.Worker, pools []core.RunnerPool, findings []ciaudit.Finding, findingsAvailable bool) ciEfficiencyResponse {
 	return summarizeCIEfficiencyAtWithAnalyzer(repository, windowName, window, now, workers, pools, findings, findingsAvailable, ciEfficiencyAnalyzerStatus{State: "unavailable", AnalysisVersion: ciaudit.AnalyzerVersion}, 0)
@@ -249,12 +248,12 @@ func summarizeCIEfficiencyAtWithAnalyzer(repository, windowName string, window t
 		Execution:       report.Total,
 		Waste: ciEfficiencyWaste{
 			Findings:                 relevantFindings,
-			Confirmed:                 report.ConfirmedWaste,
-			ProvablyAvoidable:         report.ProvablyAvoidable,
-			PotentialSavings:          report.PotentialSavings,
-			ConfirmedPercent:          report.ConfirmedWastePct,
-			ProvablyAvoidablePercent:  report.ProvablyAvoidablePct,
-			PotentialSavingsPercent:   report.PotentialSavingsPct,
+			Confirmed:                report.ConfirmedWaste,
+			ProvablyAvoidable:        report.ProvablyAvoidable,
+			PotentialSavings:         report.PotentialSavings,
+			ConfirmedPercent:         report.ConfirmedWastePct,
+			ProvablyAvoidablePercent: report.ProvablyAvoidablePct,
+			PotentialSavingsPercent:  report.PotentialSavingsPct,
 		},
 		Queue: ciEfficiencyQueue{
 			Overall:       summarizeQueueSamples(queueAll),
@@ -330,7 +329,6 @@ func percentileNearestRank(sorted []float64, percentile float64) float64 {
 	}
 	return sorted[rank]
 }
-
 
 func buildCIEfficiencyCoverage(executionJobs, queueSamples, validationIdentityJobs, validationExcludedJobs, validationPendingJobs int, validationExclusions map[string]int, now time.Time, requestedWindow time.Duration, findingsAvailable bool, analyzer ciEfficiencyAnalyzerStatus, findingsLookback time.Duration) ciEfficiencyCoverage {
 	coverage := ciEfficiencyCoverage{

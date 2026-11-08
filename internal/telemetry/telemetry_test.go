@@ -46,10 +46,9 @@ func TestQueueMetricsPoolTrackingIsBounded(t *testing.T) {
 	}
 }
 
-
 func TestRecommendResourcesUsesP95PeakWithHeadroom(t *testing.T) {
 	pool := core.RunnerPool{
-		ID: "p1",
+		ID:        "p1",
 		Resources: core.Resources{CPUMillis: 2000, MemoryBytes: 4 << 30, DiskBytes: 20 << 30},
 	}
 	cpuPeaks := []int64{1000, 1200, 1400, 1600, 2000}
@@ -58,15 +57,15 @@ func TestRecommendResourcesUsesP95PeakWithHeadroom(t *testing.T) {
 	base := time.Date(2026, 9, 20, 1, 0, 0, 0, time.UTC)
 	for i := range cpuPeaks {
 		workers = append(workers, core.Worker{
-			ID: fmt.Sprintf("w-%d", i),
-			PoolID: pool.ID,
-			State: core.WorkerDeleted,
-			StartedAt: base.Add(time.Duration(i) * time.Minute),
+			ID:          fmt.Sprintf("w-%d", i),
+			PoolID:      pool.ID,
+			State:       core.WorkerDeleted,
+			StartedAt:   base.Add(time.Duration(i) * time.Minute),
 			CompletedAt: base.Add(time.Duration(i)*time.Minute + 30*time.Second),
 			Usage: core.ResourceUsageSummary{
-				PeakCPUMillis: cpuPeaks[i],
+				PeakCPUMillis:   cpuPeaks[i],
 				PeakMemoryBytes: memoryPeaks[i],
-				Samples: 2,
+				Samples:         2,
 			},
 		})
 	}
@@ -91,11 +90,11 @@ func TestRecommendResourcesUsesP95PeakWithHeadroom(t *testing.T) {
 func TestRecommendResourcesWaitsForEnoughJobs(t *testing.T) {
 	pool := core.RunnerPool{ID: "p1", Resources: core.Resources{CPUMillis: 2500, MemoryBytes: 8 << 30}}
 	workers := []core.Worker{{
-		PoolID: pool.ID,
-		State: core.WorkerDeleted,
-		StartedAt: time.Now().Add(-time.Minute),
+		PoolID:      pool.ID,
+		State:       core.WorkerDeleted,
+		StartedAt:   time.Now().Add(-time.Minute),
 		CompletedAt: time.Now(),
-		Usage: core.ResourceUsageSummary{PeakCPUMillis: 1000, PeakMemoryBytes: 2 << 30, Samples: 1},
+		Usage:       core.ResourceUsageSummary{PeakCPUMillis: 1000, PeakMemoryBytes: 2 << 30, Samples: 1},
 	}}
 	got := RecommendResources(pool, workers)
 	if got.Ready {
@@ -106,7 +105,6 @@ func TestRecommendResourcesWaitsForEnoughJobs(t *testing.T) {
 	}
 }
 
-
 func TestRecommendResourcesIgnoresOrdinaryFailedJobsButKeepsOOMPressure(t *testing.T) {
 	pool := core.RunnerPool{ID: "p1", Resources: core.Resources{CPUMillis: 2500, MemoryBytes: 8 << 30}}
 	base := time.Date(2026, 9, 20, 2, 0, 0, 0, time.UTC)
@@ -114,10 +112,10 @@ func TestRecommendResourcesIgnoresOrdinaryFailedJobsButKeepsOOMPressure(t *testi
 	for i := 0; i < 5; i++ {
 		workers = append(workers, core.Worker{
 			ID: fmt.Sprintf("ok-%d", i), PoolID: pool.ID, State: core.WorkerDeleted,
-			StartedAt: base.Add(time.Duration(i) * time.Minute),
+			StartedAt:   base.Add(time.Duration(i) * time.Minute),
 			CompletedAt: base.Add(time.Duration(i)*time.Minute + 30*time.Second),
-			JobResult: "succeeded",
-			Usage: core.ResourceUsageSummary{PeakCPUMillis: 1000, PeakMemoryBytes: 2 << 30, Samples: 2},
+			JobResult:   "succeeded",
+			Usage:       core.ResourceUsageSummary{PeakCPUMillis: 1000, PeakMemoryBytes: 2 << 30, Samples: 2},
 		})
 	}
 	workers = append(workers,
@@ -125,7 +123,7 @@ func TestRecommendResourcesIgnoresOrdinaryFailedJobsButKeepsOOMPressure(t *testi
 			ID: "early-failure", PoolID: pool.ID, State: core.WorkerDeleted,
 			StartedAt: base.Add(10 * time.Minute), FailedAt: base.Add(10*time.Minute + 5*time.Second),
 			JobResult: "failed",
-			Usage: core.ResourceUsageSummary{PeakCPUMillis: 100, PeakMemoryBytes: 128 << 20, Samples: 1},
+			Usage:     core.ResourceUsageSummary{PeakCPUMillis: 100, PeakMemoryBytes: 128 << 20, Samples: 1},
 		},
 		core.Worker{
 			ID: "oom", PoolID: pool.ID, State: core.WorkerDeleted,
@@ -143,7 +141,6 @@ func TestRecommendResourcesIgnoresOrdinaryFailedJobsButKeepsOOMPressure(t *testi
 	}
 }
 
-
 func TestRecommendResourcesDownsizesOnlyWithHighConfidenceHistory(t *testing.T) {
 	pool := core.RunnerPool{ID: "p1", Resources: core.Resources{CPUMillis: 2500, MemoryBytes: 8 << 30}}
 	base := time.Date(2026, 9, 20, 3, 0, 0, 0, time.UTC)
@@ -152,10 +149,10 @@ func TestRecommendResourcesDownsizesOnlyWithHighConfidenceHistory(t *testing.T) 
 		for i := 0; i < n; i++ {
 			workers = append(workers, core.Worker{
 				ID: fmt.Sprintf("light-%d", i), PoolID: pool.ID, State: core.WorkerDeleted,
-				StartedAt: base.Add(time.Duration(i) * time.Minute),
+				StartedAt:   base.Add(time.Duration(i) * time.Minute),
 				CompletedAt: base.Add(time.Duration(i)*time.Minute + 30*time.Second),
-				JobResult: "succeeded",
-				Usage: core.ResourceUsageSummary{PeakCPUMillis: 1000, PeakMemoryBytes: 2 << 30, Samples: 2},
+				JobResult:   "succeeded",
+				Usage:       core.ResourceUsageSummary{PeakCPUMillis: 1000, PeakMemoryBytes: 2 << 30, Samples: 2},
 			})
 		}
 		return workers
@@ -170,10 +167,9 @@ func TestRecommendResourcesDownsizesOnlyWithHighConfidenceHistory(t *testing.T) 
 	}
 }
 
-
 func TestRecommendResourcesUsesAggregateDinDBudget(t *testing.T) {
 	pool := core.RunnerPool{
-		ID: "publisher",
+		ID:        "publisher",
 		Isolation: core.IsolationContainerDinD,
 		Resources: core.Resources{CPUMillis: 2500, MemoryBytes: 8 << 30},
 	}
@@ -183,9 +179,9 @@ func TestRecommendResourcesUsesAggregateDinDBudget(t *testing.T) {
 		workers = append(workers, core.Worker{
 			ID: fmt.Sprintf("dind-%d", i), PoolID: pool.ID, Isolation: core.IsolationContainerDinD,
 			AggregateResources: true,
-			State: core.WorkerDeleted, StartedAt: base.Add(time.Duration(i) * time.Minute),
+			State:              core.WorkerDeleted, StartedAt: base.Add(time.Duration(i) * time.Minute),
 			CompletedAt: base.Add(time.Duration(i)*time.Minute + 30*time.Second),
-			JobResult: "succeeded", Resources: pool.Resources,
+			JobResult:   "succeeded", Resources: pool.Resources,
 			Usage: core.ResourceUsageSummary{
 				PeakCPUMillis: 2400, PeakMemoryBytes: 7 << 30,
 				AggregateResources: true, Samples: 3,
@@ -209,7 +205,7 @@ func TestRecommendResourcesUsesAggregateDinDBudget(t *testing.T) {
 
 func TestRecommendResourcesRejectsLegacyDinDAggregateSamples(t *testing.T) {
 	pool := core.RunnerPool{
-		ID: "publisher",
+		ID:        "publisher",
 		Isolation: core.IsolationContainerDinD,
 		Resources: core.Resources{CPUMillis: 2500, MemoryBytes: 8 << 30},
 	}
@@ -220,7 +216,7 @@ func TestRecommendResourcesRejectsLegacyDinDAggregateSamples(t *testing.T) {
 			ID: fmt.Sprintf("legacy-%d", i), PoolID: pool.ID, Isolation: core.IsolationContainerDinD,
 			State: core.WorkerDeleted, StartedAt: base.Add(time.Duration(i) * time.Minute),
 			CompletedAt: base.Add(time.Duration(i)*time.Minute + 30*time.Second),
-			JobResult: "succeeded", Resources: pool.Resources,
+			JobResult:   "succeeded", Resources: pool.Resources,
 			Usage: core.ResourceUsageSummary{PeakCPUMillis: 4800, PeakMemoryBytes: 12 << 30, PeakEnvelopeCPUMillis: 2400, PeakEnvelopeMemoryBytes: 7 << 30, Samples: 2},
 		})
 	}
@@ -232,7 +228,7 @@ func TestRecommendResourcesRejectsLegacyDinDAggregateSamples(t *testing.T) {
 
 func TestRecommendResourcesRejectsImpossibleTrustedSample(t *testing.T) {
 	pool := core.RunnerPool{
-		ID: "standard",
+		ID:        "standard",
 		Isolation: core.IsolationContainerTrusted,
 		Resources: core.Resources{CPUMillis: 2500, MemoryBytes: 4 << 30},
 	}
@@ -247,7 +243,7 @@ func TestRecommendResourcesRejectsImpossibleTrustedSample(t *testing.T) {
 			ID: fmt.Sprintf("trusted-%d", i), PoolID: pool.ID, Isolation: core.IsolationContainerTrusted,
 			State: core.WorkerDeleted, StartedAt: base.Add(time.Duration(i) * time.Minute),
 			CompletedAt: base.Add(time.Duration(i)*time.Minute + 30*time.Second),
-			JobResult: "succeeded", Resources: pool.Resources,
+			JobResult:   "succeeded", Resources: pool.Resources,
 			Usage: core.ResourceUsageSummary{
 				PeakCPUMillis: cpu, PeakMemoryBytes: 2 << 30,
 				PeakEnvelopeCPUMillis: cpu, PeakEnvelopeMemoryBytes: 2 << 30, Samples: 2,
@@ -264,7 +260,7 @@ func TestRecommendResourcesHonorsLearningReset(t *testing.T) {
 	resetAt := time.Date(2026, 9, 21, 4, 30, 0, 0, time.UTC)
 	pool := core.RunnerPool{
 		ID: "reset", Isolation: core.IsolationContainerTrusted,
-		Resources: core.Resources{CPUMillis: 2500, MemoryBytes: 4 << 30},
+		Resources:       core.Resources{CPUMillis: 2500, MemoryBytes: 4 << 30},
 		LearningResetAt: resetAt,
 	}
 	var workers []core.Worker
@@ -300,7 +296,6 @@ func TestRecommendResourcesHonorsLearningReset(t *testing.T) {
 	}
 }
 
-
 func TestRecommendResourcesTreatsOOMAsMemoryLimitPressure(t *testing.T) {
 	pool := core.RunnerPool{
 		ID: "oom-pressure", Isolation: core.IsolationContainerTrusted,
@@ -312,7 +307,7 @@ func TestRecommendResourcesTreatsOOMAsMemoryLimitPressure(t *testing.T) {
 		workers = append(workers, core.Worker{
 			ID: fmt.Sprintf("oom-pressure-%d", i), PoolID: pool.ID, Isolation: core.IsolationContainerTrusted,
 			State: core.WorkerDeleted, StartedAt: base.Add(time.Duration(i) * time.Minute),
-			FailedAt: base.Add(time.Duration(i)*time.Minute + 30*time.Second),
+			FailedAt:  base.Add(time.Duration(i)*time.Minute + 30*time.Second),
 			JobResult: "failed", ProviderOOMKilled: true, Resources: pool.Resources,
 			Usage: core.ResourceUsageSummary{
 				PeakCPUMillis: 1000, PeakMemoryBytes: 2 << 30,
@@ -329,7 +324,6 @@ func TestRecommendResourcesTreatsOOMAsMemoryLimitPressure(t *testing.T) {
 	}
 }
 
-
 func TestRecommendResourcesDoesNotDownsizeSparseHistory(t *testing.T) {
 	pool := core.RunnerPool{ID: "sparse", Resources: core.Resources{CPUMillis: 2500, MemoryBytes: 8 << 30}}
 	base := time.Date(2026, 9, 21, 6, 0, 0, 0, time.UTC)
@@ -337,9 +331,9 @@ func TestRecommendResourcesDoesNotDownsizeSparseHistory(t *testing.T) {
 	for i := 0; i < 30; i++ {
 		workers = append(workers, core.Worker{
 			ID: fmt.Sprintf("sparse-%d", i), PoolID: pool.ID, State: core.WorkerDeleted,
-			StartedAt: base.Add(time.Duration(i) * time.Minute),
+			StartedAt:   base.Add(time.Duration(i) * time.Minute),
 			CompletedAt: base.Add(time.Duration(i)*time.Minute + 10*time.Second),
-			JobResult: "succeeded", Resources: pool.Resources,
+			JobResult:   "succeeded", Resources: pool.Resources,
 			Usage: core.ResourceUsageSummary{PeakCPUMillis: 500, PeakMemoryBytes: 1 << 30, Samples: 1},
 		})
 	}
@@ -355,7 +349,6 @@ func TestRecommendResourcesDoesNotDownsizeSparseHistory(t *testing.T) {
 	}
 }
 
-
 func TestRecommendResourcesRareOOMCannotBeHiddenByP95(t *testing.T) {
 	pool := core.RunnerPool{
 		ID: "rare-oom", Isolation: core.IsolationContainerTrusted,
@@ -369,7 +362,7 @@ func TestRecommendResourcesRareOOMCannotBeHiddenByP95(t *testing.T) {
 			ID: fmt.Sprintf("rare-oom-%d", i), PoolID: pool.ID, Isolation: core.IsolationContainerTrusted,
 			State: core.WorkerDeleted, StartedAt: base.Add(time.Duration(i) * time.Minute),
 			CompletedAt: base.Add(time.Duration(i)*time.Minute + 30*time.Second),
-			JobResult: "succeeded", Resources: pool.Resources,
+			JobResult:   "succeeded", Resources: pool.Resources,
 			Usage: core.ResourceUsageSummary{
 				PeakCPUMillis: 1000, PeakMemoryBytes: 1 << 30,
 				PeakEnvelopeCPUMillis: 1000, PeakEnvelopeMemoryBytes: 1 << 30, Samples: 2,
@@ -392,7 +385,6 @@ func TestRecommendResourcesRareOOMCannotBeHiddenByP95(t *testing.T) {
 	}
 }
 
-
 func TestRecommendResourcesRareMemoryHeavyJobCannotBeHiddenByP95(t *testing.T) {
 	pool := core.RunnerPool{
 		ID: "rare-memory", Isolation: core.IsolationContainerTrusted,
@@ -409,7 +401,7 @@ func TestRecommendResourcesRareMemoryHeavyJobCannotBeHiddenByP95(t *testing.T) {
 			ID: fmt.Sprintf("rare-memory-%d", i), PoolID: pool.ID, Isolation: core.IsolationContainerTrusted,
 			State: core.WorkerDeleted, StartedAt: base.Add(time.Duration(i) * time.Minute),
 			CompletedAt: base.Add(time.Duration(i)*time.Minute + 30*time.Second),
-			JobResult: "succeeded", Resources: pool.Resources,
+			JobResult:   "succeeded", Resources: pool.Resources,
 			Usage: core.ResourceUsageSummary{
 				PeakCPUMillis: 1000, PeakMemoryBytes: memory,
 				PeakEnvelopeCPUMillis: 1000, PeakEnvelopeMemoryBytes: memory, Samples: 2,
@@ -424,7 +416,6 @@ func TestRecommendResourcesRareMemoryHeavyJobCannotBeHiddenByP95(t *testing.T) {
 		t.Fatalf("rare memory-heavy job was hidden by p95: recommendation=%+v", got)
 	}
 }
-
 
 func TestRecommendResourcesRareCPUPeakCannotBeHiddenByP95(t *testing.T) {
 	pool := core.RunnerPool{

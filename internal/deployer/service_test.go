@@ -16,10 +16,10 @@ import (
 )
 
 type fakeTrueNAS struct {
-	mu    sync.Mutex
-	apps  []string
+	mu     sync.Mutex
+	apps   []string
 	images []string
-	block chan struct{}
+	block  chan struct{}
 }
 
 func (f *fakeTrueNAS) RedeployAndWait(ctx context.Context, app string) error {
@@ -179,7 +179,6 @@ func TestDeploymentSerializesPerApp(t *testing.T) {
 	}
 }
 
-
 func TestShutdownWaitsForCanceledSelfRedeployRecovery(t *testing.T) {
 	svc := &Service{}
 	if !svc.beginSelfRedeploy() {
@@ -221,4 +220,4 @@ func TestShutdownWaitsForCanceledSelfRedeployRecovery(t *testing.T) {
 	}
 }
 
-func (f *fakeTrueNAS) VerifyImmutableImageUpdate(context.Context,string,string)error{return nil}
+func (f *fakeTrueNAS) VerifyImmutableImageUpdate(context.Context, string, string) error { return nil }

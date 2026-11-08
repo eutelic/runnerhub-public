@@ -109,7 +109,6 @@ func assertNear(t *testing.T, got, want float64) {
 	}
 }
 
-
 func TestExecutionFromWorkerUsesExistingTelemetry(t *testing.T) {
 	base := time.Date(2026, 9, 22, 14, 0, 0, 0, time.UTC)
 	worker := core.Worker{
@@ -119,9 +118,9 @@ func TestExecutionFromWorkerUsesExistingTelemetry(t *testing.T) {
 		WorkflowRunID: 123,
 		JobID:         "job-456",
 		StartedAt:     base,
-		CompletedAt: base.Add(2 * time.Minute),
-		Resources:   core.Resources{CPUMillis: 2500, MemoryBytes: 8 << 30},
-		Usage:       core.ResourceUsageSummary{AverageCPUMillis: 1250, AverageMemoryBytes: 3 << 30, Samples: 8},
+		CompletedAt:   base.Add(2 * time.Minute),
+		Resources:     core.Resources{CPUMillis: 2500, MemoryBytes: 8 << 30},
+		Usage:         core.ResourceUsageSummary{AverageCPUMillis: 1250, AverageMemoryBytes: 3 << 30, Samples: 8},
 	}
 	got, ok := ExecutionFromWorker(worker)
 	if !ok {

@@ -26,13 +26,17 @@ func (f *fakeManagedTrueNAS) ListApps(context.Context) ([]TrueNASApp, error) {
 // A fake custom app implements the same pinned endpoint as the TrueNAS
 // client while recording the exact immutable image visible in app.query.
 func (f *fakeManagedTrueNAS) RedeployPinnedAndWait(ctx context.Context, app, image, previousDigest, targetDigest string) error {
-	if err := ctx.Err(); err != nil { return err }
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	previousPinned := strings.TrimSuffix(strings.ToLower(image), ":latest")+"@"+previousDigest
-	pinned := strings.TrimSuffix(strings.ToLower(image), ":latest")+"@"+targetDigest
+	previousPinned := strings.TrimSuffix(strings.ToLower(image), ":latest") + "@" + previousDigest
+	pinned := strings.TrimSuffix(strings.ToLower(image), ":latest") + "@" + targetDigest
 	for i := range f.inventory {
-		if f.inventory[i].Name != app { continue }
+		if f.inventory[i].Name != app {
+			continue
+		}
 		for j, installed := range f.inventory[i].Images {
 			if strings.EqualFold(installed, image) || strings.EqualFold(installed, previousPinned) {
 				f.inventory[i].Images[j] = pinned
@@ -222,7 +226,9 @@ func TestManagedAppsRejectInvalidCredentialsAndProtectedTargets(t *testing.T) {
 }
 
 func ioNopCloser(value string) *nopReader { return &nopReader{bytes.NewBufferString(value)} }
-type nopReader struct { *bytes.Buffer }
+
+type nopReader struct{ *bytes.Buffer }
+
 func (n *nopReader) Close() error { return nil }
 
 func TestBootstrapManagerUsesExistingDeployerCredential(t *testing.T) {
@@ -289,7 +295,6 @@ func TestManagedAppsProtectRunnerHubControlPlaneWithoutWorkflowTarget(t *testing
 	}
 }
 
-
 func TestManagedAppPinnedRedeployRequiresAuthenticationAndEnabledApp(t *testing.T) {
 	fake := testManagedInventory()
 	for i := range fake.inventory {
@@ -299,13 +304,15 @@ func TestManagedAppPinnedRedeployRequiresAuthenticationAndEnabledApp(t *testing.
 	}
 	svc := newManagedService(t, fake, t.TempDir())
 	path := managementPrefix + "/file-ingest/redeploy-pinned"
-	payload := `{"image":"ghcr.io/eutelic/file-ingest:latest","previousDigest":"`+baselineDigest+`","targetDigest":"`+updatedDigest+`"}`
+	payload := `{"image":"ghcr.io/eutelic/file-ingest:latest","previousDigest":"` + baselineDigest + `","targetDigest":"` + updatedDigest + `"}`
 	response := httptest.NewRecorder()
 	svc.Handler().ServeHTTP(response, signedManagedRequest(t, svc.ManagementKey, "POST", path, payload))
 	if response.Code != http.StatusForbidden || len(fake.apps) != 0 {
 		t.Fatalf("disabled pinned app deployed: status=%d apps=%v", response.Code, fake.apps)
 	}
-	if err := svc.setManaged("file-ingest", true); err != nil { t.Fatal(err) }
+	if err := svc.setManaged("file-ingest", true); err != nil {
+		t.Fatal(err)
+	}
 	unauthorized := httptest.NewRecorder()
 	unauthorizedReq := httptest.NewRequest("POST", path, strings.NewReader(payload))
 	svc.Handler().ServeHTTP(unauthorized, unauthorizedReq)

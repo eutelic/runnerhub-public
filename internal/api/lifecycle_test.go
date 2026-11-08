@@ -25,11 +25,11 @@ func TestCreateResultMovesWorkerToRegistering(t *testing.T) {
 	defer st.Close()
 
 	worker := core.Worker{
-		ID:        "worker-create",
-		HostID:    "host-1",
+		ID:         "worker-create",
+		HostID:     "host-1",
 		ProviderID: "docker",
-		State:     core.WorkerProvisioning,
-		UpdatedAt: time.Now().UTC(),
+		State:      core.WorkerProvisioning,
+		UpdatedAt:  time.Now().UTC(),
 	}
 	if err := st.UpsertWorker(ctx, worker); err != nil {
 		t.Fatal(err)
@@ -390,10 +390,10 @@ func TestProviderFailureRetainsOnlyPreJobDiagnostics(t *testing.T) {
 	exitCode := 1
 	if err := svc.HandleAgentResult(ctx, "host-1", agent.CommandResult{
 		WorkerID: startup.ID,
-		OK: true,
+		OK:       true,
 		State: &provider.WorkerState{
 			State: core.WorkerFailed, ExitCode: &exitCode,
-			SafeDetail: "container exited",
+			SafeDetail:  "container exited",
 			Diagnostics: "Current runner version: 2.337.0\nregistration failed",
 		},
 	}); err != nil {
@@ -418,10 +418,10 @@ func TestProviderFailureRetainsOnlyPreJobDiagnostics(t *testing.T) {
 	}
 	if err := svc.HandleAgentResult(ctx, "host-1", agent.CommandResult{
 		WorkerID: job.ID,
-		OK: true,
+		OK:       true,
 		State: &provider.WorkerState{
 			State: core.WorkerFailed, ExitCode: &exitCode,
-			SafeDetail: "container exited",
+			SafeDetail:  "container exited",
 			Diagnostics: "workflow output must not be retained",
 		},
 	}); err != nil {
@@ -438,54 +438,72 @@ func TestProviderFailureRetainsOnlyPreJobDiagnostics(t *testing.T) {
 func TestCanceledPublisherExitQueuesExactCleanupAndHoldsReservationUntilDelete(t *testing.T) {
 	ctx := context.Background()
 	st, err := store.OpenSQLite(":memory:")
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer st.Close()
 	hub, err := agenthub.New(st, "enrollment-secret", "agent-secret-that-is-at-least-thirty-two-bytes")
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	host := core.Host{
 		ID: "host-1", Name: "publisher-host", Provider: "docker", State: core.HostOnline,
-		Tags: map[string]string{"isolation.container-dind": "true"},
+		Tags:     map[string]string{"isolation.container-dind": "true"},
 		Capacity: core.Resources{CPUMillis: 10000, MemoryBytes: 32 << 30, DiskBytes: 40 << 30},
 	}
-	if err := st.UpsertHost(ctx, host); err != nil { t.Fatal(err) }
+	if err := st.UpsertHost(ctx, host); err != nil {
+		t.Fatal(err)
+	}
 	pool := core.RunnerPool{
 		ID: "publisher", Name: "publisher", Isolation: core.IsolationContainerDinD,
-		Resources: core.Resources{CPUMillis: 2500, MemoryBytes: 8 << 30, DiskBytes: 1 << 30},
+		Resources:      core.Resources{CPUMillis: 2500, MemoryBytes: 8 << 30, DiskBytes: 1 << 30},
 		MaxConcurrency: 2,
-		Scope: core.GitHubScope{Kind: core.ScopeRepository, Owner: "eutelic", Repository: "runnerhub"},
+		Scope:          core.GitHubScope{Kind: core.ScopeRepository, Owner: "eutelic", Repository: "runnerhub"},
 	}
-	if err := st.UpsertPool(ctx, pool); err != nil { t.Fatal(err) }
+	if err := st.UpsertPool(ctx, pool); err != nil {
+		t.Fatal(err)
+	}
 	worker := core.Worker{
 		ID: "worker-canceled-publisher", HostID: host.ID, PoolID: pool.ID,
 		RunnerName: "runnerhub-publisher-1", ProviderID: "docker",
 		ProviderHandle: "runner-container-1", Isolation: core.IsolationContainerDinD,
 		Resources: pool.Resources, State: core.WorkerBusy,
 		Scope: pool.Scope, JobName: "publish (agent, runnerhub-agent)",
-		WorkflowRunID: 1234, JobID: "5678", StartedAt: time.Now().UTC().Add(-10*time.Minute),
+		WorkflowRunID: 1234, JobID: "5678", StartedAt: time.Now().UTC().Add(-10 * time.Minute),
 	}
-	if err := st.UpsertWorker(ctx, worker); err != nil { t.Fatal(err) }
+	if err := st.UpsertWorker(ctx, worker); err != nil {
+		t.Fatal(err)
+	}
 
 	svc := &Service{Store: st, Hub: hub}
 	request := httptest.NewRequest(http.MethodPost, "/api/v1/scale-events", bytes.NewBufferString(`{"poolId":"publisher","runnerName":"runnerhub-publisher-1","state":"completed","result":"Canceled","workflowRunId":1234,"jobId":"5678","jobName":"publish (agent, runnerhub-agent)"}`))
 	request.Header.Set("Content-Type", "application/json")
 	response := httptest.NewRecorder()
 	svc.Handler().ServeHTTP(response, request)
-	if response.Code != http.StatusOK { t.Fatalf("scale completion status=%d body=%s", response.Code, response.Body.String()) }
+	if response.Code != http.StatusOK {
+		t.Fatalf("scale completion status=%d body=%s", response.Code, response.Body.String())
+	}
 
 	got, err := st.GetWorker(ctx, worker.ID)
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	if got.State != core.WorkerCleanupPending || got.JobResult != "Canceled" {
 		t.Fatalf("canceled scale-set completion state/result=%s/%q, want cleanup_pending/Canceled", got.State, got.JobResult)
 	}
 	summary := scheduler.SummarizeCapacity(pool, []core.Host{host}, []core.Worker{got})
-	if summary.Reserved.CPUMillis != 5000 || summary.Reserved.MemoryBytes != 16<<30 { t.Fatalf("canceled job released host reservation before provider delete: %+v", summary) }
+	if summary.Reserved.CPUMillis != 5000 || summary.Reserved.MemoryBytes != 16<<30 {
+		t.Fatalf("canceled job released host reservation before provider delete: %+v", summary)
+	}
 
 	commands := hub.Next(host.ID)
 	if len(commands) != 1 || commands[0].Type != agent.CommandDelete {
 		t.Fatalf("expected exact-owned runner delete after cancellation, got %+v", commands)
 	}
-	if commands[0].WorkerID != worker.ID { t.Fatalf("delete command worker=%q, want %q", commands[0].WorkerID, worker.ID) }
+	if commands[0].WorkerID != worker.ID {
+		t.Fatalf("delete command worker=%q, want %q", commands[0].WorkerID, worker.ID)
+	}
 	if commands[0].Handle == nil || commands[0].Handle.HostID != host.ID || commands[0].Handle.ProviderID != worker.ProviderHandle {
 		t.Fatalf("delete handle=%+v, want host=%s runner=%s", commands[0].Handle, host.ID, worker.ProviderHandle)
 	}
@@ -496,18 +514,24 @@ func TestCanceledPublisherExitQueuesExactCleanupAndHoldsReservationUntilDelete(t
 		t.Fatal(err)
 	}
 	got, err = st.GetWorker(ctx, worker.ID)
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	if got.State != core.WorkerCleanupPending || got.JobResult != "Canceled" || got.ProviderExitCode == nil || *got.ProviderExitCode != 143 {
 		t.Fatalf("runner exit overwrote cancellation or cleanup state: %+v", got)
 	}
 	summary = scheduler.SummarizeCapacity(pool, []core.Host{host}, []core.Worker{got})
-	if summary.Reserved.CPUMillis != 5000 || summary.Reserved.MemoryBytes != 16<<30 { t.Fatalf("reservation released before delete completed: %+v", summary) }
+	if summary.Reserved.CPUMillis != 5000 || summary.Reserved.MemoryBytes != 16<<30 {
+		t.Fatalf("reservation released before delete completed: %+v", summary)
+	}
 
 	if err := svc.HandleAgentResult(ctx, host.ID, agent.CommandResult{CommandID: commands[0].ID, WorkerID: worker.ID, OK: true}); err != nil {
 		t.Fatal(err)
 	}
 	got, err = st.GetWorker(ctx, worker.ID)
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	if got.State != core.WorkerDeleted || got.JobResult != "Canceled" {
 		t.Fatalf("successful delete did not finish canceled worker cleanly: %+v", got)
 	}
@@ -516,4 +540,3 @@ func TestCanceledPublisherExitQueuesExactCleanupAndHoldsReservationUntilDelete(t
 		t.Fatalf("reservation did not release after delete: %+v", summary)
 	}
 }
-

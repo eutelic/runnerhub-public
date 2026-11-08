@@ -14,7 +14,7 @@ import (
 
 const (
 	workflowRunQuarantineFirstDelay = 6 * time.Hour
-	workflowRunQuarantineMaxDelay  = 7 * 24 * time.Hour
+	workflowRunQuarantineMaxDelay   = 7 * 24 * time.Hour
 )
 
 func permanentWorkflowRunMetadataFailure(err error) string {
@@ -82,12 +82,12 @@ func (r *Reconciler) quarantineWorkflowRun(
 	}
 	if r.Store != nil {
 		_ = r.Store.AppendAudit(ctx, core.AuditEvent{
-			Actor: "ci-reconciler",
-			Action: "quarantine_workflow_run",
+			Actor:        "ci-reconciler",
+			Action:       "quarantine_workflow_run",
 			ResourceType: "ci_workflow_run",
-			ResourceID: fmt.Sprintf("%s#%d", repository, runID),
-			Result: "quarantined",
-			SafeDetail: fmt.Sprintf("%s; recheck after %s", reason, record.RetryAfter.UTC().Format(time.RFC3339)),
+			ResourceID:   fmt.Sprintf("%s#%d", repository, runID),
+			Result:       "quarantined",
+			SafeDetail:   fmt.Sprintf("%s; recheck after %s", reason, record.RetryAfter.UTC().Format(time.RFC3339)),
 		})
 	}
 	return true, nil

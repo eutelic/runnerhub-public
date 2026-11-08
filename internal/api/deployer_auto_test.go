@@ -8,12 +8,12 @@ import (
 
 func TestInitialPublicationCursor(t *testing.T) {
 	for _, tc := range []struct {
-		name string
-		found bool
-		status string
-		id int64
-		attempt int
-		wantID int64
+		name        string
+		found       bool
+		status      string
+		id          int64
+		attempt     int
+		wantID      int64
 		wantAttempt int
 	}{
 		{name: "no runs", found: false, wantID: 0, wantAttempt: 0},

@@ -14,17 +14,19 @@ import (
 // Codes are stable enough for the UI to distinguish per-repo access failures
 // from an OAuth/App permission problem and global API throttling.
 type QueueInspectionError struct {
-	Code string
-	Detail string
+	Code      string
+	Detail    string
 	RequestID string
-	RetryAt string
+	RetryAt   string
 }
 
 func (e *QueueInspectionError) Error() string { return e.Detail }
 
 func classifyQueueInspectionError(err error) error {
 	var upstream *githubAPIError
-	if !errors.As(err, &upstream) { return err }
+	if !errors.As(err, &upstream) {
+		return err
+	}
 	message := strings.ToLower(upstream.Message)
 	result := &QueueInspectionError{RequestID: upstream.RequestID}
 	switch {
@@ -33,7 +35,7 @@ func classifyQueueInspectionError(err error) error {
 		result.Detail = "GitHub session is no longer authorized for Actions inspection. Sign out and sign in with GitHub again."
 	case upstream.StatusCode == http.StatusTooManyRequests ||
 		(upstream.StatusCode == http.StatusForbidden && (strings.TrimSpace(upstream.RateRemaining) == "0" ||
-		strings.Contains(message, "rate limit") || strings.Contains(message, "abuse detection"))):
+			strings.Contains(message, "rate limit") || strings.Contains(message, "abuse detection"))):
 		result.Code = "github-rate-limited"
 		result.Detail = "GitHub API rate limit reached. Queue inspection is paused; retry after the rate limit resets."
 		if reset, parseErr := strconv.ParseInt(strings.TrimSpace(upstream.RateReset), 10, 64); parseErr == nil && reset > 0 {
@@ -43,7 +45,7 @@ func classifyQueueInspectionError(err error) error {
 		// X-RateLimit-Reset. Never parse unbounded or arbitrary date strings.
 		if result.RetryAt == "" {
 			if seconds, parseErr := strconv.Atoi(strings.TrimSpace(upstream.RetryAfter)); parseErr == nil && seconds > 0 && seconds <= 86400 {
-				result.RetryAt = time.Now().Add(time.Duration(seconds)*time.Second).UTC().Format(time.RFC3339)
+				result.RetryAt = time.Now().Add(time.Duration(seconds) * time.Second).UTC().Format(time.RFC3339)
 			}
 		}
 	case upstream.StatusCode == http.StatusForbidden && strings.Contains(message, "resource not accessible by integration"):
@@ -137,7 +139,7 @@ func (m *Manager) QueuedJobs(r *http.Request, fullName string) (QueuedJobsReport
 			report.CheckedRuns++
 			var jobs struct {
 				TotalCount int `json:"total_count"`
-				Jobs []struct {
+				Jobs       []struct {
 					ID         int64    `json:"id"`
 					Name       string   `json:"name"`
 					HTMLURL    string   `json:"html_url"`

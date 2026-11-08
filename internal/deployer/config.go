@@ -19,16 +19,16 @@ const defaultTimeout = 2 * time.Minute
 var targetIDPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
 
 type Target struct {
-	ID             string `json:"id"`
-	Repository     string `json:"repository"`
-	App            string `json:"app"`
-	Image          string `json:"image"`
-	TokenSHA256    string `json:"token_sha256"`
-	HealthURL      string `json:"health_url,omitempty"`
-	SelfRedeploy bool `json:"self_redeploy,omitempty"`
-	MaintenanceURL string `json:"maintenance_url,omitempty"`
-	DrainTimeoutSeconds int `json:"drain_timeout_seconds,omitempty"`
-	TimeoutSeconds int    `json:"timeout_seconds,omitempty"`
+	ID                  string `json:"id"`
+	Repository          string `json:"repository"`
+	App                 string `json:"app"`
+	Image               string `json:"image"`
+	TokenSHA256         string `json:"token_sha256"`
+	HealthURL           string `json:"health_url,omitempty"`
+	SelfRedeploy        bool   `json:"self_redeploy,omitempty"`
+	MaintenanceURL      string `json:"maintenance_url,omitempty"`
+	DrainTimeoutSeconds int    `json:"drain_timeout_seconds,omitempty"`
+	TimeoutSeconds      int    `json:"timeout_seconds,omitempty"`
 }
 
 func (t Target) Timeout() time.Duration {
@@ -40,9 +40,11 @@ func (t Target) Timeout() time.Duration {
 
 // DrainTimeout is separate from the TrueNAS upgrade/health timeout: active CI
 // can take substantially longer than an app restart.
-func(t Target) DrainTimeout()time.Duration{
- if t.DrainTimeoutSeconds<=0{return 4*time.Hour}
- return time.Duration(t.DrainTimeoutSeconds)*time.Second
+func (t Target) DrainTimeout() time.Duration {
+	if t.DrainTimeoutSeconds <= 0 {
+		return 4 * time.Hour
+	}
+	return time.Duration(t.DrainTimeoutSeconds) * time.Second
 }
 
 type Policy struct {
@@ -116,20 +118,20 @@ func NewPolicySet(p Policy) (*PolicySet, error) {
 			}
 		}
 		if target.SelfRedeploy {
-            if target.ID!="runnerhub" || target.MaintenanceURL=="" {
-                return nil,fmt.Errorf("self-redeployment requires the runnerhub target/app and maintenance_url")
-            }
-            u,err:=url.Parse(target.MaintenanceURL)
-            if err!=nil||(u.Scheme!="http"&&u.Scheme!="https")||u.Host==""||u.User!=nil||u.RawQuery!=""||u.Fragment!=""||u.Path!="" {
-                return nil,fmt.Errorf("self-redeployment requires a fixed absolute maintenance_url without path or credentials")
-            }
-        } else if target.MaintenanceURL!="" {
-            return nil,fmt.Errorf("non-runnerhub target cannot specify maintenance_url")
-        }
-        if target.DrainTimeoutSeconds<0||target.DrainTimeoutSeconds>28800 {
-            return nil,fmt.Errorf("drain timeout must be 1-28800 seconds when configured")
-        }
-        if target.TimeoutSeconds < 0 || target.TimeoutSeconds > 900 {
+			if target.ID != "runnerhub" || target.MaintenanceURL == "" {
+				return nil, fmt.Errorf("self-redeployment requires the runnerhub target/app and maintenance_url")
+			}
+			u, err := url.Parse(target.MaintenanceURL)
+			if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || u.Path != "" {
+				return nil, fmt.Errorf("self-redeployment requires a fixed absolute maintenance_url without path or credentials")
+			}
+		} else if target.MaintenanceURL != "" {
+			return nil, fmt.Errorf("non-runnerhub target cannot specify maintenance_url")
+		}
+		if target.DrainTimeoutSeconds < 0 || target.DrainTimeoutSeconds > 28800 {
+			return nil, fmt.Errorf("drain timeout must be 1-28800 seconds when configured")
+		}
+		if target.TimeoutSeconds < 0 || target.TimeoutSeconds > 900 {
 			return nil, fmt.Errorf("target %q timeout_seconds must be between 1 and 900 when set", target.ID)
 		}
 		out.targets[target.ID] = policyTarget{Target: target, tokenHash: hash}

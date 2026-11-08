@@ -138,7 +138,6 @@ func TestHTTPBackendDoesNotEchoTokenOnError(t *testing.T) {
 	}
 }
 
-
 func TestHTTPBackendListWorkflowJobs(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet || r.URL.Path != "/repos/eutelic/runnerhub/actions/runs/987/jobs" {

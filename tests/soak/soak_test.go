@@ -2,17 +2,159 @@
 
 package soak
 
-import(
-"bytes";"context";"encoding/json";"fmt";"github.com/eutelic/runnerhub/internal/agent";"github.com/eutelic/runnerhub/internal/agenthub";apihttp "github.com/eutelic/runnerhub/internal/api";"github.com/eutelic/runnerhub/internal/core";"github.com/eutelic/runnerhub/internal/githubrunner";"github.com/eutelic/runnerhub/internal/images";"github.com/eutelic/runnerhub/internal/policy";"github.com/eutelic/runnerhub/internal/provider";"github.com/eutelic/runnerhub/internal/reconcile";"github.com/eutelic/runnerhub/internal/scheduler";"github.com/eutelic/runnerhub/internal/store";"net/http";"net/http/httptest";"sync";"testing";"time")
-type fakeGH struct{mu sync.Mutex;next int64;runners map[int64]githubrunner.Runner}
-func(f *fakeGH)GenerateJITConfig(_ context.Context,r githubrunner.JITConfigRequest)(githubrunner.JITConfig,error){f.mu.Lock();defer f.mu.Unlock();f.next++;x:=githubrunner.Runner{ID:f.next,Name:r.RunnerName,Status:"online",Labels:r.Labels,Ephemeral:true,Version:"test"};f.runners[x.ID]=x;return githubrunner.JITConfig{RunnerID:x.ID,RunnerName:x.Name,EncodedConfig:"jit"},nil}
-func(f *fakeGH)GetRunner(_ context.Context,_ core.GitHubScope,id int64)(githubrunner.Runner,error){f.mu.Lock();defer f.mu.Unlock();x,ok:=f.runners[id];if !ok{return githubrunner.Runner{},githubrunner.ErrNotFound};return x,nil}
-func(f *fakeGH)DeleteRunner(_ context.Context,_ core.GitHubScope,id int64)error{f.mu.Lock();defer f.mu.Unlock();delete(f.runners,id);return nil}
-func(f *fakeGH)count()int{f.mu.Lock();defer f.mu.Unlock();return len(f.runners)}
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"github.com/eutelic/runnerhub/internal/agent"
+	"github.com/eutelic/runnerhub/internal/agenthub"
+	apihttp "github.com/eutelic/runnerhub/internal/api"
+	"github.com/eutelic/runnerhub/internal/core"
+	"github.com/eutelic/runnerhub/internal/githubrunner"
+	"github.com/eutelic/runnerhub/internal/images"
+	"github.com/eutelic/runnerhub/internal/policy"
+	"github.com/eutelic/runnerhub/internal/provider"
+	"github.com/eutelic/runnerhub/internal/reconcile"
+	"github.com/eutelic/runnerhub/internal/scheduler"
+	"github.com/eutelic/runnerhub/internal/store"
+	"net/http"
+	"net/http/httptest"
+	"sync"
+	"testing"
+	"time"
+)
+
+type fakeGH struct {
+	mu      sync.Mutex
+	next    int64
+	runners map[int64]githubrunner.Runner
+}
+
+func (f *fakeGH) GenerateJITConfig(_ context.Context, r githubrunner.JITConfigRequest) (githubrunner.JITConfig, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.next++
+	x := githubrunner.Runner{ID: f.next, Name: r.RunnerName, Status: "online", Labels: r.Labels, Ephemeral: true, Version: "test"}
+	f.runners[x.ID] = x
+	return githubrunner.JITConfig{RunnerID: x.ID, RunnerName: x.Name, EncodedConfig: "jit"}, nil
+}
+func (f *fakeGH) GetRunner(_ context.Context, _ core.GitHubScope, id int64) (githubrunner.Runner, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	x, ok := f.runners[id]
+	if !ok {
+		return githubrunner.Runner{}, githubrunner.ErrNotFound
+	}
+	return x, nil
+}
+func (f *fakeGH) DeleteRunner(_ context.Context, _ core.GitHubScope, id int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	delete(f.runners, id)
+	return nil
+}
+func (f *fakeGH) count() int { f.mu.Lock(); defer f.mu.Unlock(); return len(f.runners) }
+
 type fakeCatalog struct{}
-func(fakeCatalog)ListRepositories(context.Context,core.GitHubScope)([]githubrunner.Repository,error){return []githubrunner.Repository{{ID:1,FullName:"eutelic/runnerhub",Private:true,DefaultBranch:"main"}},nil}
-func(fakeCatalog)GetRepository(context.Context,string,string)(githubrunner.Repository,error){return githubrunner.Repository{ID:1,FullName:"eutelic/runnerhub",Private:true,DefaultBranch:"main"},nil}
-func(fakeCatalog)ListRunnerGroups(context.Context,string)([]githubrunner.RunnerGroup,error){return nil,nil}
-func(fakeCatalog)GetRunnerGroup(context.Context,string,int64)(githubrunner.RunnerGroup,error){return githubrunner.RunnerGroup{},nil}
-func(fakeCatalog)ListRunnerGroupRepositories(context.Context,string,int64)([]githubrunner.Repository,error){return nil,nil}
-func TestHundredJobLifecycleLeavesNoRunners(t *testing.T){ctx:=context.Background();st,_:=store.OpenSQLite(":memory:");defer st.Close();hub,_:=agenthub.New(st,"enrollment-secret-123","agent-secret-that-is-at-least-thirty-two-bytes");gh:=&fakeGH{runners:map[int64]githubrunner.Runner{}};svc:=&apihttp.Service{Store:st,GitHub:gh,Catalog:fakeCatalog{},Hub:hub,Scheduler:scheduler.Scheduler{Store:st},Policy:policy.Engine{AllowedImages:map[string]struct{}{images.DefaultRunnerImage:{}}}};hub.SetResultHandler(svc.HandleAgentResult);enrolled,err:=hub.Enroll(ctx,"enrollment-secret-123",agent.EnrollRequest{Name:"lab",Provider:"docker",Capabilities:provider.Capabilities{Provider:"docker",OS:"linux",Architecture:"amd64",Capacity:core.Resources{CPUMillis:16000,MemoryBytes:64<<30},IsolationModes:[]core.IsolationMode{core.IsolationContainerTrusted},Labels:map[string]string{"isolation.container-trusted":"true"}}});if err!=nil{t.Fatal(err)};pool:=core.RunnerPool{ID:"pool",Name:"linux-small",Scope:core.GitHubScope{Kind:core.ScopeRepository,Owner:"eutelic",Repository:"runnerhub"},Labels:[]string{"linux-small"},Isolation:core.IsolationContainerTrusted,Resources:core.Resources{CPUMillis:1000,MemoryBytes:1<<30},MaxConcurrency:4,RunnerGroupID:1,Image:images.DefaultRunnerImage};if err:=st.UpsertPool(ctx,pool);err!=nil{t.Fatal(err)};rec:=&reconcile.Reconciler{Store:st,GitHub:gh,Hub:hub,Now:time.Now};server:=httptest.NewServer(svc.Handler());defer server.Close();for i:=0;i<100;i++{body,_:=json.Marshal(map[string]any{"repository":"eutelic/runnerhub","workflow":"smoke"});resp,err:=http.Post(server.URL+"/api/v1/pools/pool/workers","application/json",bytes.NewReader(body));if err!=nil{t.Fatal(err)};if resp.StatusCode!=http.StatusAccepted{t.Fatalf("job %d create status=%d",i,resp.StatusCode)};var w core.Worker;if err:=json.NewDecoder(resp.Body).Decode(&w);err!=nil{t.Fatal(err)};resp.Body.Close();cmds:=hub.Next(enrolled.HostID);if len(cmds)!=1||cmds[0].Type!=agent.CommandCreate{t.Fatalf("job %d expected create command, got %+v",i,cmds)};h:=provider.WorkerHandle{ProviderID:fmt.Sprintf("container-%d",i),HostID:enrolled.HostID};if err:=hub.HandleResult(ctx,enrolled.HostID,agent.CommandResult{CommandID:cmds[0].ID,WorkerID:w.ID,OK:true,Handle:&h});err!=nil{t.Fatal(err)};if err:=rec.Once(ctx);err!=nil{t.Fatal(err)};cur,_:=st.GetWorker(ctx,w.ID);if cur.State!=core.WorkerReady{t.Fatalf("job %d expected ready got %s",i,cur.State)};inspect:=hub.Next(enrolled.HostID);for _,cmd:=range inspect{if cmd.Type==agent.CommandInspect{if err:=hub.HandleResult(ctx,enrolled.HostID,agent.CommandResult{CommandID:cmd.ID,WorkerID:w.ID,OK:true,State:&provider.WorkerState{State:core.WorkerReady}});err!=nil{t.Fatal(err)}}};cur,_=st.GetWorker(ctx,w.ID);if err:=svc.HandleAgentResult(ctx,enrolled.HostID,agent.CommandResult{WorkerID:w.ID,OK:true,State:&provider.WorkerState{State:core.WorkerCompleted}});err!=nil{t.Fatal(err)};if err:=rec.Once(ctx);err!=nil{t.Fatal(err)};cmds=hub.Next(enrolled.HostID);var del *agent.Command;for j:=range cmds{if cmds[j].Type==agent.CommandDelete{del=&cmds[j]}};if del==nil{t.Fatalf("job %d missing delete command: %+v",i,cmds)};if err:=hub.HandleResult(ctx,enrolled.HostID,agent.CommandResult{CommandID:del.ID,WorkerID:w.ID,OK:true});err!=nil{t.Fatal(err)};cur,_=st.GetWorker(ctx,w.ID);if cur.State!=core.WorkerDeleted{t.Fatalf("job %d expected deleted got %s",i,cur.State)};if gh.count()!=0{t.Fatalf("job %d left %d github runners",i,gh.count())}}}
+
+func (fakeCatalog) ListRepositories(context.Context, core.GitHubScope) ([]githubrunner.Repository, error) {
+	return []githubrunner.Repository{{ID: 1, FullName: "eutelic/runnerhub", Private: true, DefaultBranch: "main"}}, nil
+}
+func (fakeCatalog) GetRepository(context.Context, string, string) (githubrunner.Repository, error) {
+	return githubrunner.Repository{ID: 1, FullName: "eutelic/runnerhub", Private: true, DefaultBranch: "main"}, nil
+}
+func (fakeCatalog) ListRunnerGroups(context.Context, string) ([]githubrunner.RunnerGroup, error) {
+	return nil, nil
+}
+func (fakeCatalog) GetRunnerGroup(context.Context, string, int64) (githubrunner.RunnerGroup, error) {
+	return githubrunner.RunnerGroup{}, nil
+}
+func (fakeCatalog) ListRunnerGroupRepositories(context.Context, string, int64) ([]githubrunner.Repository, error) {
+	return nil, nil
+}
+func TestHundredJobLifecycleLeavesNoRunners(t *testing.T) {
+	ctx := context.Background()
+	st, _ := store.OpenSQLite(":memory:")
+	defer st.Close()
+	hub, _ := agenthub.New(st, "enrollment-secret-123", "agent-secret-that-is-at-least-thirty-two-bytes")
+	gh := &fakeGH{runners: map[int64]githubrunner.Runner{}}
+	svc := &apihttp.Service{Store: st, GitHub: gh, Catalog: fakeCatalog{}, Hub: hub, Scheduler: scheduler.Scheduler{Store: st}, Policy: policy.Engine{AllowedImages: map[string]struct{}{images.DefaultRunnerImage: {}}}}
+	hub.SetResultHandler(svc.HandleAgentResult)
+	enrolled, err := hub.Enroll(ctx, "enrollment-secret-123", agent.EnrollRequest{Name: "lab", Provider: "docker", Capabilities: provider.Capabilities{Provider: "docker", OS: "linux", Architecture: "amd64", Capacity: core.Resources{CPUMillis: 16000, MemoryBytes: 64 << 30}, IsolationModes: []core.IsolationMode{core.IsolationContainerTrusted}, Labels: map[string]string{"isolation.container-trusted": "true"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pool := core.RunnerPool{ID: "pool", Name: "linux-small", Scope: core.GitHubScope{Kind: core.ScopeRepository, Owner: "eutelic", Repository: "runnerhub"}, Labels: []string{"linux-small"}, Isolation: core.IsolationContainerTrusted, Resources: core.Resources{CPUMillis: 1000, MemoryBytes: 1 << 30}, MaxConcurrency: 4, RunnerGroupID: 1, Image: images.DefaultRunnerImage}
+	if err := st.UpsertPool(ctx, pool); err != nil {
+		t.Fatal(err)
+	}
+	rec := &reconcile.Reconciler{Store: st, GitHub: gh, Hub: hub, Now: time.Now}
+	server := httptest.NewServer(svc.Handler())
+	defer server.Close()
+	for i := 0; i < 100; i++ {
+		body, _ := json.Marshal(map[string]any{"repository": "eutelic/runnerhub", "workflow": "smoke"})
+		resp, err := http.Post(server.URL+"/api/v1/pools/pool/workers", "application/json", bytes.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if resp.StatusCode != http.StatusAccepted {
+			t.Fatalf("job %d create status=%d", i, resp.StatusCode)
+		}
+		var w core.Worker
+		if err := json.NewDecoder(resp.Body).Decode(&w); err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		cmds := hub.Next(enrolled.HostID)
+		if len(cmds) != 1 || cmds[0].Type != agent.CommandCreate {
+			t.Fatalf("job %d expected create command, got %+v", i, cmds)
+		}
+		h := provider.WorkerHandle{ProviderID: fmt.Sprintf("container-%d", i), HostID: enrolled.HostID}
+		if err := hub.HandleResult(ctx, enrolled.HostID, agent.CommandResult{CommandID: cmds[0].ID, WorkerID: w.ID, OK: true, Handle: &h}); err != nil {
+			t.Fatal(err)
+		}
+		if err := rec.Once(ctx); err != nil {
+			t.Fatal(err)
+		}
+		cur, _ := st.GetWorker(ctx, w.ID)
+		if cur.State != core.WorkerReady {
+			t.Fatalf("job %d expected ready got %s", i, cur.State)
+		}
+		inspect := hub.Next(enrolled.HostID)
+		for _, cmd := range inspect {
+			if cmd.Type == agent.CommandInspect {
+				if err := hub.HandleResult(ctx, enrolled.HostID, agent.CommandResult{CommandID: cmd.ID, WorkerID: w.ID, OK: true, State: &provider.WorkerState{State: core.WorkerReady}}); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}
+		cur, _ = st.GetWorker(ctx, w.ID)
+		if err := svc.HandleAgentResult(ctx, enrolled.HostID, agent.CommandResult{WorkerID: w.ID, OK: true, State: &provider.WorkerState{State: core.WorkerCompleted}}); err != nil {
+			t.Fatal(err)
+		}
+		if err := rec.Once(ctx); err != nil {
+			t.Fatal(err)
+		}
+		cmds = hub.Next(enrolled.HostID)
+		var del *agent.Command
+		for j := range cmds {
+			if cmds[j].Type == agent.CommandDelete {
+				del = &cmds[j]
+			}
+		}
+		if del == nil {
+			t.Fatalf("job %d missing delete command: %+v", i, cmds)
+		}
+		if err := hub.HandleResult(ctx, enrolled.HostID, agent.CommandResult{CommandID: del.ID, WorkerID: w.ID, OK: true}); err != nil {
+			t.Fatal(err)
+		}
+		cur, _ = st.GetWorker(ctx, w.ID)
+		if cur.State != core.WorkerDeleted {
+			t.Fatalf("job %d expected deleted got %s", i, cur.State)
+		}
+		if gh.count() != 0 {
+			t.Fatalf("job %d left %d github runners", i, gh.count())
+		}
+	}
+}

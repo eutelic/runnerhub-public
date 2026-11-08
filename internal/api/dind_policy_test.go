@@ -34,7 +34,7 @@ func TestCreateDinDPoolRequiresPrivilegedPolicy(t *testing.T) {
 	}`
 
 	svc := &Service{
-		Store: st,
+		Store:  st,
 		Policy: policy.Engine{AllowedImages: map[string]struct{}{"img": {}}},
 	}
 

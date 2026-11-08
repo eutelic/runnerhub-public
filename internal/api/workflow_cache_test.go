@@ -48,7 +48,7 @@ func (b *countingWorkflowBackend) callCount() int {
 func TestCachedWorkflowJobsCoalescesConcurrentRequests(t *testing.T) {
 	backend := &countingWorkflowBackend{
 		delay: 50 * time.Millisecond,
-		jobs: []githubrunner.WorkflowJob{{ID: 1, Name: "test", Status: "in_progress"}},
+		jobs:  []githubrunner.WorkflowJob{{ID: 1, Name: "test", Status: "in_progress"}},
 	}
 	s := &Service{GitHub: backend}
 	scope := core.GitHubScope{Kind: core.ScopeRepository, Owner: "eutelic", Repository: "runnerhub"}

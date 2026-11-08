@@ -108,7 +108,7 @@ func (s *Service) redeployApp(w http.ResponseWriter, r *http.Request) {
 		_ = s.Store.AppendAudit(r.Context(), core.AuditEvent{
 			Actor: actor(r.Context()), Action: "redeploy_truenas_app",
 			ResourceType: "deployment", ResourceID: app, Result: "error",
-			SafeDetail: truncate("TrueNAS redeployed; automatic publishing recovery verification failed: "+err.Error()),
+			SafeDetail: truncate("TrueNAS redeployed; automatic publishing recovery verification failed: " + err.Error()),
 		})
 		problem(w, http.StatusInternalServerError, errors.New("TrueNAS redeployed but automatic publishing recovery could not be verified; inspect the app image and publishing status before resuming"))
 		return

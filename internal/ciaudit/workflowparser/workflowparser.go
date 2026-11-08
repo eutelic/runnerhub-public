@@ -416,7 +416,6 @@ func hashParts(parts ...string) string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 
-
 // JobDependencies returns the normalized GitHub Actions needs DAG from the same
 // pinned actionlint syntax tree used for semantic fingerprints.
 func JobDependencies(source []byte) (map[string][]string, error) {

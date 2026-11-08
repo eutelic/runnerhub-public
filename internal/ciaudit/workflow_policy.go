@@ -21,7 +21,6 @@ func OrdinaryValidationWorkflow(name string) bool {
 	}
 }
 
-
 // MutableSnapshotPublicationWorkflow reports whether a workflow publishes a
 // replaceable branch snapshot. This is deliberately separate from ordinary
 // validation because publication is side-effecting and must never be canceled

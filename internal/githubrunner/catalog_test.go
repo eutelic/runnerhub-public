@@ -1,4 +1,41 @@
 package githubrunner
 
-import("context";"fmt";"net/http";"net/http/httptest";"testing";"github.com/eutelic/runnerhub/internal/core")
-func TestCatalogPaginatesInstallationRepositories(t *testing.T){pages:=0;s:=httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter,r *http.Request){pages++;if r.URL.Query().Get("page")=="1"{fmt.Fprint(w,`{"repositories":[`);for i:=0;i<100;i++{if i>0{fmt.Fprint(w,",")};fmt.Fprintf(w,`{"id":%d,"full_name":"o/r%d","private":true,"default_branch":"main"}`,i+1,i+1)};fmt.Fprint(w,`]}`);return};fmt.Fprint(w,`{"repositories":[{"id":101,"full_name":"o/r101","private":true,"default_branch":"main"}]}`)}));defer s.Close();c,err:=NewHTTPCatalog(s.Client(),staticTokenSource("token"),s.URL);if err!=nil{t.Fatal(err)};repos,err:=c.ListRepositories(context.Background(),core.GitHubScope{Kind:core.ScopeRepository,Owner:"o",Repository:"r"});if err!=nil{t.Fatal(err)};if len(repos)!=101||pages!=2{t.Fatalf("repos=%d pages=%d",len(repos),pages)}}
+import (
+	"context"
+	"fmt"
+	"github.com/eutelic/runnerhub/internal/core"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+)
+
+func TestCatalogPaginatesInstallationRepositories(t *testing.T) {
+	pages := 0
+	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		pages++
+		if r.URL.Query().Get("page") == "1" {
+			fmt.Fprint(w, `{"repositories":[`)
+			for i := 0; i < 100; i++ {
+				if i > 0 {
+					fmt.Fprint(w, ",")
+				}
+				fmt.Fprintf(w, `{"id":%d,"full_name":"o/r%d","private":true,"default_branch":"main"}`, i+1, i+1)
+			}
+			fmt.Fprint(w, `]}`)
+			return
+		}
+		fmt.Fprint(w, `{"repositories":[{"id":101,"full_name":"o/r101","private":true,"default_branch":"main"}]}`)
+	}))
+	defer s.Close()
+	c, err := NewHTTPCatalog(s.Client(), staticTokenSource("token"), s.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repos, err := c.ListRepositories(context.Background(), core.GitHubScope{Kind: core.ScopeRepository, Owner: "o", Repository: "r"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(repos) != 101 || pages != 2 {
+		t.Fatalf("repos=%d pages=%d", len(repos), pages)
+	}
+}

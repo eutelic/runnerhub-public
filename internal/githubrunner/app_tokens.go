@@ -38,12 +38,12 @@ type cachedInstallationToken struct {
 }
 
 type GitHubAppTokenSource struct {
-	issuer      string
-	appSlug     string
-	privateKey  *rsa.PrivateKey
-	baseURL     *url.URL
-	client      *http.Client
-	now         func() time.Time
+	issuer     string
+	appSlug    string
+	privateKey *rsa.PrivateKey
+	baseURL    *url.URL
+	client     *http.Client
+	now        func() time.Time
 
 	mu              sync.Mutex
 	resolvedAppID   int64

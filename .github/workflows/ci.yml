@@ -175,11 +175,23 @@ jobs:
         with:
           go-version: '1.26.10'
           cache: true
+      - name: Enforce gofmt for tracked Go sources
+        run: |
+          set -euo pipefail
+          mapfile -d '' files < <(git ls-files -z -- '*.go')
+          if [[ ${#files[@]} -eq 0 ]]; then exit 0; fi
+          unformatted="$(gofmt -l "${files[@]}")"
+          if [[ -n "$unformatted" ]]; then
+            printf 'Run gofmt on these files:\n%s\n' "$unformatted"
+            exit 1
+          fi
       - name: Lint GitHub Actions workflows
         run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
       - run: go test ./...
       - run: go test -tags localtest ./tests/soak -count=1
       - run: go vet ./...
+      - name: Staticcheck correctness checks
+        run: GOMAXPROCS=2 go run -p=1 honnef.co/go/tools/cmd/staticcheck@v0.8.2 -checks=SA* ./...
       - name: Select scale-set Go toolchain for workspace-wide security scans
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
@@ -276,8 +288,20 @@ jobs:
         with:
           go-version-file: scaleset/go.mod
           cache-dependency-path: scaleset/go.sum
+      - name: Enforce gofmt for tracked Go sources
+        run: |
+          set -euo pipefail
+          mapfile -d '' files < <(git ls-files -z -- '*.go')
+          if [[ ${#files[@]} -eq 0 ]]; then exit 0; fi
+          unformatted="$(gofmt -l "${files[@]}")"
+          if [[ -n "$unformatted" ]]; then
+            printf 'Run gofmt on these files:\n%s\n' "$unformatted"
+            exit 1
+          fi
       - run: go test ./...
       - run: go vet ./...
+      - name: Staticcheck scale-set correctness checks
+        run: GOMAXPROCS=2 go run -p=1 honnef.co/go/tools/cmd/staticcheck@v0.8.2 -checks=SA* ./...
       - run: go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...
 
   agent-crossbuild:

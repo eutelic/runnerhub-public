@@ -2,8 +2,8 @@ package deployer
 
 import (
 	"context"
-	"crypto/rand"
 	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -20,18 +20,18 @@ import (
 )
 
 const (
-	managementPrefix = "/api/v1/managed-apps"
+	managementPrefix          = "/api/v1/managed-apps"
 	managementTimestampHeader = "X-RunnerHub-Management-Timestamp"
 	managementSignatureHeader = "X-RunnerHub-Management-Signature"
-	managementNonceHeader = "X-RunnerHub-Management-Nonce"
+	managementNonceHeader     = "X-RunnerHub-Management-Nonce"
 )
 
 type ManagedApp struct {
-	Name      string `json:"name"`
-	State     string `json:"state"`
-	Enabled   bool   `json:"enabled"`
-	Protected bool   `json:"protected"`
-	CustomApp bool `json:"customApp"`
+	Name      string   `json:"name"`
+	State     string   `json:"state"`
+	Enabled   bool     `json:"enabled"`
+	Protected bool     `json:"protected"`
+	CustomApp bool     `json:"customApp"`
 	Images    []string `json:"images"`
 }
 
@@ -303,9 +303,9 @@ func (s *Service) manageApp(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		var input struct {
-			Image string `json:"image"`
+			Image          string `json:"image"`
 			PreviousDigest string `json:"previousDigest"`
-			TargetDigest string `json:"targetDigest"`
+			TargetDigest   string `json:"targetDigest"`
 		}
 		if err := json.Unmarshal(body, &input); err != nil || !ValidImageDigest(input.PreviousDigest) ||
 			!ValidImageDigest(input.TargetDigest) || input.PreviousDigest == input.TargetDigest ||
@@ -322,10 +322,12 @@ func (s *Service) manageApp(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "invalid pinned publishing repository/image", http.StatusBadRequest)
 			return
 		}
-		expectedPrevious := base+"@"+input.PreviousDigest
+		expectedPrevious := base + "@" + input.PreviousDigest
 		imageAuthorized := false
 		for _, item := range apps {
-			if item.Name != app { continue }
+			if item.Name != app {
+				continue
+			}
 			for _, installed := range item.Images {
 				if strings.EqualFold(installed, input.Image) || strings.EqualFold(installed, expectedPrevious) {
 					imageAuthorized = true
@@ -352,7 +354,11 @@ func (s *Service) manageApp(w http.ResponseWriter, r *http.Request) {
 		record := deploymentRecord{ID: deploymentID(), Target: app, App: app, RequestedAt: time.Now().UTC(), Result: "failed"}
 		err := pinned.RedeployPinnedAndWait(ctx, app, input.Image, input.PreviousDigest, input.TargetDigest)
 		record.CompletedAt = time.Now().UTC()
-		if err == nil { record.Result = "success" } else { record.Detail = safeDetail(err) }
+		if err == nil {
+			record.Result = "success"
+		} else {
+			record.Detail = safeDetail(err)
+		}
 		if auditErr := s.appendAudit(record); auditErr != nil {
 			http.Error(w, "pinned deployment result is uncertain: audit persistence failed", http.StatusInternalServerError)
 			return

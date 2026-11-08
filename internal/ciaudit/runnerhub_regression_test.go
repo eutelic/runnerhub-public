@@ -13,7 +13,9 @@ func repoFile(t *testing.T, parts ...string) string {
 	t.Helper()
 	path := filepath.Join(append([]string{"..", ".."}, parts...)...)
 	raw, err := os.ReadFile(path)
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	return string(raw)
 }
 
@@ -46,9 +48,13 @@ func TestRunnerHubConcreteCIWasteRegressions(t *testing.T) {
 
 	dockerfile := repoFile(t, "deploy", "docker", "Dockerfile")
 	graph, err := dockergraph.Parse(dockerfile)
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	affected, err := graph.AffectedTargets([]string{"web/app.js"}, "control", "agent", "deployer", "scaleset")
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	if !affected["control"] || affected["agent"] || affected["deployer"] || affected["scaleset"] {
 		t.Fatalf("UI-only Docker rebuild scope regressed: %+v", affected)
 	}

@@ -2,9 +2,9 @@ package main
 
 import (
 	"context"
-	"io"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -49,8 +49,8 @@ func main() {
 		TrueNAS:          client,
 		AuditPath:        env("RUNNERHUB_DEPLOY_AUDIT_FILE", "/data/deployments.jsonl"),
 		MaintenanceToken: maintenanceToken,
-		ManagementKey: []byte(strings.TrimSpace(string(apiKeyBytes))),
-		ManagedAppsPath: env("RUNNERHUB_MANAGED_APPS_FILE", "/data/managed-apps.json"),
+		ManagementKey:    []byte(strings.TrimSpace(string(apiKeyBytes))),
+		ManagedAppsPath:  env("RUNNERHUB_MANAGED_APPS_FILE", "/data/managed-apps.json"),
 	}
 	server := &http.Server{
 		Addr:              env("RUNNERHUB_DEPLOY_HTTP_ADDR", "0.0.0.0:8080"),
@@ -122,7 +122,6 @@ func must(err error) {
 		log.Fatal(err)
 	}
 }
-
 
 // readPrivateSecret accepts only a private regular file at a configured absolute
 // path. Secret paths come from trusted local service configuration, never HTTP

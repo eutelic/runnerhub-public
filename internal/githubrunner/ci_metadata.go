@@ -54,15 +54,15 @@ type CIMetadataBackend interface {
 }
 
 type workflowRunPayload struct {
-	ID           int64     `json:"id"`
-	RunAttempt   int       `json:"run_attempt"`
-	Name         string    `json:"name"`
-	Path         string    `json:"path"`
-	Event        string    `json:"event"`
-	Status       string    `json:"status"`
-	Conclusion   string    `json:"conclusion"`
-	HeadBranch   string    `json:"head_branch"`
-	HeadSHA      string    `json:"head_sha"`
+	ID         int64  `json:"id"`
+	RunAttempt int    `json:"run_attempt"`
+	Name       string `json:"name"`
+	Path       string `json:"path"`
+	Event      string `json:"event"`
+	Status     string `json:"status"`
+	Conclusion string `json:"conclusion"`
+	HeadBranch string `json:"head_branch"`
+	HeadSHA    string `json:"head_sha"`
 	HeadCommit struct {
 		TreeID string `json:"tree_id"`
 	} `json:"head_commit"`
@@ -140,21 +140,21 @@ func (b *HTTPBackend) ListWorkflowJobsAttempt(ctx context.Context, scope core.Gi
 	for page := 1; ; page++ {
 		var response struct {
 			TotalCount int `json:"total_count"`
-			Jobs []struct {
-				ID int64 `json:"id"`
-				Name string `json:"name"`
-				Status string `json:"status"`
-				Conclusion string `json:"conclusion"`
-				RunnerName string `json:"runner_name"`
-				RunnerGroupName string `json:"runner_group_name"`
-				Labels []string `json:"labels"`
-				StartedAt time.Time `json:"started_at"`
-				CompletedAt time.Time `json:"completed_at"`
-				Steps []struct {
-					Name string `json:"name"`
-					Status string `json:"status"`
+			Jobs       []struct {
+				ID              int64     `json:"id"`
+				Name            string    `json:"name"`
+				Status          string    `json:"status"`
+				Conclusion      string    `json:"conclusion"`
+				RunnerName      string    `json:"runner_name"`
+				RunnerGroupName string    `json:"runner_group_name"`
+				Labels          []string  `json:"labels"`
+				StartedAt       time.Time `json:"started_at"`
+				CompletedAt     time.Time `json:"completed_at"`
+				Steps           []struct {
+					Name       string `json:"name"`
+					Status     string `json:"status"`
 					Conclusion string `json:"conclusion"`
-					Number int `json:"number"`
+					Number     int    `json:"number"`
 				} `json:"steps"`
 			} `json:"jobs"`
 		}
@@ -189,10 +189,10 @@ func (b *HTTPBackend) GetPullRequest(ctx context.Context, scope core.GitHubScope
 		return PullRequestMetadata{}, errors.New("pull request number must be positive")
 	}
 	var payload struct {
-		Number int `json:"number"`
-		State string `json:"state"`
+		Number   int        `json:"number"`
+		State    string     `json:"state"`
 		MergedAt *time.Time `json:"merged_at"`
-		Head struct {
+		Head     struct {
 			Ref string `json:"ref"`
 			SHA string `json:"sha"`
 		} `json:"head"`
@@ -210,7 +210,6 @@ func (b *HTTPBackend) GetPullRequest(ctx context.Context, scope core.GitHubScope
 	}
 	return out, nil
 }
-
 
 func (b *HTTPBackend) GetRepositoryFile(ctx context.Context, scope core.GitHubScope, path, ref string) (RepositoryFile, error) {
 	if err := validateRepositoryScope(scope); err != nil {

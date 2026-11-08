@@ -27,13 +27,13 @@ func TestSummarizeCIEfficiencyUsesWindowAndRunnerClasses(t *testing.T) {
 		{
 			ID: "normal-job", PoolID: "normal", Repository: "eutelic/runnerhub",
 			QueuedAt: now.Add(-2*time.Hour - 30*time.Second), StartedAt: now.Add(-2 * time.Hour), CompletedAt: now.Add(-time.Hour),
-			Resources: core.Resources{CPUMillis: 1000, MemoryBytes: 2 << 30},
+			Resources:                 core.Resources{CPUMillis: 1000, MemoryBytes: 2 << 30},
 			ValidationAnalysisVersion: ciaudit.AnalyzerVersion, ValidationKey: "validation-key",
 		},
 		{
 			ID: "publisher-job", PoolID: "publisher", Repository: "eutelic/runnerhub",
 			QueuedAt: now.Add(-95 * time.Minute), StartedAt: now.Add(-90 * time.Minute), CompletedAt: now.Add(-30 * time.Minute),
-			Resources: core.Resources{CPUMillis: 2000, MemoryBytes: 4 << 30},
+			Resources:                          core.Resources{CPUMillis: 2000, MemoryBytes: 4 << 30},
 			ValidationExclusionAnalysisVersion: ciaudit.AnalyzerVersion, ValidationExclusionReason: "unsupported-isolation",
 		},
 		{
@@ -106,8 +106,8 @@ func TestSummarizeCIEfficiencyDistinguishesMissingQueueSamples(t *testing.T) {
 
 func TestParseCIEfficiencyWindow(t *testing.T) {
 	for raw, want := range map[string]time.Duration{
-		"": 30 * 24 * time.Hour,
-		"7d": 7 * 24 * time.Hour,
+		"":    30 * 24 * time.Hour,
+		"7d":  7 * 24 * time.Hour,
 		"30d": 30 * 24 * time.Hour,
 		"90d": 90 * 24 * time.Hour,
 	} {
@@ -197,7 +197,6 @@ func TestCIEfficiencyEndpoint(t *testing.T) {
 	}
 }
 
-
 func TestSummarizeCIEfficiencyKeepsTrueZeroQueueSample(t *testing.T) {
 	now := time.Date(2026, 9, 25, 12, 0, 0, 0, time.UTC)
 	workers := []core.Worker{
@@ -224,7 +223,6 @@ func TestSummarizeCIEfficiencyKeepsTrueZeroQueueSample(t *testing.T) {
 		t.Fatalf("queue coverage=%+v", got.Coverage)
 	}
 }
-
 
 type failingCIMetadataBackend struct{}
 

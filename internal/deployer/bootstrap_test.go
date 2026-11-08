@@ -52,7 +52,7 @@ func TestBootstrapManagerInstallWritesPrivateConfigAndInstallsApp(t *testing.T) 
 	root := t.TempDir()
 	fake := &fakeAppInstaller{}
 	manager := &BootstrapManager{
-		Root: root,
+		Root:             root,
 		MaintenanceToken: "test-admin-key",
 		NewClient: func(TrueNASConfig) (TrueNASBootstrapClient, error) {
 			return fake, nil
@@ -82,7 +82,7 @@ func TestBootstrapManagerInstallWritesPrivateConfigAndInstallsApp(t *testing.T) 
 	if fake.app != "runnerhub-deployer" {
 		t.Fatalf("unexpected installed app %q", fake.app)
 	}
-	if strings.Contains(fake.compose, "secret-api-key") || strings.Contains(fake.compose,"test-admin-key") {
+	if strings.Contains(fake.compose, "secret-api-key") || strings.Contains(fake.compose, "test-admin-key") {
 		t.Fatal("generated Compose must not contain the TrueNAS API key")
 	}
 	for _, want := range []string{
@@ -121,11 +121,13 @@ func TestBootstrapManagerInstallWritesPrivateConfigAndInstallsApp(t *testing.T) 
 	if target.TokenSHA256 != hex.EncodeToString(sum[:]) {
 		t.Fatal("policy token digest does not match returned workflow token")
 	}
-	if !target.SelfRedeploy||target.MaintenanceURL!="http://truenas.example:8788"{
-		t.Fatalf("RunnerHub maintenance policy not configured: %+v",target)
+	if !target.SelfRedeploy || target.MaintenanceURL != "http://truenas.example:8788" {
+		t.Fatalf("RunnerHub maintenance policy not configured: %+v", target)
 	}
-	key,err:=os.ReadFile(filepath.Join(root,"secrets","runnerhub-maintenance-key"))
-	if err!=nil||string(key)!="test-admin-key\n"{t.Fatalf("maintenance credential missing or invalid: %v",err)}
+	key, err := os.ReadFile(filepath.Join(root, "secrets", "runnerhub-maintenance-key"))
+	if err != nil || string(key) != "test-admin-key\n" {
+		t.Fatalf("maintenance credential missing or invalid: %v", err)
+	}
 	if target.App != "runnerhub" || target.Repository != "eutelic/runnerhub" {
 		t.Fatalf("unexpected target: %#v", target)
 	}
@@ -139,14 +141,14 @@ func TestBootstrapManagerRestoresExistingFilesWhenInstallFails(t *testing.T) {
 		}
 	}
 	keyPath := filepath.Join(root, "secrets", "truenas-api-key")
-	maintenanceKeyPath:=filepath.Join(root,"secrets","runnerhub-maintenance-key")
+	maintenanceKeyPath := filepath.Join(root, "secrets", "runnerhub-maintenance-key")
 	policyPath := filepath.Join(root, "config", "deployments.json")
 	statePath := filepath.Join(root, "state.json")
 	original := map[string]string{
-		keyPath:    "old-key\n",
-		maintenanceKeyPath:"old-admin-key\n",
-		policyPath: "{\"old\":true}\n",
-		statePath:  "{\"old\":true}\n",
+		keyPath:            "old-key\n",
+		maintenanceKeyPath: "old-admin-key\n",
+		policyPath:         "{\"old\":true}\n",
+		statePath:          "{\"old\":true}\n",
 	}
 	for path, value := range original {
 		if err := os.WriteFile(path, []byte(value), 0o600); err != nil {
@@ -155,7 +157,7 @@ func TestBootstrapManagerRestoresExistingFilesWhenInstallFails(t *testing.T) {
 	}
 
 	manager := &BootstrapManager{
-		Root: root,
+		Root:             root,
 		MaintenanceToken: "test-admin-key",
 		NewClient: func(TrueNASConfig) (TrueNASBootstrapClient, error) {
 			return failingAppInstaller{}, nil
@@ -187,7 +189,7 @@ func TestBootstrapManagerAutoDetectsHostDataPath(t *testing.T) {
 	root := t.TempDir()
 	fake := &fakeAppInstaller{}
 	manager := &BootstrapManager{
-		Root: root,
+		Root:             root,
 		MaintenanceToken: "test-admin-key",
 		NewClient: func(TrueNASConfig) (TrueNASBootstrapClient, error) {
 			return fake, nil
@@ -209,7 +211,7 @@ func TestBootstrapManagerAutoDetectsHostDataPath(t *testing.T) {
 }
 
 func TestBootstrapManagerRejectsUnsafeHostDataPath(t *testing.T) {
-	manager := &BootstrapManager{Root: t.TempDir(),MaintenanceToken:"test-admin-key"}
+	manager := &BootstrapManager{Root: t.TempDir(), MaintenanceToken: "test-admin-key"}
 	_, err := manager.Install(context.Background(), BootstrapRequest{
 		Endpoint:     "wss://truenas.example/api/current",
 		Username:     "runnerhub_deployer",
@@ -235,9 +237,9 @@ func TestBootstrapManagerCustomPort(t *testing.T) {
 	root := t.TempDir()
 	fake := &fakeAppInstaller{}
 	manager := &BootstrapManager{
-		Root: root,
+		Root:             root,
 		MaintenanceToken: "test-admin-key",
-		NewClient: func(TrueNASConfig) (TrueNASBootstrapClient, error) { return fake, nil },
+		NewClient:        func(TrueNASConfig) (TrueNASBootstrapClient, error) { return fake, nil },
 	}
 	result, err := manager.Install(context.Background(), BootstrapRequest{
 		Endpoint:     "wss://truenas.example:8423/api/current",
@@ -265,13 +267,13 @@ func TestBootstrapManagerRejectsInvalidDeployerPortsBeforeWritingSecrets(t *test
 			root := t.TempDir()
 			manager := &BootstrapManager{Root: root}
 			_, err := manager.Install(context.Background(), BootstrapRequest{
-				Endpoint: "wss://truenas.example/api/current",
-				Port: port,
-				Username: "runnerhub_deployer",
-				APIKey: "test-api-key",
+				Endpoint:     "wss://truenas.example/api/current",
+				Port:         port,
+				Username:     "runnerhub_deployer",
+				APIKey:       "test-api-key",
 				HostDataPath: "/mnt/tank/runnerhub/data",
 				RunnerHubApp: "runnerhub",
-				HealthURL: "http://truenas.example:8788/healthz",
+				HealthURL:    "http://truenas.example:8788/healthz",
 			})
 			if err == nil || !strings.Contains(err.Error(), "redeployer port") {
 				t.Fatalf("expected port validation error, got %v", err)
@@ -286,7 +288,7 @@ func TestBootstrapManagerRejectsInvalidDeployerPortsBeforeWritingSecrets(t *test
 func TestBootstrapManagerRetainsSecretWhenTrueNASInstallStillPending(t *testing.T) {
 	root := t.TempDir()
 	manager := &BootstrapManager{
-		Root: root,
+		Root:             root,
 		MaintenanceToken: "test-admin-key",
 		NewClient: func(TrueNASConfig) (TrueNASBootstrapClient, error) {
 			return pendingAppInstaller{}, nil
@@ -317,7 +319,6 @@ func TestBootstrapManagerRetainsSecretWhenTrueNASInstallStillPending(t *testing.
 	}
 }
 
-
 type portConflictInstaller struct{}
 
 func (portConflictInstaller) EnsureCustomApp(context.Context, string, string) error {
@@ -330,20 +331,20 @@ func (portConflictInstaller) FindAppMount(context.Context, string, string) (stri
 func TestBootstrapPortConflictIsActionableAndRollsBackSecrets(t *testing.T) {
 	root := t.TempDir()
 	manager := &BootstrapManager{
-		Root: root,
+		Root:             root,
 		MaintenanceToken: "admin-key",
 		NewClient: func(TrueNASConfig) (TrueNASBootstrapClient, error) {
 			return portConflictInstaller{}, nil
 		},
 	}
 	_, err := manager.Install(context.Background(), BootstrapRequest{
-		Endpoint: "wss://truenas.example/api/current",
-		Port: 8790,
-		Username: "deployer",
-		APIKey: "new-secret",
+		Endpoint:     "wss://truenas.example/api/current",
+		Port:         8790,
+		Username:     "deployer",
+		APIKey:       "new-secret",
 		HostDataPath: "/mnt/tank/runnerhub/data",
 		RunnerHubApp: "runnerhub",
-		HealthURL: "http://truenas.example:8788/healthz",
+		HealthURL:    "http://truenas.example:8788/healthz",
 	})
 	if !errors.Is(err, ErrAppPortConflict) ||
 		!strings.Contains(err.Error(), "redeployer port 8790") ||

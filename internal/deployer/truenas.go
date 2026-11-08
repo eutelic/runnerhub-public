@@ -216,85 +216,156 @@ func replaceRunnerHubControlImage(compose, image string) (string, error) {
 }
 
 func pinRunnerHubComposeConfig(config map[string]any, image string) (map[string]any, error) {
- const repo="ghcr.io/eutelic/runnerhub-control"
- if !strings.HasPrefix(image,repo+"@")||!imageDigestPattern.MatchString(strings.TrimPrefix(image,repo+"@")){return nil,errors.New("RunnerHub control image requires an immutable SHA-256 digest")}
- if len(config)==0{return nil,errors.New("TrueNAS did not return inspectable Compose configuration")}
- raw,err:=json.Marshal(config);if err!=nil{return nil,err}
- var changed map[string]any
- if err:=json.Unmarshal(raw,&changed);err!=nil{return nil,err}
- if _,ok:=changed["include"];ok{return nil,errors.New("Compose include directives require manual review")}
- services,ok:=changed["services"].(map[string]any);if !ok{return nil,errors.New("no Compose services")}
- control,ok:=services["control"].(map[string]any);if !ok{return nil,errors.New("no RunnerHub control service")}
- current,ok:=control["image"].(string)
- if !ok||(!strings.HasPrefix(current,repo+":")&&!strings.HasPrefix(current,repo+"@sha256:")){return nil,errors.New("control image repository differs from RunnerHub")}
- for name,value:=range services{
-   if name=="control"{continue}
-   other,ok:=value.(map[string]any);if !ok{return nil,fmt.Errorf("invalid Compose service %s",name)}
-   if otherImage,ok:=other["image"].(string);ok&&(strings.HasPrefix(otherImage,repo+":")||strings.HasPrefix(otherImage,repo+"@")){return nil,errors.New("control image also used by another service")}
- }
- control["image"]=image
- if ext,ok:=changed["x-runnerhub-images"].(map[string]any);ok{
-   if old,ok:=ext["control"].(string);ok{
-     if !strings.HasPrefix(old,repo+":")&&!strings.HasPrefix(old,repo+"@sha256:"){return nil,errors.New("unexpected control image extension")}
-     ext["control"]=image
-   }
- }
- return changed,nil
+	const repo = "ghcr.io/eutelic/runnerhub-control"
+	if !strings.HasPrefix(image, repo+"@") || !imageDigestPattern.MatchString(strings.TrimPrefix(image, repo+"@")) {
+		return nil, errors.New("RunnerHub control image requires an immutable SHA-256 digest")
+	}
+	if len(config) == 0 {
+		return nil, errors.New("TrueNAS did not return inspectable Compose configuration")
+	}
+	raw, err := json.Marshal(config)
+	if err != nil {
+		return nil, err
+	}
+	var changed map[string]any
+	if err := json.Unmarshal(raw, &changed); err != nil {
+		return nil, err
+	}
+	if _, ok := changed["include"]; ok {
+		return nil, errors.New("Compose include directives require manual review")
+	}
+	services, ok := changed["services"].(map[string]any)
+	if !ok {
+		return nil, errors.New("no Compose services")
+	}
+	control, ok := services["control"].(map[string]any)
+	if !ok {
+		return nil, errors.New("no RunnerHub control service")
+	}
+	current, ok := control["image"].(string)
+	if !ok || (!strings.HasPrefix(current, repo+":") && !strings.HasPrefix(current, repo+"@sha256:")) {
+		return nil, errors.New("control image repository differs from RunnerHub")
+	}
+	for name, value := range services {
+		if name == "control" {
+			continue
+		}
+		other, ok := value.(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("invalid Compose service %s", name)
+		}
+		if otherImage, ok := other["image"].(string); ok && (strings.HasPrefix(otherImage, repo+":") || strings.HasPrefix(otherImage, repo+"@")) {
+			return nil, errors.New("control image also used by another service")
+		}
+	}
+	control["image"] = image
+	if ext, ok := changed["x-runnerhub-images"].(map[string]any); ok {
+		if old, ok := ext["control"].(string); ok {
+			if !strings.HasPrefix(old, repo+":") && !strings.HasPrefix(old, repo+"@sha256:") {
+				return nil, errors.New("unexpected control image extension")
+			}
+			ext["control"] = image
+		}
+	}
+	return changed, nil
 }
 
 type pinnedRunnerHubApp struct {
- Name string `json:"name"`
- ID string `json:"id"`
- State string `json:"state"`
- CustomApp bool `json:"custom_app"`
- Config map[string]any `json:"config"`
- ActiveWorkloads struct {
-   ContainerDetails []struct {
-     ServiceName string `json:"service_name"`
-     Image string `json:"image"`
-   } `json:"container_details"`
- } `json:"active_workloads"`
+	Name            string         `json:"name"`
+	ID              string         `json:"id"`
+	State           string         `json:"state"`
+	CustomApp       bool           `json:"custom_app"`
+	Config          map[string]any `json:"config"`
+	ActiveWorkloads struct {
+		ContainerDetails []struct {
+			ServiceName string `json:"service_name"`
+			Image       string `json:"image"`
+		} `json:"container_details"`
+	} `json:"active_workloads"`
 }
 
 func (c *TrueNASClient) RedeployImageAndWait(ctx context.Context, app, image string) error {
- if !appNamePattern.MatchString(app)||len(app)>40{return errors.New("invalid TrueNAS app name")}
- if !strings.HasPrefix(image,"ghcr.io/eutelic/runnerhub-control@")||!imageDigestPattern.MatchString(strings.TrimPrefix(image,"ghcr.io/eutelic/runnerhub-control@")){return errors.New("control image must be an immutable SHA-256 digest")}
- conn,_,err:=c.dialer.DialContext(ctx,c.endpoint,nil);if err!=nil{return fmt.Errorf("connect to TrueNAS: %w",err)}
- defer conn.Close()
- var auth struct {ResponseType string `json:"response_type"`}
- if err:=c.call(ctx,conn,"auth.login_ex",[]any{map[string]any{"mechanism":"API_KEY_PLAIN","username":c.username,"api_key":c.apiKey,"login_options":map[string]any{"user_info":false}}},&auth);err!=nil{return fmt.Errorf("authenticate to TrueNAS: %w",err)}
- if auth.ResponseType!="SUCCESS"{return errors.New("TrueNAS authentication failed")}
- readApp:=func()(pinnedRunnerHubApp,error){
-   var info pinnedRunnerHubApp
-   err:=c.call(ctx,conn,"app.get_instance",[]any{app,map[string]any{"extra":map[string]any{"retrieve_config":true}}},&info)
-   return info,err
- }
- before,err:=readApp();if err!=nil{return fmt.Errorf("inspect TrueNAS app: %w",err)}
- if (before.ID!=app&&before.Name!=app)||!before.CustomApp||before.State!="RUNNING"{return errors.New("self-redeployment requires a running custom TrueNAS app")}
- updated,err:=pinRunnerHubComposeConfig(before.Config,image);if err!=nil{return err}
- check,err:=readApp();if err!=nil{return fmt.Errorf("recheck TrueNAS Compose config: %w",err)}
- if !check.CustomApp||check.State!="RUNNING"||!reflect.DeepEqual(check.Config,before.Config){return errors.New("TrueNAS app config changed before pinned update")}
- if err:=c.call(ctx,conn,"app.update",[]any{app,map[string]any{"custom_compose_config":updated}},nil);err!=nil{return fmt.Errorf("update TrueNAS image: %w",err)}
- after,err:=readApp();if err!=nil{return fmt.Errorf("verify TrueNAS image update: %w",err)}
- if !after.CustomApp||after.State!="RUNNING"{return errors.New("TrueNAS app not RUNNING after update")}
- services,ok:=after.Config["services"].(map[string]any);if !ok{return errors.New("updated Compose config unavailable")}
- control,ok:=services["control"].(map[string]any);if !ok||control["image"]!=image{return errors.New("TrueNAS did not persist immutable control image")}
- count:=0
- for _,container:=range after.ActiveWorkloads.ContainerDetails {
-   if container.ServiceName=="control" {
-     if container.Image!=image {return errors.New("running control container does not match pinned digest")}
-     count++
-   }
- }
- if count!=1{return errors.New("TrueNAS did not report exactly one matching control container")}
- return nil
+	if !appNamePattern.MatchString(app) || len(app) > 40 {
+		return errors.New("invalid TrueNAS app name")
+	}
+	if !strings.HasPrefix(image, "ghcr.io/eutelic/runnerhub-control@") || !imageDigestPattern.MatchString(strings.TrimPrefix(image, "ghcr.io/eutelic/runnerhub-control@")) {
+		return errors.New("control image must be an immutable SHA-256 digest")
+	}
+	conn, _, err := c.dialer.DialContext(ctx, c.endpoint, nil)
+	if err != nil {
+		return fmt.Errorf("connect to TrueNAS: %w", err)
+	}
+	defer conn.Close()
+	var auth struct {
+		ResponseType string `json:"response_type"`
+	}
+	if err := c.call(ctx, conn, "auth.login_ex", []any{map[string]any{"mechanism": "API_KEY_PLAIN", "username": c.username, "api_key": c.apiKey, "login_options": map[string]any{"user_info": false}}}, &auth); err != nil {
+		return fmt.Errorf("authenticate to TrueNAS: %w", err)
+	}
+	if auth.ResponseType != "SUCCESS" {
+		return errors.New("TrueNAS authentication failed")
+	}
+	readApp := func() (pinnedRunnerHubApp, error) {
+		var info pinnedRunnerHubApp
+		err := c.call(ctx, conn, "app.get_instance", []any{app, map[string]any{"extra": map[string]any{"retrieve_config": true}}}, &info)
+		return info, err
+	}
+	before, err := readApp()
+	if err != nil {
+		return fmt.Errorf("inspect TrueNAS app: %w", err)
+	}
+	if (before.ID != app && before.Name != app) || !before.CustomApp || before.State != "RUNNING" {
+		return errors.New("self-redeployment requires a running custom TrueNAS app")
+	}
+	updated, err := pinRunnerHubComposeConfig(before.Config, image)
+	if err != nil {
+		return err
+	}
+	check, err := readApp()
+	if err != nil {
+		return fmt.Errorf("recheck TrueNAS Compose config: %w", err)
+	}
+	if !check.CustomApp || check.State != "RUNNING" || !reflect.DeepEqual(check.Config, before.Config) {
+		return errors.New("TrueNAS app config changed before pinned update")
+	}
+	if err := c.call(ctx, conn, "app.update", []any{app, map[string]any{"custom_compose_config": updated}}, nil); err != nil {
+		return fmt.Errorf("update TrueNAS image: %w", err)
+	}
+	after, err := readApp()
+	if err != nil {
+		return fmt.Errorf("verify TrueNAS image update: %w", err)
+	}
+	if !after.CustomApp || after.State != "RUNNING" {
+		return errors.New("TrueNAS app not RUNNING after update")
+	}
+	services, ok := after.Config["services"].(map[string]any)
+	if !ok {
+		return errors.New("updated Compose config unavailable")
+	}
+	control, ok := services["control"].(map[string]any)
+	if !ok || control["image"] != image {
+		return errors.New("TrueNAS did not persist immutable control image")
+	}
+	count := 0
+	for _, container := range after.ActiveWorkloads.ContainerDetails {
+		if container.ServiceName == "control" {
+			if container.Image != image {
+				return errors.New("running control container does not match pinned digest")
+			}
+			count++
+		}
+	}
+	if count != 1 {
+		return errors.New("TrueNAS did not report exactly one matching control container")
+	}
+	return nil
 }
 
 type TrueNASApp struct {
-	Name   string   `json:"name"`
-	State  string   `json:"state"`
-	CustomApp bool `json:"customApp"`
-	Images []string `json:"images"`
+	Name      string   `json:"name"`
+	State     string   `json:"state"`
+	CustomApp bool     `json:"customApp"`
+	Images    []string `json:"images"`
 }
 
 // ListApps returns the installed TrueNAS application inventory. The caller
@@ -312,9 +383,9 @@ func (c *TrueNASClient) ListApps(ctx context.Context) ([]TrueNASApp, error) {
 	}
 	if err := c.call(ctx, conn, "auth.login_ex", []any{
 		map[string]any{
-			"mechanism": "API_KEY_PLAIN",
-			"username": c.username,
-			"api_key": c.apiKey,
+			"mechanism":     "API_KEY_PLAIN",
+			"username":      c.username,
+			"api_key":       c.apiKey,
 			"login_options": map[string]any{"user_info": false},
 		},
 	}, &auth); err != nil {
@@ -555,8 +626,6 @@ func (c *TrueNASClient) EnsureCustomApp(ctx context.Context, app, compose string
 			break
 		}
 
-
-
 		select {
 		case <-ctx.Done():
 			return fmt.Errorf("%w: waiting for app %q: %w", ErrAppInstallMayBeInProgress, app, ctx.Err())
@@ -614,8 +683,8 @@ func (c *TrueNASClient) callWithJob(ctx context.Context, conn *websocket.Conn, m
 			if jobID != nil && response.Method == "collection_update" {
 				var event struct {
 					Collection string `json:"collection"`
-					Fields struct {
-						ID int64 `json:"id"`
+					Fields     struct {
+						ID         int64             `json:"id"`
 						MessageIDs []json.RawMessage `json:"message_ids"`
 					} `json:"fields"`
 				}

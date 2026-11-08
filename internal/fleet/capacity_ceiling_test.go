@@ -11,13 +11,13 @@ func TestEligibleCapacityCeilingTracksFreshHostsAndSharedReservations(t *testing
 	now := time.Now().UTC()
 	pool := core.RunnerPool{
 		ID: "pool-a", Isolation: core.IsolationContainerTrusted,
-		Resources: core.Resources{CPUMillis: 1000, MemoryBytes: 1 << 30},
+		Resources:      core.Resources{CPUMillis: 1000, MemoryBytes: 1 << 30},
 		MaxConcurrency: 4,
 	}
 	host := core.Host{
 		ID: "compute", Name: "compute", Provider: "docker",
 		State: core.HostOnline, LastSeenAt: now,
-		Tags: map[string]string{"isolation.container-trusted": "true"},
+		Tags:     map[string]string{"isolation.container-trusted": "true"},
 		Capacity: core.Resources{CPUMillis: 3000, MemoryBytes: 4 << 30},
 	}
 	if got := EligibleCapacityCeiling(pool, []core.Host{host}, nil, now); got != 3 {
@@ -59,13 +59,13 @@ func TestEligibleCapacityCeilingHonorsPoolLimitAndDinDAccounting(t *testing.T) {
 	now := time.Now().UTC()
 	pool := core.RunnerPool{
 		ID: "dind", Isolation: core.IsolationContainerDinD,
-		Resources: core.Resources{CPUMillis: 2500, MemoryBytes: 8 << 30},
+		Resources:      core.Resources{CPUMillis: 2500, MemoryBytes: 8 << 30},
 		MaxConcurrency: 4,
 	}
 	host := core.Host{
 		ID: "compute", Name: "compute", Provider: "docker",
 		State: core.HostOnline, LastSeenAt: now,
-		Tags: map[string]string{"isolation.container-dind": "true"},
+		Tags:     map[string]string{"isolation.container-dind": "true"},
 		Capacity: core.Resources{CPUMillis: 10000, MemoryBytes: 32 << 30},
 	}
 	// Conservative non-aggregate DinD reservations count twice per worker:
@@ -87,15 +87,15 @@ func TestEligibleCapacityCeilingPreservesStaleAndArchivedHostReservations(t *tes
 	now := time.Now().UTC()
 	pool := core.RunnerPool{
 		ID: "pool-a", Isolation: core.IsolationContainerTrusted,
-		Resources: core.Resources{CPUMillis: 1000, MemoryBytes: 1 << 30},
+		Resources:      core.Resources{CPUMillis: 1000, MemoryBytes: 1 << 30},
 		MaxConcurrency: 4,
 	}
 	live := core.Host{
 		ID: "current-agent", Name: "current-agent", Provider: "docker",
 		State: core.HostOnline, LastSeenAt: now,
 		PlacementDomainID: "physical-compute",
-		Tags: map[string]string{"isolation.container-trusted": "true"},
-		Capacity: core.Resources{CPUMillis: 3000, MemoryBytes: 4 << 30},
+		Tags:              map[string]string{"isolation.container-trusted": "true"},
+		Capacity:          core.Resources{CPUMillis: 3000, MemoryBytes: 4 << 30},
 	}
 	old := live
 	old.ID = "stale-agent"
@@ -108,10 +108,10 @@ func TestEligibleCapacityCeilingPreservesStaleAndArchivedHostReservations(t *tes
 		ID: "other-worker", PoolID: "other-pool", HostID: old.ID,
 		State: core.WorkerBusy, ProviderID: "docker",
 		ProviderHandle: "old-container",
-		Isolation: core.IsolationContainerTrusted,
-		Resources: core.Resources{CPUMillis: 2000, MemoryBytes: 2 << 30},
+		Isolation:      core.IsolationContainerTrusted,
+		Resources:      core.Resources{CPUMillis: 2000, MemoryBytes: 2 << 30},
 	}
-	if got := EligibleCapacityCeiling(pool, []core.Host{old,live}, []core.Worker{reserved}, now); got != 1 {
+	if got := EligibleCapacityCeiling(pool, []core.Host{old, live}, []core.Worker{reserved}, now); got != 1 {
 		t.Fatalf("stale-alias worker reservation lost: capacity=%d, want 1", got)
 	}
 
@@ -120,7 +120,7 @@ func TestEligibleCapacityCeilingPreservesStaleAndArchivedHostReservations(t *tes
 	old.State = core.HostArchived
 	old.PlacementDomainID = ""
 	old.MergedIntoHostID = live.ID
-	if got := EligibleCapacityCeiling(pool, []core.Host{old,live}, []core.Worker{reserved}, now); got != 1 {
+	if got := EligibleCapacityCeiling(pool, []core.Host{old, live}, []core.Worker{reserved}, now); got != 1 {
 		t.Fatalf("archived-alias worker reservation lost: capacity=%d, want 1", got)
 	}
 }

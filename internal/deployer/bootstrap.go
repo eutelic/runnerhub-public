@@ -37,12 +37,12 @@ type TrueNASBootstrapClient interface {
 type BootstrapClientFactory func(TrueNASConfig) (TrueNASBootstrapClient, error)
 
 type BootstrapManager struct {
-	autoMu    sync.Mutex
+	autoMu           sync.Mutex
 	MaintenanceToken string
-	Root      string
-	NewClient BootstrapClientFactory
-	HTTP      *http.Client
-	RegistryDigests ImageDigestResolver
+	Root             string
+	NewClient        BootstrapClientFactory
+	HTTP             *http.Client
+	RegistryDigests  ImageDigestResolver
 }
 
 type BootstrapRequest struct {
@@ -179,18 +179,18 @@ func (m *BootstrapManager) Install(ctx context.Context, req BootstrapRequest) (B
 	}
 	// Self-redeployment needs a trusted admin credential for the maintenance
 	// gate. The workflow token is NEVER granted this authority.
-	maintenanceToken:=strings.TrimSpace(m.MaintenanceToken)
-	if maintenanceToken==""{
-		return BootstrapResult{},errors.New("RunnerHub self-redeployment requires the control-plane admin key; install from a configured trusted RunnerHub control instance")
+	maintenanceToken := strings.TrimSpace(m.MaintenanceToken)
+	if maintenanceToken == "" {
+		return BootstrapResult{}, errors.New("RunnerHub self-redeployment requires the control-plane admin key; install from a configured trusted RunnerHub control instance")
 	}
-	if health.Path!="/healthz" || health.RawQuery!="" || health.Fragment!="" {
-		return BootstrapResult{},errors.New("RunnerHub health URL must end in /healthz for coordinated self-redeployment")
+	if health.Path != "/healthz" || health.RawQuery != "" || health.Fragment != "" {
+		return BootstrapResult{}, errors.New("RunnerHub health URL must end in /healthz for coordinated self-redeployment")
 	}
-	maintenanceEndpoint:=*health
-	maintenanceEndpoint.Path=""
-	maintenanceEndpoint.RawPath=""
-	maintenanceEndpoint.RawQuery=""
-	maintenanceEndpoint.Fragment=""
+	maintenanceEndpoint := *health
+	maintenanceEndpoint.Path = ""
+	maintenanceEndpoint.RawPath = ""
+	maintenanceEndpoint.RawQuery = ""
+	maintenanceEndpoint.Fragment = ""
 	if req.HostDataPath == "" {
 		req.HostDataPath, err = client.FindAppMount(ctx, req.RunnerHubApp, "/data")
 		if err != nil {
@@ -225,16 +225,16 @@ func (m *BootstrapManager) Install(ctx context.Context, req BootstrapRequest) (B
 	token := hex.EncodeToString(tokenBytes)
 	sum := sha256.Sum256([]byte(token))
 	policy := Policy{Targets: []Target{{
-		ID:             defaultTargetID,
-		Repository:     "eutelic/runnerhub",
-		App:            req.RunnerHubApp,
-		Image:          "ghcr.io/eutelic/runnerhub-control:latest",
-		TokenSHA256:    hex.EncodeToString(sum[:]),
-		HealthURL:      req.HealthURL,
-		TimeoutSeconds: 180,
-		SelfRedeploy:true,
-		MaintenanceURL:maintenanceEndpoint.String(),
-		DrainTimeoutSeconds:14400,
+		ID:                  defaultTargetID,
+		Repository:          "eutelic/runnerhub",
+		App:                 req.RunnerHubApp,
+		Image:               "ghcr.io/eutelic/runnerhub-control:latest",
+		TokenSHA256:         hex.EncodeToString(sum[:]),
+		HealthURL:           req.HealthURL,
+		TimeoutSeconds:      180,
+		SelfRedeploy:        true,
+		MaintenanceURL:      maintenanceEndpoint.String(),
+		DrainTimeoutSeconds: 14400,
 	}}}
 	policyBytes, err := json.MarshalIndent(policy, "", "  ")
 	if err != nil {
@@ -277,7 +277,9 @@ func (m *BootstrapManager) Install(ctx context.Context, req BootstrapRequest) (B
 	if err := writePrivateFile(keyPath, []byte(req.APIKey+"\n")); err != nil {
 		return rollback(err)
 	}
-	if err:=writePrivateFile(maintenanceKeyPath,[]byte(maintenanceToken+"\n"));err!=nil{return rollback(err)}
+	if err := writePrivateFile(maintenanceKeyPath, []byte(maintenanceToken+"\n")); err != nil {
+		return rollback(err)
+	}
 	if err := writePrivateFile(policyPath, policyBytes); err != nil {
 		return rollback(err)
 	}

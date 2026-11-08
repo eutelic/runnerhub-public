@@ -21,12 +21,12 @@ import (
 )
 
 const (
-	sessionCookieName          = "runnerhub_session"
-	sessionsFileName           = "github-sessions.json"
-	apiVersion                 = "2026-03-10"
-	persistentSessionLifetime  = 90 * 24 * time.Hour
-	tokenRefreshSkew           = 5 * time.Minute
-	discoveryCacheTTL          = 60 * time.Second
+	sessionCookieName         = "runnerhub_session"
+	sessionsFileName          = "github-sessions.json"
+	apiVersion                = "2026-03-10"
+	persistentSessionLifetime = 90 * 24 * time.Hour
+	tokenRefreshSkew          = 5 * time.Minute
+	discoveryCacheTTL         = 60 * time.Second
 )
 
 type Config struct {
@@ -167,13 +167,13 @@ func New(c Config) (*Manager, error) {
 		client = &http.Client{Timeout: 30 * time.Second}
 	}
 	m := &Manager{
-		clientID:     strings.TrimSpace(c.ClientID),
-		clientSecret: strings.TrimSpace(c.ClientSecret),
-		appSlug:      strings.TrimSpace(c.AppSlug),
-		publicURL:    publicURL,
-		apiURL:       apiURL,
-		stateDir:     stateDir,
-		http:         client,
+		clientID:             strings.TrimSpace(c.ClientID),
+		clientSecret:         strings.TrimSpace(c.ClientSecret),
+		appSlug:              strings.TrimSpace(c.AppSlug),
+		publicURL:            publicURL,
+		apiURL:               apiURL,
+		stateDir:             stateDir,
+		http:                 client,
 		states:               map[string]time.Time{},
 		sessions:             map[string]session{},
 		installationsCache:   map[string]installationCacheEntry{},
@@ -518,16 +518,16 @@ func (m *Manager) sessionFor(r *http.Request, requireCSRF bool) (session, bool) 
 		canRefresh := s.RefreshToken != "" && (s.RefreshExpiresAt.IsZero() || now.Before(s.RefreshExpiresAt))
 		if canRefresh {
 			if tokens, refreshErr := m.refreshAccessToken(r, s.RefreshToken); refreshErr == nil {
-			s.Token = tokens.AccessToken
-			if tokens.RefreshToken != "" {
-				s.RefreshToken = tokens.RefreshToken
-			}
-			s.TokenExpiresAt = tokens.AccessExpiresAt
-			if !tokens.RefreshExpiresAt.IsZero() {
-				s.RefreshExpiresAt = tokens.RefreshExpiresAt
-			}
-			m.sessions[cookie.Value] = s
-			_ = m.persistSessionsLocked()
+				s.Token = tokens.AccessToken
+				if tokens.RefreshToken != "" {
+					s.RefreshToken = tokens.RefreshToken
+				}
+				s.TokenExpiresAt = tokens.AccessExpiresAt
+				if !tokens.RefreshExpiresAt.IsZero() {
+					s.RefreshExpiresAt = tokens.RefreshExpiresAt
+				}
+				m.sessions[cookie.Value] = s
+				_ = m.persistSessionsLocked()
 			} else if now.After(s.TokenExpiresAt) {
 				delete(m.sessions, cookie.Value)
 				_ = m.persistSessionsLocked()
@@ -690,12 +690,12 @@ func (m *Manager) repositoriesForInstallation(r *http.Request, token string, ins
 // githubAPIError preserves safe API failure metadata for queue diagnostics.
 // Never persist Authorization or raw response bodies in this error.
 type githubAPIError struct {
-	StatusCode int
-	Message string
-	RequestID string
+	StatusCode    int
+	Message       string
+	RequestID     string
 	RateRemaining string
-	RateReset string
-	RetryAfter string
+	RateReset     string
+	RetryAfter    string
 }
 
 func (e *githubAPIError) Error() string {
@@ -722,7 +722,9 @@ func (m *Manager) apiGET(r *http.Request, token, path string, out any) error {
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		var payload struct { Message string `json:"message"` }
+		var payload struct {
+			Message string `json:"message"`
+		}
 		_ = json.Unmarshal(body, &payload)
 		message := strings.TrimSpace(payload.Message)
 		if message == "" {
@@ -730,14 +732,18 @@ func (m *Manager) apiGET(r *http.Request, token, path string, out any) error {
 		}
 		// GitHub's error message is untrusted: bound its length, never return the
 		// raw body (which may contain documentation URLs or other arbitrary data).
-		if len(message) > 240 { message = message[:240] }
+		if len(message) > 240 {
+			message = message[:240]
+		}
 		requestID := strings.TrimSpace(resp.Header.Get("X-GitHub-Request-Id"))
-		if len(requestID) > 80 { requestID = "" }
+		if len(requestID) > 80 {
+			requestID = ""
+		}
 		return &githubAPIError{
 			StatusCode: resp.StatusCode, Message: message, RequestID: requestID,
 			RateRemaining: resp.Header.Get("X-RateLimit-Remaining"),
-			RateReset: resp.Header.Get("X-RateLimit-Reset"),
-			RetryAfter: resp.Header.Get("Retry-After"),
+			RateReset:     resp.Header.Get("X-RateLimit-Reset"),
+			RetryAfter:    resp.Header.Get("Retry-After"),
 		}
 	}
 	return json.NewDecoder(resp.Body).Decode(out)

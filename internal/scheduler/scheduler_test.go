@@ -3,8 +3,8 @@ package scheduler
 import (
 	"context"
 	"errors"
-	"testing"
 	"strings"
+	"testing"
 
 	"github.com/eutelic/runnerhub/internal/core"
 	"github.com/eutelic/runnerhub/internal/store"
@@ -12,10 +12,10 @@ import (
 
 func testPool() core.RunnerPool {
 	return core.RunnerPool{
-		ID:        "p",
-		Name:      "linux",
-		Isolation: core.IsolationContainerTrusted,
-		Resources: core.Resources{CPUMillis: 1000, MemoryBytes: 1 << 30},
+		ID:             "p",
+		Name:           "linux",
+		Isolation:      core.IsolationContainerTrusted,
+		Resources:      core.Resources{CPUMillis: 1000, MemoryBytes: 1 << 30},
 		MaxConcurrency: 2,
 	}
 }
@@ -24,7 +24,7 @@ func putHost(t *testing.T, st store.Store, id string) {
 	t.Helper()
 	if err := st.UpsertHost(context.Background(), core.Host{
 		ID: id, Name: id, Provider: "docker", State: core.HostOnline,
-		Tags: map[string]string{"isolation.container-trusted": "true"},
+		Tags:     map[string]string{"isolation.container-trusted": "true"},
 		Capacity: core.Resources{CPUMillis: 8000, MemoryBytes: 16 << 30},
 	}); err != nil {
 		t.Fatal(err)
@@ -48,12 +48,12 @@ func TestSelectHostPrefersHigherPriorityBeforeCapacity(t *testing.T) {
 	for _, h := range []core.Host{
 		{
 			ID: "fast", Name: "fast", Provider: "docker", State: core.HostOnline, Priority: 100,
-			Tags: map[string]string{"isolation.container-trusted": "true"},
+			Tags:     map[string]string{"isolation.container-trusted": "true"},
 			Capacity: core.Resources{CPUMillis: 4000, MemoryBytes: 8 << 30},
 		},
 		{
 			ID: "large-low-priority", Name: "large-low-priority", Provider: "docker", State: core.HostOnline, Priority: 0,
-			Tags: map[string]string{"isolation.container-trusted": "true"},
+			Tags:     map[string]string{"isolation.container-trusted": "true"},
 			Capacity: core.Resources{CPUMillis: 32000, MemoryBytes: 64 << 30},
 		},
 	} {
@@ -77,12 +77,12 @@ func TestSelectHostFallsBackWhenHigherPriorityHostCannotFit(t *testing.T) {
 	for _, h := range []core.Host{
 		{
 			ID: "fast", Name: "fast", Provider: "docker", State: core.HostOnline, Priority: 100,
-			Tags: map[string]string{"isolation.container-trusted": "true"},
+			Tags:     map[string]string{"isolation.container-trusted": "true"},
 			Capacity: core.Resources{CPUMillis: 500, MemoryBytes: 512 << 20},
 		},
 		{
 			ID: "fallback", Name: "fallback", Provider: "docker", State: core.HostOnline, Priority: 0,
-			Tags: map[string]string{"isolation.container-trusted": "true"},
+			Tags:     map[string]string{"isolation.container-trusted": "true"},
 			Capacity: core.Resources{CPUMillis: 8000, MemoryBytes: 16 << 30},
 		},
 	} {
@@ -165,7 +165,7 @@ func TestFailedWorkerWithoutProviderHandleReleasesHostCapacity(t *testing.T) {
 func TestHostRejectionReasonNamesExhaustedDimensions(t *testing.T) {
 	h := core.Host{
 		ID: "a", Provider: "docker", State: core.HostOnline,
-		Tags: map[string]string{"isolation.container-dind": "true"},
+		Tags:     map[string]string{"isolation.container-dind": "true"},
 		Capacity: core.Resources{CPUMillis: 6000, MemoryBytes: 16 << 30, DiskBytes: 30 << 30},
 	}
 	p := testPool()
@@ -183,7 +183,7 @@ func TestHostRejectionReasonNamesExhaustedDimensions(t *testing.T) {
 func TestTrustedDockerTmpfsDoesNotConsumeHostDiskCapacity(t *testing.T) {
 	h := core.Host{
 		ID: "a", Provider: "docker", State: core.HostOnline,
-		Tags: map[string]string{"isolation.container-trusted": "true"},
+		Tags:     map[string]string{"isolation.container-trusted": "true"},
 		Capacity: core.Resources{CPUMillis: 6000, MemoryBytes: 16 << 30, DiskBytes: 25 << 30},
 	}
 	p := testPool()
@@ -192,7 +192,7 @@ func TestTrustedDockerTmpfsDoesNotConsumeHostDiskCapacity(t *testing.T) {
 	usedWorker := core.Worker{
 		ID: "existing", HostID: "a", ProviderID: "docker",
 		Isolation: core.IsolationContainerTrusted,
-		State: core.WorkerBusy,
+		State:     core.WorkerBusy,
 		Resources: core.Resources{CPUMillis: 2500, MemoryBytes: 8 << 30, DiskBytes: 20 << 30},
 	}
 	used := EffectiveWorkerResources(usedWorker)
@@ -212,8 +212,8 @@ func TestDinDReservesRunnerAndSidecarCPUAndMemory(t *testing.T) {
 	resources := core.Resources{CPUMillis: 2500, MemoryBytes: 8 << 30, DiskBytes: 40 << 30}
 	worker := core.Worker{
 		ProviderID: "docker",
-		Isolation: core.IsolationContainerDinD,
-		Resources: resources,
+		Isolation:  core.IsolationContainerDinD,
+		Resources:  resources,
 	}
 	used := EffectiveWorkerResources(worker)
 	if used.CPUMillis != 5000 || used.MemoryBytes != 16<<30 || used.DiskBytes != 40<<30 {
@@ -231,19 +231,18 @@ func TestDinDReservesRunnerAndSidecarCPUAndMemory(t *testing.T) {
 func TestDinDStillConsumesHostDiskCapacity(t *testing.T) {
 	w := core.Worker{
 		ProviderID: "docker",
-		Isolation: core.IsolationContainerDinD,
-		Resources: core.Resources{DiskBytes: 20 << 30},
+		Isolation:  core.IsolationContainerDinD,
+		Resources:  core.Resources{DiskBytes: 20 << 30},
 	}
 	if got := EffectiveWorkerResources(w).DiskBytes; got != 20<<30 {
 		t.Fatalf("dind disk accounting=%d, want %d", got, int64(20<<30))
 	}
 }
 
-
 func TestSummarizeCapacityAccountsForOtherPools(t *testing.T) {
 	host := core.Host{
 		ID: "a", Name: "a", Provider: "docker", State: core.HostOnline,
-		Tags: map[string]string{"isolation.container-trusted": "true"},
+		Tags:     map[string]string{"isolation.container-trusted": "true"},
 		Capacity: core.Resources{CPUMillis: 6000, MemoryBytes: 16 << 30},
 	}
 	pool := testPool()
@@ -270,7 +269,7 @@ func TestSummarizeCapacityAccountsForOtherPools(t *testing.T) {
 func TestSummarizeCapacityIdentifiesPoolLimit(t *testing.T) {
 	host := core.Host{
 		ID: "a", Name: "a", Provider: "docker", State: core.HostOnline,
-		Tags: map[string]string{"isolation.container-trusted": "true"},
+		Tags:     map[string]string{"isolation.container-trusted": "true"},
 		Capacity: core.Resources{CPUMillis: 6000, MemoryBytes: 16 << 30},
 	}
 	pool := testPool()
@@ -286,13 +285,12 @@ func TestSummarizeCapacityIdentifiesPoolLimit(t *testing.T) {
 	}
 }
 
-
 func TestDinDAggregateBudgetUsesSingleEnvelopeOnVerifiedHost(t *testing.T) {
 	resources := core.Resources{CPUMillis: 2500, MemoryBytes: 8 << 30, DiskBytes: 40 << 30}
 	host := core.Host{
 		Provider: "docker",
 		Tags: map[string]string{
-			"isolation.container-dind": "true",
+			"isolation.container-dind":        "true",
 			"feature.aggregateResourceGroups": "true",
 		},
 	}
@@ -303,10 +301,10 @@ func TestDinDAggregateBudgetUsesSingleEnvelopeOnVerifiedHost(t *testing.T) {
 	}
 
 	worker := core.Worker{
-		ProviderID: "docker",
-		Isolation: core.IsolationContainerDinD,
+		ProviderID:         "docker",
+		Isolation:          core.IsolationContainerDinD,
 		AggregateResources: true,
-		Resources: resources,
+		Resources:          resources,
 	}
 	used := EffectiveWorkerResources(worker)
 	if used.CPUMillis != 2500 || used.MemoryBytes != 8<<30 || used.DiskBytes != 40<<30 {
@@ -317,17 +315,16 @@ func TestDinDAggregateBudgetUsesSingleEnvelopeOnVerifiedHost(t *testing.T) {
 func TestDinDAggregateBudgetDoesNotRetroactivelyChangeLegacyWorker(t *testing.T) {
 	resources := core.Resources{CPUMillis: 2500, MemoryBytes: 8 << 30}
 	legacy := core.Worker{
-		ProviderID: "docker",
-		Isolation: core.IsolationContainerDinD,
+		ProviderID:         "docker",
+		Isolation:          core.IsolationContainerDinD,
 		AggregateResources: false,
-		Resources: resources,
+		Resources:          resources,
 	}
 	used := EffectiveWorkerResources(legacy)
 	if used.CPUMillis != 5000 || used.MemoryBytes != 16<<30 {
 		t.Fatalf("legacy worker reservation=%+v, want conservative double envelope", used)
 	}
 }
-
 
 type liveSnapshotSchedulerStore struct {
 	store.Store
@@ -366,9 +363,13 @@ func TestPlacementDomainSharesCapacityAcrossProviders(t *testing.T) {
 		{ID: "docker-agent", Name: "compute", Provider: "docker", State: core.HostOnline, PlacementDomainID: "machine-01", Tags: map[string]string{"isolation.container-trusted": "true"}, Capacity: capacity},
 		{ID: "process-agent", Name: "compute-android", Provider: "process", State: core.HostOnline, PlacementDomainID: "machine-01", Tags: map[string]string{"isolation.container-trusted": "true"}, Capacity: capacity},
 	} {
-		if err := st.UpsertHost(ctx, h); err != nil { t.Fatal(err) }
+		if err := st.UpsertHost(ctx, h); err != nil {
+			t.Fatal(err)
+		}
 	}
-	if err := st.UpsertWorker(ctx, core.Worker{ID: "existing", HostID: "docker-agent", PoolID: "other", ProviderID: "docker", State: core.WorkerBusy, Resources: core.Resources{CPUMillis: 20000, MemoryBytes: 30 << 30}}); err != nil { t.Fatal(err) }
+	if err := st.UpsertWorker(ctx, core.Worker{ID: "existing", HostID: "docker-agent", PoolID: "other", ProviderID: "docker", State: core.WorkerBusy, Resources: core.Resources{CPUMillis: 20000, MemoryBytes: 30 << 30}}); err != nil {
+		t.Fatal(err)
+	}
 
 	p := testPool()
 	p.Resources = core.Resources{CPUMillis: 16000, MemoryBytes: 1 << 30}
@@ -390,7 +391,6 @@ func TestPlacementDomainSharesCapacityAcrossProviders(t *testing.T) {
 	}
 }
 
-
 func TestOfflinePlacementMemberDoesNotEraseLiveCapacityOrReservations(t *testing.T) {
 	st, _ := store.OpenSQLite(":memory:")
 	defer st.Close()
@@ -401,9 +401,13 @@ func TestOfflinePlacementMemberDoesNotEraseLiveCapacityOrReservations(t *testing
 		{ID: "process-agent", Name: "compute-android", Provider: "process", State: core.HostOffline, PlacementDomainID: "machine-01", Tags: map[string]string{"isolation.container-trusted": "true"}, Capacity: core.Resources{}},
 		{ID: "stale-docker-agent", Name: "compute-old", Provider: "docker", State: core.HostDraining, PlacementDomainID: "machine-01", Capacity: core.Resources{CPUMillis: 1000, MemoryBytes: 1 << 30}},
 	} {
-		if err := st.UpsertHost(ctx, h); err != nil { t.Fatal(err) }
+		if err := st.UpsertHost(ctx, h); err != nil {
+			t.Fatal(err)
+		}
 	}
-	if err := st.UpsertWorker(ctx, core.Worker{ID: "offline-worker", HostID: "process-agent", PoolID: "other", ProviderID: "process", State: core.WorkerBusy, Resources: core.Resources{CPUMillis: 24000, MemoryBytes: 20 << 30}}); err != nil { t.Fatal(err) }
+	if err := st.UpsertWorker(ctx, core.Worker{ID: "offline-worker", HostID: "process-agent", PoolID: "other", ProviderID: "process", State: core.WorkerBusy, Resources: core.Resources{CPUMillis: 24000, MemoryBytes: 20 << 30}}); err != nil {
+		t.Fatal(err)
+	}
 	p := testPool()
 	p.Resources = core.Resources{CPUMillis: 8000, MemoryBytes: 1 << 30}
 	decision, err := (Scheduler{Store: st}).SelectHost(ctx, p)

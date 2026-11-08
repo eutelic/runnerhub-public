@@ -20,36 +20,50 @@ const updatedDigest = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 const otherDigest = "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
 
 type fakeRegistryDigest struct {
-	seen map[string]int
-	missingSHA bool
-	unchanged bool
-	mismatch bool
+	seen             map[string]int
+	missingSHA       bool
+	unchanged        bool
+	mismatch         bool
 	mutateAfterCheck bool
-	nextDigest string
+	nextDigest       string
 }
 
 func (f *fakeRegistryDigest) Digest(_ context.Context, image string) (string, error) {
-	if f.seen == nil { f.seen = make(map[string]int) }
+	if f.seen == nil {
+		f.seen = make(map[string]int)
+	}
 	f.seen[image]++
-	if f.nextDigest != "" { return f.nextDigest, nil }
+	if f.nextDigest != "" {
+		return f.nextDigest, nil
+	}
 	if strings.HasSuffix(image, ":latest") {
-		if f.seen[image] == 1 { return baselineDigest, nil }
-		if f.unchanged { return baselineDigest, nil }
-		if f.mutateAfterCheck && f.seen[image] >= 3 { return otherDigest, nil }
+		if f.seen[image] == 1 {
+			return baselineDigest, nil
+		}
+		if f.unchanged {
+			return baselineDigest, nil
+		}
+		if f.mutateAfterCheck && f.seen[image] >= 3 {
+			return otherDigest, nil
+		}
 		return updatedDigest, nil
 	}
 	if strings.Contains(image, ":sha-") {
-		if f.missingSHA { return "", errors.New("manifest not found") }
-		if f.mismatch { return otherDigest, nil }
+		if f.missingSHA {
+			return "", errors.New("manifest not found")
+		}
+		if f.mismatch {
+			return otherDigest, nil
+		}
 		return updatedDigest, nil
 	}
 	return "", errors.New("unexpected image reference")
 }
 
 type fakePublisher struct {
-	meta githubrunner.WorkflowRunMetadata
+	meta  githubrunner.WorkflowRunMetadata
 	found bool
-	err error
+	err   error
 }
 
 func (f *fakePublisher) LatestPublicationRun(_ context.Context, scope core.GitHubScope, workflow, branch string) (githubrunner.WorkflowRunMetadata, bool, error) {
@@ -64,7 +78,7 @@ func autoTestRun(id int64, conclusion string) githubrunner.WorkflowRunMetadata {
 		ID: id, Attempt: 1, Status: "completed", Conclusion: conclusion,
 		Event: "push", HeadBranch: "main",
 		HeadSHA: "0123456789abcdef0123456789abcdef01234567",
-		Path: ".github/workflows/publish-images.yml@main",
+		Path:    ".github/workflows/publish-images.yml@main",
 	}
 }
 
@@ -74,9 +88,9 @@ func newAutoTestManager(t *testing.T) (*BootstrapManager, *fakeManagedTrueNAS, *
 	fake := testManagedInventory()
 	for i := range fake.inventory {
 		if fake.inventory[i].Name == "file-ingest" {
-            fake.inventory[i].Images = []string{"ghcr.io/eutelic/file-ingest:latest"}
-            fake.inventory[i].CustomApp = true
-        }
+			fake.inventory[i].Images = []string{"ghcr.io/eutelic/file-ingest:latest"}
+			fake.inventory[i].CustomApp = true
+		}
 	}
 	svc := newManagedService(t, fake, t.TempDir())
 	if err := svc.setManaged("file-ingest", true); err != nil {
@@ -183,13 +197,21 @@ func TestAutoPublishDoesNotRedeployAfterTrueNASImageChange(t *testing.T) {
 		App: "file-ingest", Repository: "eutelic/file-ingest",
 		Workflow: "publish-images.yml", Image: "ghcr.io/eutelic/file-ingest:latest", Branch: "main",
 	}
-	if err := manager.SetAutoPublish(rule); err != nil { t.Fatal(err) }
+	if err := manager.SetAutoPublish(rule); err != nil {
+		t.Fatal(err)
+	}
 	for i := range fake.inventory {
-		if fake.inventory[i].Name == "file-ingest" { fake.inventory[i].Images = []string{"ghcr.io/eutelic/unrelated:latest"} }
+		if fake.inventory[i].Name == "file-ingest" {
+			fake.inventory[i].Images = []string{"ghcr.io/eutelic/unrelated:latest"}
+		}
 	}
 	publisher := &fakePublisher{meta: autoTestRun(30, "success"), found: true}
-	if err := manager.AutoPublishOnce(context.Background(), publisher); err != nil { t.Fatal(err) }
-	if len(fake.apps) > 0 { t.Fatalf("unrelated image was redeployed: %v", fake.apps) }
+	if err := manager.AutoPublishOnce(context.Background(), publisher); err != nil {
+		t.Fatal(err)
+	}
+	if len(fake.apps) > 0 {
+		t.Fatalf("unrelated image was redeployed: %v", fake.apps)
+	}
 	rules, err := manager.AutoPublishRules()
 	if err != nil || rules[0].LastResult != "skipped-image-mismatch" {
 		t.Fatalf("want image mismatch status: %+v %v", rules, err)
@@ -242,9 +264,9 @@ func TestAutoPublishResultUpdatesLaterSortedApp(t *testing.T) {
 		}
 	}
 	for _, tc := range []struct {
-		runID int64
+		runID  int64
 		result string
-		cause error
+		cause  error
 	}{
 		{runID: 11, result: "deployed"},
 		{runID: 12, result: "failed", cause: errors.New("simulated redeploy failure")},
@@ -271,7 +293,6 @@ func TestAutoPublishResultUpdatesLaterSortedApp(t *testing.T) {
 		}
 	}
 }
-
 
 func TestAutoPublishInFlightRunCompletesOnce(t *testing.T) {
 	manager, fake, _ := newAutoTestManager(t)
@@ -313,7 +334,6 @@ func TestAutoPublishInFlightRunCompletesOnce(t *testing.T) {
 		t.Fatalf("invalid persistent publishing cursor: %+v, err=%v", rules, err)
 	}
 }
-
 
 func TestAutoPublishInterruptedClaimRequiresManualRecovery(t *testing.T) {
 	manager, fake, _ := newAutoTestManager(t)
@@ -429,13 +449,12 @@ func TestAutoPublishFailedClaimBlocksNewReleases(t *testing.T) {
 	}
 }
 
-
 func TestAutoPublishFailClosedMissingUnchangedAndMismatchedDigest(t *testing.T) {
-	for _, tc := range []struct{
-		name string
-		missing bool
+	for _, tc := range []struct {
+		name      string
+		missing   bool
 		unchanged bool
-		mismatch bool
+		mismatch  bool
 	}{
 		{name: "missing commit digest", missing: true},
 		{name: "unchanged latest manifest digest", unchanged: true},
@@ -449,15 +468,21 @@ func TestAutoPublishFailClosedMissingUnchangedAndMismatchedDigest(t *testing.T) 
 				Workflow: "publish-images.yml", Image: "ghcr.io/eutelic/file-ingest:latest",
 				Branch: "main", LastRunID: 10, LastAttempt: 1,
 			}
-			if err := manager.SetAutoPublish(rule); err != nil { t.Fatal(err) }
+			if err := manager.SetAutoPublish(rule); err != nil {
+				t.Fatal(err)
+			}
 			registry.missingSHA = tc.missing
 			registry.unchanged = tc.unchanged
 			registry.mismatch = tc.mismatch
 			publisher := &fakePublisher{meta: autoTestRun(11, "success"), found: true}
 			for i := 0; i < 2; i++ {
-				if err := manager.AutoPublishOnce(context.Background(), publisher); err != nil { t.Fatal(err) }
+				if err := manager.AutoPublishOnce(context.Background(), publisher); err != nil {
+					t.Fatal(err)
+				}
 			}
-			if len(fake.apps) != 0 { t.Fatalf("unverified image was deployed: %v", fake.apps) }
+			if len(fake.apps) != 0 {
+				t.Fatalf("unverified image was deployed: %v", fake.apps)
+			}
 			rules, err := manager.AutoPublishRules()
 			if err != nil || len(rules) != 1 || rules[0].LastRunID != 10 ||
 				rules[0].LastResult != "blocked-image-digest" || rules[0].LastDetail == "" ||
@@ -476,21 +501,29 @@ func TestAutoPublishRegistryChangesDuringDeploymentRequiresManualRecovery(t *tes
 		Workflow: "publish-images.yml", Image: "ghcr.io/eutelic/file-ingest:latest",
 		Branch: "main", LastRunID: 10, LastAttempt: 1,
 	}
-	if err := manager.SetAutoPublish(rule); err != nil { t.Fatal(err) }
+	if err := manager.SetAutoPublish(rule); err != nil {
+		t.Fatal(err)
+	}
 	registry.mutateAfterCheck = true
 	publisher := &fakePublisher{meta: autoTestRun(11, "success"), found: true}
 	if err := manager.AutoPublishOnce(context.Background(), publisher); err == nil {
 		t.Fatal("expected post-deployment registry mismatch error")
 	}
-	if len(fake.apps) != 1 { t.Fatalf("expected only first deployment: %v", fake.apps) }
+	if len(fake.apps) != 1 {
+		t.Fatalf("expected only first deployment: %v", fake.apps)
+	}
 	rules, err := manager.AutoPublishRules()
 	if err != nil || rules[0].LastResult != "recovery-required" ||
 		rules[0].LastImageDigest != baselineDigest {
 		t.Fatalf("ambiguous deployment not fenced: %+v err=%v", rules, err)
 	}
 	publisher.meta = autoTestRun(12, "success")
-	if err := manager.AutoPublishOnce(context.Background(), publisher); err != nil { t.Fatal(err) }
-	if len(fake.apps) != 1 { t.Fatalf("new release bypassed recovery hold: %v", fake.apps) }
+	if err := manager.AutoPublishOnce(context.Background(), publisher); err != nil {
+		t.Fatal(err)
+	}
+	if len(fake.apps) != 1 {
+		t.Fatalf("new release bypassed recovery hold: %v", fake.apps)
+	}
 }
 
 func TestAutoPublishRecordsVerifiedImageDigest(t *testing.T) {
@@ -500,20 +533,23 @@ func TestAutoPublishRecordsVerifiedImageDigest(t *testing.T) {
 		Workflow: "publish-images.yml", Image: "ghcr.io/eutelic/file-ingest:latest",
 		Branch: "main", LastRunID: 10, LastAttempt: 1,
 	}
-	if err := manager.SetAutoPublish(rule); err != nil { t.Fatal(err) }
+	if err := manager.SetAutoPublish(rule); err != nil {
+		t.Fatal(err)
+	}
 	rules, err := manager.AutoPublishRules()
 	if err != nil || len(rules) != 1 || rules[0].LastImageDigest != baselineDigest {
 		t.Fatalf("missing initial immutable baseline: %+v %v", rules, err)
 	}
 	publisher := &fakePublisher{meta: autoTestRun(11, "success"), found: true}
-	if err := manager.AutoPublishOnce(context.Background(), publisher); err != nil { t.Fatal(err) }
+	if err := manager.AutoPublishOnce(context.Background(), publisher); err != nil {
+		t.Fatal(err)
+	}
 	rules, err = manager.AutoPublishRules()
 	if err != nil || len(fake.apps) != 1 || rules[0].LastImageDigest != updatedDigest ||
 		rules[0].LastResult != "deployed" {
 		t.Fatalf("verified digest not durably recorded: %+v, apps=%v, err=%v", rules, fake.apps, err)
 	}
 }
-
 
 func TestManualAutoPublishRecoveryRebasesPinnedTrueNASRelease(t *testing.T) {
 	manager, fake, _ := newAutoTestManager(t)
@@ -522,7 +558,9 @@ func TestManualAutoPublishRecoveryRebasesPinnedTrueNASRelease(t *testing.T) {
 		Workflow: "publish-images.yml", Image: "ghcr.io/eutelic/file-ingest:latest",
 		Branch: "main", LastRunID: 10, LastAttempt: 1,
 	}
-	if err := manager.SetAutoPublish(rule); err != nil { t.Fatal(err) }
+	if err := manager.SetAutoPublish(rule); err != nil {
+		t.Fatal(err)
+	}
 	meta := autoTestRun(11, "success")
 	if claim, err := manager.claimPublication(rule, meta, "deploying"); err != nil || !claim {
 		t.Fatalf("claim=%t error=%v", claim, err)
@@ -534,23 +572,29 @@ func TestManualAutoPublishRecoveryRebasesPinnedTrueNASRelease(t *testing.T) {
 	// control-plane request timed out and left its cursor unacknowledged.
 	for i := range fake.inventory {
 		if fake.inventory[i].Name == "file-ingest" {
-			fake.inventory[i].Images = []string{"ghcr.io/eutelic/file-ingest@"+updatedDigest}
+			fake.inventory[i].Images = []string{"ghcr.io/eutelic/file-ingest@" + updatedDigest}
 		}
 	}
-	if err := manager.RedeployManagedApp(context.Background(), rule.App); err != nil { t.Fatal(err) }
-	if err := manager.MarkManualAutoPublishRecovery(context.Background(), rule.App); err != nil { t.Fatal(err) }
+	if err := manager.RedeployManagedApp(context.Background(), rule.App); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.MarkManualAutoPublishRecovery(context.Background(), rule.App); err != nil {
+		t.Fatal(err)
+	}
 	rules, err := manager.AutoPublishRules()
 	if err != nil || len(rules) != 1 || rules[0].LastImageDigest != updatedDigest ||
 		rules[0].LastResult != "recovered-manually" {
-		t.Fatalf("stale pinned baseline after recovery: rules=%+v err=%v",rules,err)
+		t.Fatalf("stale pinned baseline after recovery: rules=%+v err=%v", rules, err)
 	}
 	manager.RegistryDigests.(*fakeRegistryDigest).nextDigest = otherDigest
 	publisher := &fakePublisher{meta: autoTestRun(12, "success"), found: true}
-	if err := manager.AutoPublishOnce(context.Background(), publisher); err != nil { t.Fatal(err) }
+	if err := manager.AutoPublishOnce(context.Background(), publisher); err != nil {
+		t.Fatal(err)
+	}
 	rules, err = manager.AutoPublishRules()
 	if err != nil || rules[0].LastImageDigest != otherDigest || rules[0].LastResult != "deployed" ||
 		len(fake.apps) != 2 {
-		t.Fatalf("post-reconciliation publishing failed: rules=%+v apps=%v err=%v",rules,fake.apps,err)
+		t.Fatalf("post-reconciliation publishing failed: rules=%+v apps=%v err=%v", rules, fake.apps, err)
 	}
 }
 
@@ -561,18 +605,26 @@ func TestManualAutoPublishRecoveryRefusesUnverifiableTrueNASImages(t *testing.T)
 		Workflow: "publish-images.yml", Image: "ghcr.io/eutelic/file-ingest:latest",
 		Branch: "main", LastRunID: 10, LastAttempt: 1,
 	}
-	if err := manager.SetAutoPublish(rule); err != nil { t.Fatal(err) }
+	if err := manager.SetAutoPublish(rule); err != nil {
+		t.Fatal(err)
+	}
 	meta := autoTestRun(11, "success")
-	if claim, err := manager.claimPublication(rule, meta, "deploying"); err != nil || !claim { t.Fatalf("claim=%t err=%v",claim,err) }
-	if err := manager.publicationResult(rule,meta,"failed",errors.New("updater interrupted")); err != nil { t.Fatal(err) }
+	if claim, err := manager.claimPublication(rule, meta, "deploying"); err != nil || !claim {
+		t.Fatalf("claim=%t err=%v", claim, err)
+	}
+	if err := manager.publicationResult(rule, meta, "failed", errors.New("updater interrupted")); err != nil {
+		t.Fatal(err)
+	}
 	for i := range fake.inventory {
-		if fake.inventory[i].Name == "file-ingest" { fake.inventory[i].Images = []string{"ghcr.io/eutelic/unrelated:latest"} }
+		if fake.inventory[i].Name == "file-ingest" {
+			fake.inventory[i].Images = []string{"ghcr.io/eutelic/unrelated:latest"}
+		}
 	}
 	if err := manager.MarkManualAutoPublishRecovery(context.Background(), rule.App); err == nil {
 		t.Fatal("cleared recovery hold without verifying current TrueNAS image")
 	}
 	rules, err := manager.AutoPublishRules()
 	if err != nil || rules[0].LastResult != "failed" || rules[0].LastImageDigest != baselineDigest {
-		t.Fatalf("invalid automatic recovery after unverifiable app: %+v err=%v",rules,err)
+		t.Fatalf("invalid automatic recovery after unverifiable app: %+v err=%v", rules, err)
 	}
 }

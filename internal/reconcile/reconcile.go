@@ -168,9 +168,11 @@ func (r *Reconciler) reconcileWorker(ctx context.Context, w *core.Worker, jobChe
 	// the terminal callback, reconcile it before any further runner inspection.
 	// Elapsed time alone must never turn a job terminal.
 	if w.State == core.WorkerBusy && jobChecksRemaining != nil && *jobChecksRemaining > 0 &&
-		r.githubJobCompletionPollDue(*w,now) {
+		r.githubJobCompletionPollDue(*w, now) {
 		*jobChecksRemaining--
-		if err:=r.tryReconcileCompletedGitHubJob(ctx,w,now);err!=nil{return err}
+		if err := r.tryReconcileCompletedGitHubJob(ctx, w, now); err != nil {
+			return err
+		}
 	}
 
 	if w.ProviderHandle != "" && r.Hub != nil && (w.State == core.WorkerRegistering || w.State == core.WorkerReady || w.State == core.WorkerBusy) {

@@ -13,7 +13,7 @@ var workerTransitions = map[WorkerState]map[WorkerState]struct{}{
 	// has already started, allow a late clean provider completion to be treated
 	// idempotently; the API immediately returns the worker to cleanup_pending.
 	WorkerCleanupPending: {WorkerCompleted: {}, WorkerDeleting: {}, WorkerDeleted: {}},
-	WorkerDeleting: {WorkerDeleted: {}, WorkerCleanupPending: {}}, WorkerDeleted: {},
+	WorkerDeleting:       {WorkerDeleted: {}, WorkerCleanupPending: {}}, WorkerDeleted: {},
 }
 
 func CanTransitionHost(from, to HostState) bool     { _, ok := hostTransitions[from][to]; return ok }

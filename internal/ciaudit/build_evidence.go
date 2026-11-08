@@ -10,16 +10,16 @@ import (
 // ArtifactBuildEvidence captures the semantic Buildx/OCI identity needed to
 // distinguish a real duplicate build from two superficially similar commands.
 type ArtifactBuildEvidence struct {
-	BuildKey          string   `json:"buildKey"`
-	DefinitionHash    string   `json:"definitionHash"`
-	InputHash         string   `json:"inputHash"`
-	ContextHash       string   `json:"contextHash"`
-	Target            string   `json:"target,omitempty"`
-	Platforms         []string `json:"platforms,omitempty"`
-	BuildArgs         []string `json:"buildArgs,omitempty"`
-	ArtifactDigest    string   `json:"artifactDigest,omitempty"`
-	ProvenanceDigest  string   `json:"provenanceDigest,omitempty"`
-	CompletedAt       time.Time `json:"completedAt"`
+	BuildKey         string    `json:"buildKey"`
+	DefinitionHash   string    `json:"definitionHash"`
+	InputHash        string    `json:"inputHash"`
+	ContextHash      string    `json:"contextHash"`
+	Target           string    `json:"target,omitempty"`
+	Platforms        []string  `json:"platforms,omitempty"`
+	BuildArgs        []string  `json:"buildArgs,omitempty"`
+	ArtifactDigest   string    `json:"artifactDigest,omitempty"`
+	ProvenanceDigest string    `json:"provenanceDigest,omitempty"`
+	CompletedAt      time.Time `json:"completedAt"`
 }
 
 func (b ArtifactBuildEvidence) Key() (string, error) {

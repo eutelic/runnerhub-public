@@ -119,7 +119,7 @@ func TestNonTailscaleControlPlaneDoesNotForceDNS(t *testing.T) {
 
 func TestRegistryHost(t *testing.T) {
 	tests := map[string]string{
-		"ghcr.io/eutelic/runnerhub-agent:latest": "ghcr.io",
+		"ghcr.io/eutelic/runnerhub-agent:latest":  "ghcr.io",
 		"registry.example:5000/team/agent:latest": "registry.example:5000",
 		"runnerhub-agent:latest":                  "docker.io",
 	}
@@ -129,7 +129,6 @@ func TestRegistryHost(t *testing.T) {
 		}
 	}
 }
-
 
 func TestSSHCommandUsesStrictHostKeyCheckingWhenFingerprintPinned(t *testing.T) {
 	req := Request{

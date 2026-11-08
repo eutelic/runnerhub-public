@@ -54,9 +54,13 @@ func TestValidatePrivateSecretFileInfoRejectsPathSwap(t *testing.T) {
 		}
 	}
 	original, err := os.Lstat(originalPath)
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	replacement, err := os.Stat(replacementPath)
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := validatePrivateSecretFileInfo(original, replacement); err == nil {
 		t.Fatal("replaced secret file identity was accepted")
 	}

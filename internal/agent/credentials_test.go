@@ -1,6 +1,54 @@
 package agent
 
-import("os";"path/filepath";"strings";"testing")
-func TestStoredCredentialAllowsRestartWithoutEnrollmentSecret(t *testing.T){path:=filepath.Join(t.TempDir(),"cred.json");if err:=writeCredential(path,storedCredential{HostID:"host-1",Token:"host-token"});err!=nil{t.Fatal(err)};c,err:=NewClient(ClientConfig{ControlPlaneURL:"https://runnerhub.example.com",CredentialFile:path,Name:"lab",Provider:"docker"},nil);if err!=nil{t.Fatal(err)};if c.hostID!="host-1"||c.token!="host-token"{t.Fatalf("loaded credentials=%q %q",c.hostID,c.token)};info,err:=os.Stat(path);if err!=nil{t.Fatal(err)};if info.Mode().Perm()&0077!=0{t.Fatalf("credential file is too permissive: %o",info.Mode().Perm())}}
-func TestEnrollmentRequiredWithoutStoredCredential(t *testing.T){_,err:=NewClient(ClientConfig{ControlPlaneURL:"https://runnerhub.example.com",CredentialFile:filepath.Join(t.TempDir(),"missing.json"),Name:"lab",Provider:"docker"},nil);if err==nil||!strings.Contains(err.Error(),"enrollment token"){t.Fatalf("expected enrollment requirement, got %v",err)}}
-func TestStoredCredentialNeverContainsEnrollmentSecret(t *testing.T){path:=filepath.Join(t.TempDir(),"cred.json");c,err:=NewClient(ClientConfig{ControlPlaneURL:"https://runnerhub.example.com",EnrollmentToken:"global-enrollment-secret",CredentialFile:path,Name:"lab",Provider:"docker"},nil);if err!=nil{t.Fatal(err)};c.hostID="host-1";c.token="host-token";if err:=c.saveCredential();err!=nil{t.Fatal(err)};b,err:=os.ReadFile(path);if err!=nil{t.Fatal(err)};if strings.Contains(string(b),"global-enrollment-secret"){t.Fatal("bootstrap enrollment secret was persisted")}}
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+func TestStoredCredentialAllowsRestartWithoutEnrollmentSecret(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "cred.json")
+	if err := writeCredential(path, storedCredential{HostID: "host-1", Token: "host-token"}); err != nil {
+		t.Fatal(err)
+	}
+	c, err := NewClient(ClientConfig{ControlPlaneURL: "https://runnerhub.example.com", CredentialFile: path, Name: "lab", Provider: "docker"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.hostID != "host-1" || c.token != "host-token" {
+		t.Fatalf("loaded credentials=%q %q", c.hostID, c.token)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm()&0077 != 0 {
+		t.Fatalf("credential file is too permissive: %o", info.Mode().Perm())
+	}
+}
+func TestEnrollmentRequiredWithoutStoredCredential(t *testing.T) {
+	_, err := NewClient(ClientConfig{ControlPlaneURL: "https://runnerhub.example.com", CredentialFile: filepath.Join(t.TempDir(), "missing.json"), Name: "lab", Provider: "docker"}, nil)
+	if err == nil || !strings.Contains(err.Error(), "enrollment token") {
+		t.Fatalf("expected enrollment requirement, got %v", err)
+	}
+}
+func TestStoredCredentialNeverContainsEnrollmentSecret(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "cred.json")
+	c, err := NewClient(ClientConfig{ControlPlaneURL: "https://runnerhub.example.com", EnrollmentToken: "global-enrollment-secret", CredentialFile: path, Name: "lab", Provider: "docker"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.hostID = "host-1"
+	c.token = "host-token"
+	if err := c.saveCredential(); err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(b), "global-enrollment-secret") {
+		t.Fatal("bootstrap enrollment secret was persisted")
+	}
+}

@@ -3,66 +3,729 @@ package api
 import (
 	"errors"
 	"fmt"
-	"net/http"
-	"strings"
-	"time"
 	"github.com/eutelic/runnerhub/internal/core"
 	"github.com/eutelic/runnerhub/internal/githubrunner"
 	"github.com/eutelic/runnerhub/internal/images"
+	"net/http"
+	"strings"
+	"time"
 )
 
-func sameStringMap(a,b map[string]string)bool{
-	if len(a)!=len(b){return false}
-	for k,v:=range a{if b[k]!=v{return false}}
+func sameStringMap(a, b map[string]string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for k, v := range a {
+		if b[k] != v {
+			return false
+		}
+	}
 	return true
 }
-func resourceLearningConfigChanged(before,after core.RunnerPool)bool{
-	return before.Resources.CPUMillis!=after.Resources.CPUMillis||
-		before.Resources.MemoryBytes!=after.Resources.MemoryBytes||
-		before.Resources.GPUs!=after.Resources.GPUs||
-		before.Isolation!=after.Isolation||
-		before.Image!=after.Image||
-		!sameStringMap(before.HostSelector,after.HostSelector)
+func resourceLearningConfigChanged(before, after core.RunnerPool) bool {
+	return before.Resources.CPUMillis != after.Resources.CPUMillis ||
+		before.Resources.MemoryBytes != after.Resources.MemoryBytes ||
+		before.Resources.GPUs != after.Resources.GPUs ||
+		before.Isolation != after.Isolation ||
+		before.Image != after.Image ||
+		!sameStringMap(before.HostSelector, after.HostSelector)
 }
-func resetLearningForConfigChange(before *core.RunnerPool,after *core.RunnerPool){
-	if before==nil||after==nil{return}
+func resetLearningForConfigChange(before *core.RunnerPool, after *core.RunnerPool) {
+	if before == nil || after == nil {
+		return
+	}
 	// Enabling automation should never immediately act on an arbitrary backlog
 	// gathered while the feature was off. Begin with a fresh cohort.
-	enabledNow:=!before.AutoTuneResources&&after.AutoTuneResources
-	if resourceLearningConfigChanged(*before,*after)||enabledNow{after.LearningResetAt=time.Now().UTC()}
+	enabledNow := !before.AutoTuneResources && after.AutoTuneResources
+	if resourceLearningConfigChanged(*before, *after) || enabledNow {
+		after.LearningResetAt = time.Now().UTC()
+	}
 }
-func(s *Service)resetPoolLearning(w http.ResponseWriter,r *http.Request){s.poolMutationMu.Lock();defer s.poolMutationMu.Unlock();
-	p,err:=s.Store.GetPool(r.Context(),r.PathValue("id"));if err!=nil{problem(w,404,err);return}
-	p.LearningResetAt=time.Now().UTC()
-	if err:=s.Store.UpsertPool(r.Context(),p);err!=nil{problem(w,500,err);return}
-	_=s.Store.AppendAudit(r.Context(),core.AuditEvent{Actor:actor(r.Context()),Action:"reset_resource_learning",ResourceType:"pool",ResourceID:p.ID,Result:"ok",SafeDetail:"resource learning reset; historical worker records retained"})
-	writeJSON(w,200,map[string]any{"poolId":p.ID,"resetAt":p.LearningResetAt})
+func (s *Service) resetPoolLearning(w http.ResponseWriter, r *http.Request) {
+	s.poolMutationMu.Lock()
+	defer s.poolMutationMu.Unlock()
+	p, err := s.Store.GetPool(r.Context(), r.PathValue("id"))
+	if err != nil {
+		problem(w, 404, err)
+		return
+	}
+	p.LearningResetAt = time.Now().UTC()
+	if err := s.Store.UpsertPool(r.Context(), p); err != nil {
+		problem(w, 500, err)
+		return
+	}
+	_ = s.Store.AppendAudit(r.Context(), core.AuditEvent{Actor: actor(r.Context()), Action: "reset_resource_learning", ResourceType: "pool", ResourceID: p.ID, Result: "ok", SafeDetail: "resource learning reset; historical worker records retained"})
+	writeJSON(w, 200, map[string]any{"poolId": p.ID, "resetAt": p.LearningResetAt})
 }
-type updatePoolResourcesRequest struct{Resources core.Resources `json:"resources,omitempty"`;MaxConcurrency int `json:"maxConcurrency,omitempty"`;Isolation core.IsolationMode `json:"isolation,omitempty"`;AutoTuneResources *bool `json:"autoTuneResources,omitempty"`}
-func(s *Service)updatePoolResources(w http.ResponseWriter,r *http.Request){s.poolMutationMu.Lock();defer s.poolMutationMu.Unlock();p,err:=s.Store.GetPool(r.Context(),r.PathValue("id"));if err!=nil{problem(w,404,err);return};before:=p;var in updatePoolResourcesRequest;if !decode(w,r,&in){return};if !core.NonNegative(in.Resources){problem(w,400,errors.New("resource requests cannot be negative"));return};if in.MaxConcurrency<0{problem(w,400,errors.New("max concurrency cannot be negative"));return};if in.Resources.CPUMillis>0{p.Resources.CPUMillis=in.Resources.CPUMillis};if in.Resources.MemoryBytes>0{p.Resources.MemoryBytes=in.Resources.MemoryBytes};if in.Resources.DiskBytes>0{p.Resources.DiskBytes=in.Resources.DiskBytes};if in.Resources.GPUs>0{p.Resources.GPUs=in.Resources.GPUs};if in.MaxConcurrency>0{p.MaxConcurrency=in.MaxConcurrency};if in.Isolation!=""{p.Isolation=in.Isolation};if in.AutoTuneResources!=nil{p.AutoTuneResources=*in.AutoTuneResources};resetLearningForConfigChange(&before,&p);if err:=core.ValidateRunnerPool(p);err!=nil{problem(w,400,err);return};if err:=s.Policy.ValidatePool(p);err!=nil{problem(w,403,err);return};if s.Catalog!=nil{posture,err:=githubrunner.InspectPoolSecurity(r.Context(),s.Catalog,p);if err!=nil{problem(w,502,err);return};if !posture.Safe{problem(w,409,errors.New(strings.Join(posture.Reasons,"; ")));return}};if err:=s.Store.UpsertPool(r.Context(),p);err!=nil{problem(w,500,err);return};_=s.Store.AppendAudit(r.Context(),core.AuditEvent{Actor:actor(r.Context()),Action:"update_pool_resources",ResourceType:"pool",ResourceID:p.ID,Result:"ok",SafeDetail:fmt.Sprintf("cpu=%dm memory=%d max=%d isolation=%s",p.Resources.CPUMillis,p.Resources.MemoryBytes,p.MaxConcurrency,p.Isolation)});writeJSON(w,200,p)}
-type connectRepositoryRequest struct{InstallationID int64 `json:"installationId"`;Repository string `json:"repository"`;ScaleSetName string `json:"scaleSetName,omitempty"`;MaxConcurrency int `json:"maxConcurrency,omitempty"`;Isolation core.IsolationMode `json:"isolation,omitempty"`;Resources core.Resources `json:"resources,omitempty"`;AutoTuneResources *bool `json:"autoTuneResources,omitempty"`}
-func normalizeConnectResources(requested,fallback core.Resources)core.Resources{if fallback.CPUMillis<=0{fallback.CPUMillis=2500};if fallback.MemoryBytes<=0{fallback.MemoryBytes=4<<30};if fallback.DiskBytes<=0{fallback.DiskBytes=20<<30};if requested.CPUMillis>0{fallback.CPUMillis=requested.CPUMillis};if requested.MemoryBytes>0{fallback.MemoryBytes=requested.MemoryBytes};if requested.DiskBytes>0{fallback.DiskBytes=requested.DiskBytes};if requested.GPUs>0{fallback.GPUs=requested.GPUs};return fallback}
-func runnerPoolName(parts ...string)string{raw:=strings.ToLower(strings.Join(parts,"-"));var b strings.Builder;hyphen:=false;for _,r:=range raw{if (r>='a'&&r<='z')||(r>='0'&&r<='9'){b.WriteRune(r);hyphen=false;continue};if b.Len()>0&&!hyphen{b.WriteByte('-');hyphen=true}};name:=strings.Trim(b.String(),"-");if name==""{name="runnerhub"};if len(name)>63{name=strings.TrimRight(name[:63],"-");if name==""{name="runnerhub"}};return name}
-const publisherScaleSetName="runnerhub-publisher"
-const defaultPublisherMaxConcurrency=2
-func publisherMaxConcurrency(requested int,existing *core.RunnerPool)int{if requested>0{return requested};if existing!=nil&&existing.MaxConcurrency>0{return existing.MaxConcurrency};return defaultPublisherMaxConcurrency}
-func isPublisherPool(p core.RunnerPool)bool{if strings.EqualFold(strings.TrimSpace(p.ScaleSetName),publisherScaleSetName){return true};for _,label:=range p.Labels{if strings.EqualFold(strings.TrimSpace(label),publisherScaleSetName){return true}};return false}
-func isStandardPool(p core.RunnerPool)bool{name:=strings.ToLower(strings.TrimSpace(p.ScaleSetName));if name==""{for _,label:=range p.Labels{if strings.EqualFold(strings.TrimSpace(label),"runnerhub"){return true}};return true};return name=="runnerhub"}
-func profileName(raw string)(string,error){name:=strings.ToLower(strings.TrimSpace(raw));if name==""{return "",errors.New("profile name is required")};if !strings.HasPrefix(name,"runnerhub-"){name="runnerhub-"+name};if name=="runnerhub-publisher"{return "",errors.New("runnerhub-publisher is reserved")};if len(name)>64{return "",errors.New("profile name is too long")};for _,r:=range name{if (r>='a'&&r<='z')||(r>='0'&&r<='9')||r=='-'||r=='_'||r=='.'{continue};return "",errors.New("profile name contains unsupported characters")};return name,nil}
 
-func profileIsolation(requested core.IsolationMode,existing *core.RunnerPool)(core.IsolationMode,error){isolation:=requested;if isolation==""&&existing!=nil{isolation=existing.Isolation};if isolation==""{isolation=core.IsolationContainerTrusted};if isolation!=core.IsolationContainerTrusted&&isolation!=core.IsolationContainerDinD&&isolation!=core.IsolationHostPersistent{return "",errors.New("custom runner profile isolation must be container-trusted, container-dind, or host-persistent")};return isolation,nil}
+type updatePoolResourcesRequest struct {
+	Resources         core.Resources     `json:"resources,omitempty"`
+	MaxConcurrency    int                `json:"maxConcurrency,omitempty"`
+	Isolation         core.IsolationMode `json:"isolation,omitempty"`
+	AutoTuneResources *bool              `json:"autoTuneResources,omitempty"`
+}
+
+func (s *Service) updatePoolResources(w http.ResponseWriter, r *http.Request) {
+	s.poolMutationMu.Lock()
+	defer s.poolMutationMu.Unlock()
+	p, err := s.Store.GetPool(r.Context(), r.PathValue("id"))
+	if err != nil {
+		problem(w, 404, err)
+		return
+	}
+	before := p
+	var in updatePoolResourcesRequest
+	if !decode(w, r, &in) {
+		return
+	}
+	if !core.NonNegative(in.Resources) {
+		problem(w, 400, errors.New("resource requests cannot be negative"))
+		return
+	}
+	if in.MaxConcurrency < 0 {
+		problem(w, 400, errors.New("max concurrency cannot be negative"))
+		return
+	}
+	if in.Resources.CPUMillis > 0 {
+		p.Resources.CPUMillis = in.Resources.CPUMillis
+	}
+	if in.Resources.MemoryBytes > 0 {
+		p.Resources.MemoryBytes = in.Resources.MemoryBytes
+	}
+	if in.Resources.DiskBytes > 0 {
+		p.Resources.DiskBytes = in.Resources.DiskBytes
+	}
+	if in.Resources.GPUs > 0 {
+		p.Resources.GPUs = in.Resources.GPUs
+	}
+	if in.MaxConcurrency > 0 {
+		p.MaxConcurrency = in.MaxConcurrency
+	}
+	if in.Isolation != "" {
+		p.Isolation = in.Isolation
+	}
+	if in.AutoTuneResources != nil {
+		p.AutoTuneResources = *in.AutoTuneResources
+	}
+	resetLearningForConfigChange(&before, &p)
+	if err := core.ValidateRunnerPool(p); err != nil {
+		problem(w, 400, err)
+		return
+	}
+	if err := s.Policy.ValidatePool(p); err != nil {
+		problem(w, 403, err)
+		return
+	}
+	if s.Catalog != nil {
+		posture, err := githubrunner.InspectPoolSecurity(r.Context(), s.Catalog, p)
+		if err != nil {
+			problem(w, 502, err)
+			return
+		}
+		if !posture.Safe {
+			problem(w, 409, errors.New(strings.Join(posture.Reasons, "; ")))
+			return
+		}
+	}
+	if err := s.Store.UpsertPool(r.Context(), p); err != nil {
+		problem(w, 500, err)
+		return
+	}
+	_ = s.Store.AppendAudit(r.Context(), core.AuditEvent{Actor: actor(r.Context()), Action: "update_pool_resources", ResourceType: "pool", ResourceID: p.ID, Result: "ok", SafeDetail: fmt.Sprintf("cpu=%dm memory=%d max=%d isolation=%s", p.Resources.CPUMillis, p.Resources.MemoryBytes, p.MaxConcurrency, p.Isolation)})
+	writeJSON(w, 200, p)
+}
+
+type connectRepositoryRequest struct {
+	InstallationID    int64              `json:"installationId"`
+	Repository        string             `json:"repository"`
+	ScaleSetName      string             `json:"scaleSetName,omitempty"`
+	MaxConcurrency    int                `json:"maxConcurrency,omitempty"`
+	Isolation         core.IsolationMode `json:"isolation,omitempty"`
+	Resources         core.Resources     `json:"resources,omitempty"`
+	AutoTuneResources *bool              `json:"autoTuneResources,omitempty"`
+}
+
+func normalizeConnectResources(requested, fallback core.Resources) core.Resources {
+	if fallback.CPUMillis <= 0 {
+		fallback.CPUMillis = 2500
+	}
+	if fallback.MemoryBytes <= 0 {
+		fallback.MemoryBytes = 4 << 30
+	}
+	if fallback.DiskBytes <= 0 {
+		fallback.DiskBytes = 20 << 30
+	}
+	if requested.CPUMillis > 0 {
+		fallback.CPUMillis = requested.CPUMillis
+	}
+	if requested.MemoryBytes > 0 {
+		fallback.MemoryBytes = requested.MemoryBytes
+	}
+	if requested.DiskBytes > 0 {
+		fallback.DiskBytes = requested.DiskBytes
+	}
+	if requested.GPUs > 0 {
+		fallback.GPUs = requested.GPUs
+	}
+	return fallback
+}
+func runnerPoolName(parts ...string) string {
+	raw := strings.ToLower(strings.Join(parts, "-"))
+	var b strings.Builder
+	hyphen := false
+	for _, r := range raw {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+			hyphen = false
+			continue
+		}
+		if b.Len() > 0 && !hyphen {
+			b.WriteByte('-')
+			hyphen = true
+		}
+	}
+	name := strings.Trim(b.String(), "-")
+	if name == "" {
+		name = "runnerhub"
+	}
+	if len(name) > 63 {
+		name = strings.TrimRight(name[:63], "-")
+		if name == "" {
+			name = "runnerhub"
+		}
+	}
+	return name
+}
+
+const publisherScaleSetName = "runnerhub-publisher"
+const defaultPublisherMaxConcurrency = 2
+
+func publisherMaxConcurrency(requested int, existing *core.RunnerPool) int {
+	if requested > 0 {
+		return requested
+	}
+	if existing != nil && existing.MaxConcurrency > 0 {
+		return existing.MaxConcurrency
+	}
+	return defaultPublisherMaxConcurrency
+}
+func isPublisherPool(p core.RunnerPool) bool {
+	if strings.EqualFold(strings.TrimSpace(p.ScaleSetName), publisherScaleSetName) {
+		return true
+	}
+	for _, label := range p.Labels {
+		if strings.EqualFold(strings.TrimSpace(label), publisherScaleSetName) {
+			return true
+		}
+	}
+	return false
+}
+func isStandardPool(p core.RunnerPool) bool {
+	name := strings.ToLower(strings.TrimSpace(p.ScaleSetName))
+	if name == "" {
+		for _, label := range p.Labels {
+			if strings.EqualFold(strings.TrimSpace(label), "runnerhub") {
+				return true
+			}
+		}
+		return true
+	}
+	return name == "runnerhub"
+}
+func profileName(raw string) (string, error) {
+	name := strings.ToLower(strings.TrimSpace(raw))
+	if name == "" {
+		return "", errors.New("profile name is required")
+	}
+	if !strings.HasPrefix(name, "runnerhub-") {
+		name = "runnerhub-" + name
+	}
+	if name == "runnerhub-publisher" {
+		return "", errors.New("runnerhub-publisher is reserved")
+	}
+	if len(name) > 64 {
+		return "", errors.New("profile name is too long")
+	}
+	for _, r := range name {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-' || r == '_' || r == '.' {
+			continue
+		}
+		return "", errors.New("profile name contains unsupported characters")
+	}
+	return name, nil
+}
+
+func profileIsolation(requested core.IsolationMode, existing *core.RunnerPool) (core.IsolationMode, error) {
+	isolation := requested
+	if isolation == "" && existing != nil {
+		isolation = existing.Isolation
+	}
+	if isolation == "" {
+		isolation = core.IsolationContainerTrusted
+	}
+	if isolation != core.IsolationContainerTrusted && isolation != core.IsolationContainerDinD && isolation != core.IsolationHostPersistent {
+		return "", errors.New("custom runner profile isolation must be container-trusted, container-dind, or host-persistent")
+	}
+	return isolation, nil
+}
+
 // A native process profile has direct access to the host OS account and must
 // not be selectable as a generic alternative to the isolated Docker profiles.
 func requireDedicatedNativeProfile(name string, isolation core.IsolationMode) error {
-  if isolation==core.IsolationHostPersistent && name!=core.AndroidEmulatorScaleSet {
-    return errors.New("host-persistent native execution is restricted to runnerhub-android-emulator")
-  }
-  return nil
+	if isolation == core.IsolationHostPersistent && name != core.AndroidEmulatorScaleSet {
+		return errors.New("host-persistent native execution is restricted to runnerhub-android-emulator")
+	}
+	return nil
 }
-func normalizePublisherResources(requested,fallback core.Resources)core.Resources{if fallback.CPUMillis<=0{fallback.CPUMillis=2500};if fallback.MemoryBytes<=0{fallback.MemoryBytes=8<<30};if fallback.DiskBytes<=0{fallback.DiskBytes=40<<30};if requested.CPUMillis>0{fallback.CPUMillis=requested.CPUMillis};if requested.MemoryBytes>0{fallback.MemoryBytes=requested.MemoryBytes};if requested.DiskBytes>0{fallback.DiskBytes=requested.DiskBytes};if requested.GPUs>0{fallback.GPUs=requested.GPUs};return fallback}
-type configurePublisherRepositoryRequest struct{InstallationID int64 `json:"installationId"`;Repository string `json:"repository"`;Enabled bool `json:"enabled"`;MaxConcurrency int `json:"maxConcurrency,omitempty"`;Resources core.Resources `json:"resources,omitempty"`;AutoTuneResources *bool `json:"autoTuneResources,omitempty"`}
-func(s *Service)configurePublisherRepository(w http.ResponseWriter,r *http.Request){s.poolMutationMu.Lock();defer s.poolMutationMu.Unlock();if s.GitHubAuth==nil{problem(w,503,errors.New("github browser authentication is not configured"));return};var in configurePublisherRepositoryRequest;if !decode(w,r,&in){return};if !core.NonNegative(in.Resources){problem(w,400,errors.New("resource requests cannot be negative"));return};if in.MaxConcurrency<0{problem(w,400,errors.New("max concurrency cannot be negative"));return};repo,err:=s.GitHubAuth.ValidateRepository(r,in.InstallationID,in.Repository);if err!=nil{problem(w,403,err);return};if !repo.Private{problem(w,403,errors.New("RunnerHub publisher runners require a private repository"));return};parts:=strings.Split(repo.FullName,"/");if len(parts)!=2||parts[0]==""||parts[1]==""{problem(w,400,errors.New("github returned an invalid repository name"));return};pools,err:=s.Store.ListPools(r.Context());if err!=nil{problem(w,500,err);return};var existing *core.RunnerPool;for i:=range pools{p:=pools[i];if p.Scope.Kind==core.ScopeRepository&&strings.EqualFold(p.Scope.Owner,parts[0])&&strings.EqualFold(p.Scope.Repository,parts[1])&&isPublisherPool(p){existing=&p;break}};if !in.Enabled{if existing==nil{writeJSON(w,200,map[string]any{"enabled":false});return};existing.GitHubInstallationID=0;existing.ScaleSetDisabled=true;if err:=s.Store.UpsertPool(r.Context(),*existing);err!=nil{problem(w,500,err);return};_,_=s.setScaleSetStatus(existing.ID,"disabled","publisher disabled");_=s.Store.AppendAudit(r.Context(),core.AuditEvent{Actor:actor(r.Context()),Action:"disable_publisher",ResourceType:"pool",ResourceID:existing.ID,Result:"ok",SafeDetail:repo.FullName});writeJSON(w,200,map[string]any{"enabled":false,"pool":existing});return};max:=publisherMaxConcurrency(in.MaxConcurrency,existing);fallback:=core.Resources{};if existing!=nil{fallback=existing.Resources};resources:=normalizePublisherResources(in.Resources,fallback);p:=core.RunnerPool{};if existing!=nil{p=*existing}else{p=core.RunnerPool{ID:"pool-"+randomID(),Name:runnerPoolName(parts[0],parts[1],"publisher"),Scope:core.GitHubScope{Kind:core.ScopeRepository,Owner:parts[0],Repository:parts[1]},RunnerGroupID:1,Image:images.DefaultRunnerImage}};p.Name=runnerPoolName(parts[0],parts[1],"publisher");p.Labels=[]string{publisherScaleSetName};p.Isolation=core.IsolationContainerDinD;p.Resources=resources;p.MinIdle=0;p.MaxConcurrency=max;p.GitHubInstallationID=in.InstallationID;p.ScaleSetDisabled=false;p.ScaleSetName=publisherScaleSetName;if in.AutoTuneResources!=nil{p.AutoTuneResources=*in.AutoTuneResources};resetLearningForConfigChange(existing,&p);if err:=core.ValidateRunnerPool(p);err!=nil{problem(w,400,err);return};if err:=s.Policy.ValidatePool(p);err!=nil{problem(w,403,fmt.Errorf("publisher runners unavailable: %w",err));return};if s.Catalog!=nil{posture,err:=githubrunner.InspectPoolSecurity(r.Context(),s.Catalog,p);if err!=nil{problem(w,502,err);return};if !posture.Safe{problem(w,409,errors.New(strings.Join(posture.Reasons,"; ")));return}};if err:=s.Store.UpsertPool(r.Context(),p);err!=nil{problem(w,500,err);return};_,_=s.setScaleSetStatus(p.ID,"pending","waiting for publisher scale-set listener");_=s.Store.AppendAudit(r.Context(),core.AuditEvent{Actor:actor(r.Context()),Action:"enable_publisher",ResourceType:"pool",ResourceID:p.ID,Result:"ok",SafeDetail:repo.FullName});writeJSON(w,202,map[string]any{"enabled":true,"pool":p})}
+func normalizePublisherResources(requested, fallback core.Resources) core.Resources {
+	if fallback.CPUMillis <= 0 {
+		fallback.CPUMillis = 2500
+	}
+	if fallback.MemoryBytes <= 0 {
+		fallback.MemoryBytes = 8 << 30
+	}
+	if fallback.DiskBytes <= 0 {
+		fallback.DiskBytes = 40 << 30
+	}
+	if requested.CPUMillis > 0 {
+		fallback.CPUMillis = requested.CPUMillis
+	}
+	if requested.MemoryBytes > 0 {
+		fallback.MemoryBytes = requested.MemoryBytes
+	}
+	if requested.DiskBytes > 0 {
+		fallback.DiskBytes = requested.DiskBytes
+	}
+	if requested.GPUs > 0 {
+		fallback.GPUs = requested.GPUs
+	}
+	return fallback
+}
 
-type configureRunnerProfileRequest struct{InstallationID int64 `json:"installationId"`;Repository string `json:"repository"`;Name string `json:"name"`;Enabled bool `json:"enabled"`;Tags []string `json:"tags,omitempty"`;Isolation core.IsolationMode `json:"isolation,omitempty"`;MaxConcurrency int `json:"maxConcurrency,omitempty"`;Resources core.Resources `json:"resources,omitempty"`;AutoTuneResources *bool `json:"autoTuneResources,omitempty"`}
-func(s *Service)configureRunnerProfile(w http.ResponseWriter,r *http.Request){s.poolMutationMu.Lock();defer s.poolMutationMu.Unlock();if s.GitHubAuth==nil{problem(w,503,errors.New("github browser authentication is not configured"));return};var in configureRunnerProfileRequest;if !decode(w,r,&in){return};name,err:=profileName(in.Name);if err!=nil{problem(w,400,err);return};if !core.NonNegative(in.Resources)||in.MaxConcurrency<0{problem(w,400,errors.New("invalid profile resource request"));return};selector,err:=tagMap(in.Tags);if err!=nil{problem(w,400,err);return};if in.Enabled&&len(selector)==0{problem(w,400,errors.New("custom runner profile requires at least one machine tag"));return};repo,err:=s.GitHubAuth.ValidateRepository(r,in.InstallationID,in.Repository);if err!=nil{problem(w,403,err);return};if !repo.Private{problem(w,403,errors.New("RunnerHub custom profiles require a private repository"));return};parts:=strings.Split(repo.FullName,"/");if len(parts)!=2||parts[0]==""||parts[1]==""{problem(w,400,errors.New("github returned an invalid repository name"));return};pools,err:=s.Store.ListPools(r.Context());if err!=nil{problem(w,500,err);return};var existing *core.RunnerPool;for i:=range pools{p:=pools[i];if p.Scope.Kind==core.ScopeRepository&&strings.EqualFold(p.Scope.Owner,parts[0])&&strings.EqualFold(p.Scope.Repository,parts[1])&&strings.EqualFold(strings.TrimSpace(p.ScaleSetName),name){existing=&p;break}};if !in.Enabled{if existing==nil{writeJSON(w,200,map[string]any{"enabled":false,"name":name});return};existing.GitHubInstallationID=0;existing.ScaleSetDisabled=true;if err:=s.Store.UpsertPool(r.Context(),*existing);err!=nil{problem(w,500,err);return};_,_=s.setScaleSetStatus(existing.ID,"disabled","custom runner profile disabled");_=s.Store.AppendAudit(r.Context(),core.AuditEvent{Actor:actor(r.Context()),Action:"disable_runner_profile",ResourceType:"pool",ResourceID:existing.ID,Result:"ok",SafeDetail:name+" "+repo.FullName});writeJSON(w,200,map[string]any{"enabled":false,"pool":existing});return};isolation,err:=profileIsolation(in.Isolation,existing);if err!=nil{problem(w,400,err);return};if err:=requireDedicatedNativeProfile(name,isolation);err!=nil{problem(w,400,err);return};max:=in.MaxConcurrency;if max<=0&&existing!=nil{max=existing.MaxConcurrency};if max<=0{max=2};fallback:=core.Resources{};if existing!=nil{fallback=existing.Resources};resources:=normalizeConnectResources(in.Resources,fallback);if isolation==core.IsolationContainerDinD{if existing!=nil&&existing.Isolation!=core.IsolationContainerDinD&&in.Resources.DiskBytes<=0{fallback.DiskBytes=0};resources=normalizePublisherResources(in.Resources,fallback)};p:=core.RunnerPool{};if existing!=nil{p=*existing}else{p=core.RunnerPool{ID:"pool-"+randomID(),Name:runnerPoolName(parts[0],parts[1],strings.TrimPrefix(name,"runnerhub-")),Scope:core.GitHubScope{Kind:core.ScopeRepository,Owner:parts[0],Repository:parts[1]},RunnerGroupID:1,Image:images.DefaultRunnerImage}};p.Name=runnerPoolName(parts[0],parts[1],strings.TrimPrefix(name,"runnerhub-"));p.Labels=[]string{name};p.HostSelector=selector;p.Isolation=isolation;p.Resources=resources;p.MinIdle=0;p.MaxConcurrency=max;p.GitHubInstallationID=in.InstallationID;p.ScaleSetDisabled=false;p.ScaleSetName=name;if in.AutoTuneResources!=nil{p.AutoTuneResources=*in.AutoTuneResources};resetLearningForConfigChange(existing,&p);if err:=core.ValidateRunnerPool(p);err!=nil{problem(w,400,err);return};if err:=s.Policy.ValidatePool(p);err!=nil{problem(w,403,err);return};if s.Catalog!=nil{posture,err:=githubrunner.InspectPoolSecurity(r.Context(),s.Catalog,p);if err!=nil{problem(w,502,err);return};if !posture.Safe{problem(w,409,errors.New(strings.Join(posture.Reasons,"; ")));return}};if err:=s.Store.UpsertPool(r.Context(),p);err!=nil{problem(w,500,err);return};_,_=s.setScaleSetStatus(p.ID,"pending","waiting for custom profile scale-set listener");_=s.Store.AppendAudit(r.Context(),core.AuditEvent{Actor:actor(r.Context()),Action:"configure_runner_profile",ResourceType:"pool",ResourceID:p.ID,Result:"ok",SafeDetail:name+" "+repo.FullName});writeJSON(w,202,map[string]any{"enabled":true,"pool":p})}
-func(s *Service)connectRepository(w http.ResponseWriter,r *http.Request){s.poolMutationMu.Lock();defer s.poolMutationMu.Unlock();if s.GitHubAuth==nil{problem(w,503,errors.New("github browser authentication is not configured"));return};var in connectRepositoryRequest;if !decode(w,r,&in){return};if !core.NonNegative(in.Resources){problem(w,400,errors.New("resource requests cannot be negative"));return};if in.MaxConcurrency<0{problem(w,400,errors.New("max concurrency cannot be negative"));return};repo,err:=s.GitHubAuth.ValidateRepository(r,in.InstallationID,in.Repository);if err!=nil{problem(w,403,err);return};if !repo.Private{problem(w,403,errors.New("RunnerHub trusted self-hosted runners require a private repository"));return};parts:=strings.Split(repo.FullName,"/");if len(parts)!=2||parts[0]==""||parts[1]==""{problem(w,400,errors.New("github returned an invalid repository name"));return};pools,err:=s.Store.ListPools(r.Context());if err!=nil{problem(w,500,err);return};for _,existing:=range pools{if existing.Scope.Kind==core.ScopeRepository&&strings.EqualFold(existing.Scope.Owner,parts[0])&&strings.EqualFold(existing.Scope.Repository,parts[1])&&isStandardPool(existing){before:=existing;scaleSetName:=strings.TrimSpace(in.ScaleSetName);if scaleSetName==""{scaleSetName=existing.ScaleSetName};if scaleSetName==""{scaleSetName="runnerhub"};max:=in.MaxConcurrency;if max<=0{max=existing.MaxConcurrency};if max<=0{max=2};isolation:=in.Isolation;if isolation==""{isolation=existing.Isolation};if isolation==""{isolation=core.IsolationContainerTrusted};existing.Name=runnerPoolName(parts[0],parts[1]);existing.GitHubInstallationID=in.InstallationID;existing.ScaleSetDisabled=false;existing.ScaleSetName=scaleSetName;existing.MaxConcurrency=max;existing.Isolation=isolation;existing.Resources=normalizeConnectResources(in.Resources,existing.Resources);if in.AutoTuneResources!=nil{existing.AutoTuneResources=*in.AutoTuneResources};resetLearningForConfigChange(&before,&existing);if err:=core.ValidateRunnerPool(existing);err!=nil{problem(w,400,err);return};if err:=s.Policy.ValidatePool(existing);err!=nil{problem(w,403,err);return};if s.Catalog!=nil{posture,err:=githubrunner.InspectPoolSecurity(r.Context(),s.Catalog,existing);if err!=nil{problem(w,502,err);return};if !posture.Safe{problem(w,409,errors.New(strings.Join(posture.Reasons,"; ")));return}};if err:=s.Store.UpsertPool(r.Context(),existing);err!=nil{problem(w,500,err);return};_,_=s.setScaleSetStatus(existing.ID,"pending","waiting for scale-set listener");_=s.Store.AppendAudit(r.Context(),core.AuditEvent{Actor:actor(r.Context()),Action:"configure_repository",ResourceType:"pool",ResourceID:existing.ID,Result:"ok",SafeDetail:repo.FullName});writeJSON(w,202,existing);return}};scaleSetName:=strings.TrimSpace(in.ScaleSetName);if scaleSetName==""{scaleSetName="runnerhub"};max:=in.MaxConcurrency;if max<=0{max=2};isolation:=in.Isolation;if isolation==""{isolation=core.IsolationContainerTrusted};p:=core.RunnerPool{ID:"pool-"+randomID(),Name:runnerPoolName(parts[0],parts[1]),Scope:core.GitHubScope{Kind:core.ScopeRepository,Owner:parts[0],Repository:parts[1]},Labels:[]string{scaleSetName},Isolation:isolation,Resources:normalizeConnectResources(in.Resources,core.Resources{}),MinIdle:0,MaxConcurrency:max,RunnerGroupID:1,GitHubInstallationID:in.InstallationID,ScaleSetName:scaleSetName,Image:images.DefaultRunnerImage};if in.AutoTuneResources!=nil{p.AutoTuneResources=*in.AutoTuneResources};if err:=core.ValidateRunnerPool(p);err!=nil{problem(w,400,err);return};if err:=s.Policy.ValidatePool(p);err!=nil{problem(w,403,err);return};if s.Catalog!=nil{posture,err:=githubrunner.InspectPoolSecurity(r.Context(),s.Catalog,p);if err!=nil{problem(w,502,err);return};if !posture.Safe{problem(w,409,errors.New(strings.Join(posture.Reasons,"; ")));return}};if err:=s.Store.UpsertPool(r.Context(),p);err!=nil{problem(w,500,err);return};_,_=s.setScaleSetStatus(p.ID,"pending","waiting for scale-set listener");_=s.Store.AppendAudit(r.Context(),core.AuditEvent{Actor:actor(r.Context()),Action:"connect_repository",ResourceType:"pool",ResourceID:p.ID,Result:"ok",SafeDetail:repo.FullName});writeJSON(w,202,p)}
+type configurePublisherRepositoryRequest struct {
+	InstallationID    int64          `json:"installationId"`
+	Repository        string         `json:"repository"`
+	Enabled           bool           `json:"enabled"`
+	MaxConcurrency    int            `json:"maxConcurrency,omitempty"`
+	Resources         core.Resources `json:"resources,omitempty"`
+	AutoTuneResources *bool          `json:"autoTuneResources,omitempty"`
+}
+
+func (s *Service) configurePublisherRepository(w http.ResponseWriter, r *http.Request) {
+	s.poolMutationMu.Lock()
+	defer s.poolMutationMu.Unlock()
+	if s.GitHubAuth == nil {
+		problem(w, 503, errors.New("github browser authentication is not configured"))
+		return
+	}
+	var in configurePublisherRepositoryRequest
+	if !decode(w, r, &in) {
+		return
+	}
+	if !core.NonNegative(in.Resources) {
+		problem(w, 400, errors.New("resource requests cannot be negative"))
+		return
+	}
+	if in.MaxConcurrency < 0 {
+		problem(w, 400, errors.New("max concurrency cannot be negative"))
+		return
+	}
+	repo, err := s.GitHubAuth.ValidateRepository(r, in.InstallationID, in.Repository)
+	if err != nil {
+		problem(w, 403, err)
+		return
+	}
+	if !repo.Private {
+		problem(w, 403, errors.New("RunnerHub publisher runners require a private repository"))
+		return
+	}
+	parts := strings.Split(repo.FullName, "/")
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		problem(w, 400, errors.New("github returned an invalid repository name"))
+		return
+	}
+	pools, err := s.Store.ListPools(r.Context())
+	if err != nil {
+		problem(w, 500, err)
+		return
+	}
+	var existing *core.RunnerPool
+	for i := range pools {
+		p := pools[i]
+		if p.Scope.Kind == core.ScopeRepository && strings.EqualFold(p.Scope.Owner, parts[0]) && strings.EqualFold(p.Scope.Repository, parts[1]) && isPublisherPool(p) {
+			existing = &p
+			break
+		}
+	}
+	if !in.Enabled {
+		if existing == nil {
+			writeJSON(w, 200, map[string]any{"enabled": false})
+			return
+		}
+		existing.GitHubInstallationID = 0
+		existing.ScaleSetDisabled = true
+		if err := s.Store.UpsertPool(r.Context(), *existing); err != nil {
+			problem(w, 500, err)
+			return
+		}
+		_, _ = s.setScaleSetStatus(existing.ID, "disabled", "publisher disabled")
+		_ = s.Store.AppendAudit(r.Context(), core.AuditEvent{Actor: actor(r.Context()), Action: "disable_publisher", ResourceType: "pool", ResourceID: existing.ID, Result: "ok", SafeDetail: repo.FullName})
+		writeJSON(w, 200, map[string]any{"enabled": false, "pool": existing})
+		return
+	}
+	max := publisherMaxConcurrency(in.MaxConcurrency, existing)
+	fallback := core.Resources{}
+	if existing != nil {
+		fallback = existing.Resources
+	}
+	resources := normalizePublisherResources(in.Resources, fallback)
+	p := core.RunnerPool{}
+	if existing != nil {
+		p = *existing
+	} else {
+		p = core.RunnerPool{ID: "pool-" + randomID(), Name: runnerPoolName(parts[0], parts[1], "publisher"), Scope: core.GitHubScope{Kind: core.ScopeRepository, Owner: parts[0], Repository: parts[1]}, RunnerGroupID: 1, Image: images.DefaultRunnerImage}
+	}
+	p.Name = runnerPoolName(parts[0], parts[1], "publisher")
+	p.Labels = []string{publisherScaleSetName}
+	p.Isolation = core.IsolationContainerDinD
+	p.Resources = resources
+	p.MinIdle = 0
+	p.MaxConcurrency = max
+	p.GitHubInstallationID = in.InstallationID
+	p.ScaleSetDisabled = false
+	p.ScaleSetName = publisherScaleSetName
+	if in.AutoTuneResources != nil {
+		p.AutoTuneResources = *in.AutoTuneResources
+	}
+	resetLearningForConfigChange(existing, &p)
+	if err := core.ValidateRunnerPool(p); err != nil {
+		problem(w, 400, err)
+		return
+	}
+	if err := s.Policy.ValidatePool(p); err != nil {
+		problem(w, 403, fmt.Errorf("publisher runners unavailable: %w", err))
+		return
+	}
+	if s.Catalog != nil {
+		posture, err := githubrunner.InspectPoolSecurity(r.Context(), s.Catalog, p)
+		if err != nil {
+			problem(w, 502, err)
+			return
+		}
+		if !posture.Safe {
+			problem(w, 409, errors.New(strings.Join(posture.Reasons, "; ")))
+			return
+		}
+	}
+	if err := s.Store.UpsertPool(r.Context(), p); err != nil {
+		problem(w, 500, err)
+		return
+	}
+	_, _ = s.setScaleSetStatus(p.ID, "pending", "waiting for publisher scale-set listener")
+	_ = s.Store.AppendAudit(r.Context(), core.AuditEvent{Actor: actor(r.Context()), Action: "enable_publisher", ResourceType: "pool", ResourceID: p.ID, Result: "ok", SafeDetail: repo.FullName})
+	writeJSON(w, 202, map[string]any{"enabled": true, "pool": p})
+}
+
+type configureRunnerProfileRequest struct {
+	InstallationID    int64              `json:"installationId"`
+	Repository        string             `json:"repository"`
+	Name              string             `json:"name"`
+	Enabled           bool               `json:"enabled"`
+	Tags              []string           `json:"tags,omitempty"`
+	Isolation         core.IsolationMode `json:"isolation,omitempty"`
+	MaxConcurrency    int                `json:"maxConcurrency,omitempty"`
+	Resources         core.Resources     `json:"resources,omitempty"`
+	AutoTuneResources *bool              `json:"autoTuneResources,omitempty"`
+}
+
+func (s *Service) configureRunnerProfile(w http.ResponseWriter, r *http.Request) {
+	s.poolMutationMu.Lock()
+	defer s.poolMutationMu.Unlock()
+	if s.GitHubAuth == nil {
+		problem(w, 503, errors.New("github browser authentication is not configured"))
+		return
+	}
+	var in configureRunnerProfileRequest
+	if !decode(w, r, &in) {
+		return
+	}
+	name, err := profileName(in.Name)
+	if err != nil {
+		problem(w, 400, err)
+		return
+	}
+	if !core.NonNegative(in.Resources) || in.MaxConcurrency < 0 {
+		problem(w, 400, errors.New("invalid profile resource request"))
+		return
+	}
+	selector, err := tagMap(in.Tags)
+	if err != nil {
+		problem(w, 400, err)
+		return
+	}
+	if in.Enabled && len(selector) == 0 {
+		problem(w, 400, errors.New("custom runner profile requires at least one machine tag"))
+		return
+	}
+	repo, err := s.GitHubAuth.ValidateRepository(r, in.InstallationID, in.Repository)
+	if err != nil {
+		problem(w, 403, err)
+		return
+	}
+	if !repo.Private {
+		problem(w, 403, errors.New("RunnerHub custom profiles require a private repository"))
+		return
+	}
+	parts := strings.Split(repo.FullName, "/")
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		problem(w, 400, errors.New("github returned an invalid repository name"))
+		return
+	}
+	pools, err := s.Store.ListPools(r.Context())
+	if err != nil {
+		problem(w, 500, err)
+		return
+	}
+	var existing *core.RunnerPool
+	for i := range pools {
+		p := pools[i]
+		if p.Scope.Kind == core.ScopeRepository && strings.EqualFold(p.Scope.Owner, parts[0]) && strings.EqualFold(p.Scope.Repository, parts[1]) && strings.EqualFold(strings.TrimSpace(p.ScaleSetName), name) {
+			existing = &p
+			break
+		}
+	}
+	if !in.Enabled {
+		if existing == nil {
+			writeJSON(w, 200, map[string]any{"enabled": false, "name": name})
+			return
+		}
+		existing.GitHubInstallationID = 0
+		existing.ScaleSetDisabled = true
+		if err := s.Store.UpsertPool(r.Context(), *existing); err != nil {
+			problem(w, 500, err)
+			return
+		}
+		_, _ = s.setScaleSetStatus(existing.ID, "disabled", "custom runner profile disabled")
+		_ = s.Store.AppendAudit(r.Context(), core.AuditEvent{Actor: actor(r.Context()), Action: "disable_runner_profile", ResourceType: "pool", ResourceID: existing.ID, Result: "ok", SafeDetail: name + " " + repo.FullName})
+		writeJSON(w, 200, map[string]any{"enabled": false, "pool": existing})
+		return
+	}
+	isolation, err := profileIsolation(in.Isolation, existing)
+	if err != nil {
+		problem(w, 400, err)
+		return
+	}
+	if err := requireDedicatedNativeProfile(name, isolation); err != nil {
+		problem(w, 400, err)
+		return
+	}
+	max := in.MaxConcurrency
+	if max <= 0 && existing != nil {
+		max = existing.MaxConcurrency
+	}
+	if max <= 0 {
+		max = 2
+	}
+	fallback := core.Resources{}
+	if existing != nil {
+		fallback = existing.Resources
+	}
+	resources := normalizeConnectResources(in.Resources, fallback)
+	if isolation == core.IsolationContainerDinD {
+		if existing != nil && existing.Isolation != core.IsolationContainerDinD && in.Resources.DiskBytes <= 0 {
+			fallback.DiskBytes = 0
+		}
+		resources = normalizePublisherResources(in.Resources, fallback)
+	}
+	p := core.RunnerPool{}
+	if existing != nil {
+		p = *existing
+	} else {
+		p = core.RunnerPool{ID: "pool-" + randomID(), Name: runnerPoolName(parts[0], parts[1], strings.TrimPrefix(name, "runnerhub-")), Scope: core.GitHubScope{Kind: core.ScopeRepository, Owner: parts[0], Repository: parts[1]}, RunnerGroupID: 1, Image: images.DefaultRunnerImage}
+	}
+	p.Name = runnerPoolName(parts[0], parts[1], strings.TrimPrefix(name, "runnerhub-"))
+	p.Labels = []string{name}
+	p.HostSelector = selector
+	p.Isolation = isolation
+	p.Resources = resources
+	p.MinIdle = 0
+	p.MaxConcurrency = max
+	p.GitHubInstallationID = in.InstallationID
+	p.ScaleSetDisabled = false
+	p.ScaleSetName = name
+	if in.AutoTuneResources != nil {
+		p.AutoTuneResources = *in.AutoTuneResources
+	}
+	resetLearningForConfigChange(existing, &p)
+	if err := core.ValidateRunnerPool(p); err != nil {
+		problem(w, 400, err)
+		return
+	}
+	if err := s.Policy.ValidatePool(p); err != nil {
+		problem(w, 403, err)
+		return
+	}
+	if s.Catalog != nil {
+		posture, err := githubrunner.InspectPoolSecurity(r.Context(), s.Catalog, p)
+		if err != nil {
+			problem(w, 502, err)
+			return
+		}
+		if !posture.Safe {
+			problem(w, 409, errors.New(strings.Join(posture.Reasons, "; ")))
+			return
+		}
+	}
+	if err := s.Store.UpsertPool(r.Context(), p); err != nil {
+		problem(w, 500, err)
+		return
+	}
+	_, _ = s.setScaleSetStatus(p.ID, "pending", "waiting for custom profile scale-set listener")
+	_ = s.Store.AppendAudit(r.Context(), core.AuditEvent{Actor: actor(r.Context()), Action: "configure_runner_profile", ResourceType: "pool", ResourceID: p.ID, Result: "ok", SafeDetail: name + " " + repo.FullName})
+	writeJSON(w, 202, map[string]any{"enabled": true, "pool": p})
+}
+func (s *Service) connectRepository(w http.ResponseWriter, r *http.Request) {
+	s.poolMutationMu.Lock()
+	defer s.poolMutationMu.Unlock()
+	if s.GitHubAuth == nil {
+		problem(w, 503, errors.New("github browser authentication is not configured"))
+		return
+	}
+	var in connectRepositoryRequest
+	if !decode(w, r, &in) {
+		return
+	}
+	if !core.NonNegative(in.Resources) {
+		problem(w, 400, errors.New("resource requests cannot be negative"))
+		return
+	}
+	if in.MaxConcurrency < 0 {
+		problem(w, 400, errors.New("max concurrency cannot be negative"))
+		return
+	}
+	repo, err := s.GitHubAuth.ValidateRepository(r, in.InstallationID, in.Repository)
+	if err != nil {
+		problem(w, 403, err)
+		return
+	}
+	if !repo.Private {
+		problem(w, 403, errors.New("RunnerHub trusted self-hosted runners require a private repository"))
+		return
+	}
+	parts := strings.Split(repo.FullName, "/")
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		problem(w, 400, errors.New("github returned an invalid repository name"))
+		return
+	}
+	pools, err := s.Store.ListPools(r.Context())
+	if err != nil {
+		problem(w, 500, err)
+		return
+	}
+	for _, existing := range pools {
+		if existing.Scope.Kind == core.ScopeRepository && strings.EqualFold(existing.Scope.Owner, parts[0]) && strings.EqualFold(existing.Scope.Repository, parts[1]) && isStandardPool(existing) {
+			before := existing
+			scaleSetName := strings.TrimSpace(in.ScaleSetName)
+			if scaleSetName == "" {
+				scaleSetName = existing.ScaleSetName
+			}
+			if scaleSetName == "" {
+				scaleSetName = "runnerhub"
+			}
+			max := in.MaxConcurrency
+			if max <= 0 {
+				max = existing.MaxConcurrency
+			}
+			if max <= 0 {
+				max = 2
+			}
+			isolation := in.Isolation
+			if isolation == "" {
+				isolation = existing.Isolation
+			}
+			if isolation == "" {
+				isolation = core.IsolationContainerTrusted
+			}
+			existing.Name = runnerPoolName(parts[0], parts[1])
+			existing.GitHubInstallationID = in.InstallationID
+			existing.ScaleSetDisabled = false
+			existing.ScaleSetName = scaleSetName
+			existing.MaxConcurrency = max
+			existing.Isolation = isolation
+			existing.Resources = normalizeConnectResources(in.Resources, existing.Resources)
+			if in.AutoTuneResources != nil {
+				existing.AutoTuneResources = *in.AutoTuneResources
+			}
+			resetLearningForConfigChange(&before, &existing)
+			if err := core.ValidateRunnerPool(existing); err != nil {
+				problem(w, 400, err)
+				return
+			}
+			if err := s.Policy.ValidatePool(existing); err != nil {
+				problem(w, 403, err)
+				return
+			}
+			if s.Catalog != nil {
+				posture, err := githubrunner.InspectPoolSecurity(r.Context(), s.Catalog, existing)
+				if err != nil {
+					problem(w, 502, err)
+					return
+				}
+				if !posture.Safe {
+					problem(w, 409, errors.New(strings.Join(posture.Reasons, "; ")))
+					return
+				}
+			}
+			if err := s.Store.UpsertPool(r.Context(), existing); err != nil {
+				problem(w, 500, err)
+				return
+			}
+			_, _ = s.setScaleSetStatus(existing.ID, "pending", "waiting for scale-set listener")
+			_ = s.Store.AppendAudit(r.Context(), core.AuditEvent{Actor: actor(r.Context()), Action: "configure_repository", ResourceType: "pool", ResourceID: existing.ID, Result: "ok", SafeDetail: repo.FullName})
+			writeJSON(w, 202, existing)
+			return
+		}
+	}
+	scaleSetName := strings.TrimSpace(in.ScaleSetName)
+	if scaleSetName == "" {
+		scaleSetName = "runnerhub"
+	}
+	max := in.MaxConcurrency
+	if max <= 0 {
+		max = 2
+	}
+	isolation := in.Isolation
+	if isolation == "" {
+		isolation = core.IsolationContainerTrusted
+	}
+	p := core.RunnerPool{ID: "pool-" + randomID(), Name: runnerPoolName(parts[0], parts[1]), Scope: core.GitHubScope{Kind: core.ScopeRepository, Owner: parts[0], Repository: parts[1]}, Labels: []string{scaleSetName}, Isolation: isolation, Resources: normalizeConnectResources(in.Resources, core.Resources{}), MinIdle: 0, MaxConcurrency: max, RunnerGroupID: 1, GitHubInstallationID: in.InstallationID, ScaleSetName: scaleSetName, Image: images.DefaultRunnerImage}
+	if in.AutoTuneResources != nil {
+		p.AutoTuneResources = *in.AutoTuneResources
+	}
+	if err := core.ValidateRunnerPool(p); err != nil {
+		problem(w, 400, err)
+		return
+	}
+	if err := s.Policy.ValidatePool(p); err != nil {
+		problem(w, 403, err)
+		return
+	}
+	if s.Catalog != nil {
+		posture, err := githubrunner.InspectPoolSecurity(r.Context(), s.Catalog, p)
+		if err != nil {
+			problem(w, 502, err)
+			return
+		}
+		if !posture.Safe {
+			problem(w, 409, errors.New(strings.Join(posture.Reasons, "; ")))
+			return
+		}
+	}
+	if err := s.Store.UpsertPool(r.Context(), p); err != nil {
+		problem(w, 500, err)
+		return
+	}
+	_, _ = s.setScaleSetStatus(p.ID, "pending", "waiting for scale-set listener")
+	_ = s.Store.AppendAudit(r.Context(), core.AuditEvent{Actor: actor(r.Context()), Action: "connect_repository", ResourceType: "pool", ResourceID: p.ID, Result: "ok", SafeDetail: repo.FullName})
+	writeJSON(w, 202, p)
+}

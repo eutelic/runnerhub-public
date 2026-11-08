@@ -19,12 +19,12 @@ func TestCIWorkflowRunQuarantineRoundTrip(t *testing.T) {
 
 	now := time.Date(2026, 11, 4, 20, 0, 0, 0, time.UTC)
 	record := CIWorkflowRunQuarantine{
-		Repository: "Eutelic/RunnerHub",
-		RunID: 37333906258,
-		FailureCount: 2,
-		Reason: "permission_denied",
+		Repository:    "Eutelic/RunnerHub",
+		RunID:         37333906258,
+		FailureCount:  2,
+		Reason:        "permission_denied",
 		LastFailureAt: now,
-		RetryAfter: now.Add(12 * time.Hour),
+		RetryAfter:    now.Add(12 * time.Hour),
 	}
 	if err := st.UpsertCIWorkflowRunQuarantine(ctx, record); err != nil {
 		t.Fatal(err)

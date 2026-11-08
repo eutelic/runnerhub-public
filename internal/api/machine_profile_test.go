@@ -68,7 +68,6 @@ func TestUpdateHostTagsPreservesSystemCapabilities(t *testing.T) {
 	}
 }
 
-
 func TestUpdateHostPriority(t *testing.T) {
 	st, err := store.OpenSQLite(":memory:")
 	if err != nil {
@@ -103,18 +102,22 @@ func TestUpdateHostPriority(t *testing.T) {
 }
 
 func TestHostPersistentProfileIsNotGeneralPurpose(t *testing.T) {
-    for _,tt:=range []struct{name string;isolation core.IsolationMode;wantError bool}{
-        {"runnerhub-android-emulator",core.IsolationHostPersistent,false},
-        {"runnerhub-fast",core.IsolationHostPersistent,true},
-        {"runnerhub",core.IsolationHostPersistent,true},
-        {"runnerhub-fast",core.IsolationContainerTrusted,false},
-        {"runnerhub-publisher",core.IsolationContainerDinD,false},
-    } {
-        err:=requireDedicatedNativeProfile(tt.name,tt.isolation)
-        if (err!=nil)!=tt.wantError {
-            t.Errorf("name=%q isolation=%q err=%v; wantError=%v",tt.name,tt.isolation,err,tt.wantError)
-        }
-    }
+	for _, tt := range []struct {
+		name      string
+		isolation core.IsolationMode
+		wantError bool
+	}{
+		{"runnerhub-android-emulator", core.IsolationHostPersistent, false},
+		{"runnerhub-fast", core.IsolationHostPersistent, true},
+		{"runnerhub", core.IsolationHostPersistent, true},
+		{"runnerhub-fast", core.IsolationContainerTrusted, false},
+		{"runnerhub-publisher", core.IsolationContainerDinD, false},
+	} {
+		err := requireDedicatedNativeProfile(tt.name, tt.isolation)
+		if (err != nil) != tt.wantError {
+			t.Errorf("name=%q isolation=%q err=%v; wantError=%v", tt.name, tt.isolation, err, tt.wantError)
+		}
+	}
 }
 func TestProfileIsolationDefaultsAndAllowsDinD(t *testing.T) {
 	got, err := profileIsolation("", nil)

@@ -17,7 +17,7 @@ import (
 type quarantineTestGitHub struct {
 	fakeGitHub
 	runErrors map[int64]error
-	runCalls map[int64]int
+	runCalls  map[int64]int
 }
 
 func (f *quarantineTestGitHub) GetWorkflowRun(ctx context.Context, scope core.GitHubScope, runID int64) (githubrunner.WorkflowRunMetadata, error) {
@@ -78,8 +78,8 @@ func TestPermanentWorkflowRunFailureIsQuarantinedAndRecovers(t *testing.T) {
 	}
 	gh := &quarantineTestGitHub{
 		fakeGitHub: fakeGitHub{runs: map[int64]githubrunner.WorkflowRunMetadata{
-			accessibleRunID: accessible,
-			inaccessibleRunID: restored,
+			accessibleRunID:        accessible,
+			inaccessibleRunID:      restored,
 			inaccessibleOtherRunID: accessibleOther,
 		}},
 		runErrors: map[int64]error{
@@ -153,7 +153,7 @@ func TestPermanentWorkflowRunFailureIsQuarantinedAndRecovers(t *testing.T) {
 func TestPermanentWorkflowRunFailureClassification(t *testing.T) {
 	tests := []struct {
 		name string
-		err error
+		err  error
 		want string
 	}{
 		{name: "permission denied", err: errors.New("github api returned 403: Resource not accessible by integration"), want: "permission_denied"},

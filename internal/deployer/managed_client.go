@@ -112,7 +112,6 @@ func (m *BootstrapManager) RedeployManagedApp(ctx context.Context, app string) e
 	return err
 }
 
-
 // RedeployManagedAppPinned requests a digest-pinned custom Compose update on
 // the existing standalone deployer. The image and expected prior digest are
 // authenticated within the same HMAC body as the app/action endpoint.
@@ -126,7 +125,9 @@ func (m *BootstrapManager) RedeployManagedAppPinned(ctx context.Context, app, im
 	body, err := json.Marshal(map[string]string{
 		"image": image, "previousDigest": previousDigest, "targetDigest": targetDigest,
 	})
-	if err != nil { return err }
+	if err != nil {
+		return err
+	}
 	_, err = m.managedRequest(ctx, http.MethodPost, managementPrefix+"/"+app+"/redeploy-pinned", body)
 	return err
 }
