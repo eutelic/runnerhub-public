@@ -1157,7 +1157,7 @@ func runDynamicManager(ctx context.Context, base config) error {
 					}
 				}
 				_ = hub.scaleSetStatus(ctx, result.key, "backing_off", detail)
-				slog.Error("managed scale-set listener stopped; backing off", "pool", result.key, "retryAt", nextAttempt, "attempt", attempt, "error", result.err)
+				slog.Error("managed scale-set listener stopped; backing off", "pool", result.key, "retryAt", nextAttempt, "attempt", attempt, "failure", listenerFailureSummary(result.err))
 			}
 			updateReadiness()
 		}
@@ -1294,7 +1294,7 @@ func runListener(ctx context.Context, c config, onReady func()) (runErr error) {
 		closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		if err := sessions.Close(closeCtx); err != nil {
-			slog.Warn("close GitHub scale-set message session", "scaleSetID", set.ID, "error", err)
+			slog.Warn("close GitHub scale-set message session", "scaleSetID", set.ID, "failure", listenerFailureSummary(err))
 			runErr = messageSessionCloseResult(runErr, err)
 		}
 	}()
