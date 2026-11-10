@@ -11,7 +11,8 @@ import math
 import sys
 from collections import defaultdict
 
-STAGES = ("jit_ms", "image_ms", "preflight_ms", "provision_ms", "register_ms", "ready_ms")
+STAGES = ("queue_to_start_ms", "capacity_wait_ms", "jit_ms", "image_ms", "preflight_ms",
+          "provision_ms", "register_ms", "ready_ms", "execution_ms", "cleanup_ms")
 
 
 def percentile(values, fraction):
@@ -38,6 +39,7 @@ def reject_nonfinite_constant(value):
 
 def summarize(lines):
     groups = defaultdict(list)
+    seen_attempts = set()
     for line_number, line in enumerate(lines, 1):
         if not line.strip():
             continue
@@ -47,8 +49,22 @@ def summarize(lines):
             if not isinstance(record, dict):
                 raise ValueError("expected an object")
             for field in ("pool", "workload", "cache"):
-                if not isinstance(record.get(field), str) or not record[field]:
+                if not isinstance(record.get(field), str) or not record[field].strip() or record[field] != record[field].strip():
                     raise ValueError(f"missing {field}")
+            repository = record.get("repository", "unattributed")
+            if not isinstance(repository, str) or not repository.strip() or repository != repository.strip():
+                raise ValueError("invalid repository")
+            # An optional stable attempt ID makes accidental JSONL replays visible.
+            # Scope it to the repository so independent repos may reuse IDs.
+            attempt_id = record.get("attempt_id")
+            if "attempt_id" in record and attempt_id is None:
+                raise ValueError("invalid attempt_id")
+            if attempt_id is not None:
+                if not isinstance(attempt_id, str) or not attempt_id.strip() or attempt_id != attempt_id.strip():
+                    raise ValueError("invalid attempt_id")
+                attempt_key = (repository, attempt_id)
+                if attempt_key in seen_attempts:
+                    raise ValueError(f"duplicate attempt_id {attempt_id} for repository {repository}")
             if type(record.get("success")) is not bool:
                 raise ValueError("success must be boolean")
             # Reject misspelled duration keys instead of silently losing measurements.
@@ -66,11 +82,17 @@ def summarize(lines):
                     raise ValueError(f"invalid {stage}")
         except (ValueError, json.JSONDecodeError) as exc:
             raise ValueError(f"line {line_number}: {exc}") from exc
-        groups[tuple(record[field] for field in ("pool", "workload", "cache"))].append(record)
+        if attempt_id is not None:
+            seen_attempts.add(attempt_key)
+        groups[(record.get("repository", "unattributed"),) +
+               tuple(record[field] for field in ("pool", "workload", "cache"))].append(record)
+
+    if not groups:
+        raise ValueError("no benchmark attempts found")
 
     output = []
     for key, records in sorted(groups.items()):
-        result = dict(zip(("pool", "workload", "cache"), key))
+        result = dict(zip(("repository", "pool", "workload", "cache"), key))
         result["attempts"] = len(records)
         result["successes"] = sum(r["success"] for r in records)
         result["failures"] = result["attempts"] - result["successes"]
@@ -78,8 +100,19 @@ def summarize(lines):
         result["stages"] = {}
         for stage in STAGES:
             values = [r[stage] for r in records if r["success"] and r.get(stage) is not None]
+            attempt_values = [r[stage] for r in records if r.get(stage) is not None]
+            failed_values = [r[stage] for r in records if not r["success"] and r.get(stage) is not None]
             eligible = result["successes"]
             result["stages"][stage] = {
+                "failure_samples": len(failed_values),
+                "failure_eligible": result["failures"],
+                "failure_missing": result["failures"] - len(failed_values),
+                "failure_coverage_pct": round(100 * len(failed_values) / result["failures"], 2) if result["failures"] else None,
+                "failure_p50_ms": percentile(failed_values, 0.50),
+                "failure_p95_ms": percentile(failed_values, 0.95),
+                "attempt_samples": len(attempt_values),
+                "attempt_missing": result["attempts"] - len(attempt_values),
+                "attempt_coverage_pct": round(100 * len(attempt_values) / result["attempts"], 2),
                 "samples": len(values),
                 "eligible": eligible,
                 "missing": eligible - len(values),
@@ -94,7 +127,15 @@ def summarize(lines):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("jsonl", help="JSONL measurements or - for stdin")
+    parser.add_argument("--min-attempts", type=int, default=1,
+                        help="fail if fewer than this many attempts were captured (default: 1)")
+    parser.add_argument("--min-cohort-attempts", type=int, default=1,
+                        help="require this many attempts in every repository/pool/workload/cache cohort")
     args = parser.parse_args()
+    if args.min_attempts < 1:
+        parser.error("--min-attempts must be positive")
+    if args.min_cohort_attempts < 1:
+        parser.error("--min-cohort-attempts must be positive")
     try:
         if args.jsonl == "-":
             report = summarize(sys.stdin)
@@ -103,6 +144,14 @@ def main():
                 report = summarize(source)
     except (OSError, ValueError) as exc:
         parser.error(str(exc))
+    observed = sum(group["attempts"] for group in report)
+    if observed < args.min_attempts:
+        parser.error(f"only {observed} benchmark attempts; --min-attempts requires {args.min_attempts}")
+    for group in report:
+        if group["attempts"] < args.min_cohort_attempts:
+            label = "/".join(group[field] for field in ("repository", "pool", "workload", "cache"))
+            parser.error(f"cohort {label} has only {group['attempts']} attempts; "
+                         f"--min-cohort-attempts requires {args.min_cohort_attempts}")
     print(json.dumps(report, indent=2))
 
 
