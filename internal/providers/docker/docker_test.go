@@ -30,7 +30,7 @@ func (f *fakeRunner) Run(_ context.Context, n string, a ...string) (string, erro
 func TestCreateHasNoPortsOrDockerSocketHidesJITAndPullsImage(t *testing.T) {
 	f := &fakeRunner{fn: func(_ string, a ...string) (string, error) {
 		if len(a) > 0 && a[0] == "run" {
-			return "abc123\n", nil
+			return strings.Repeat("a", 64) + "\n", nil
 		}
 		return "", nil
 	}}
@@ -43,7 +43,7 @@ func TestCreateHasNoPortsOrDockerSocketHidesJITAndPullsImage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if h.ProviderID != "abc123" {
+	if h.ProviderID != strings.Repeat("a", 64) {
 		t.Fatalf("handle=%+v", h)
 	}
 	joined := strings.Join(f.calls[0], " ")
@@ -123,10 +123,10 @@ func TestCreateDinDUsesPrivateSidecarSocketNotHostSocket(t *testing.T) {
 			return "1001:1001:123", nil
 		}
 		if len(a) > 0 && a[0] == "run" && strings.Contains(joined, "--name runnerhub-w1-dind") {
-			return "dind123\n", nil
+			return strings.Repeat("d", 64) + "\n", nil
 		}
 		if len(a) > 0 && a[0] == "run" && strings.Contains(joined, "--name runnerhub-w1") {
-			return "runner123\n", nil
+			return strings.Repeat("b", 64) + "\n", nil
 		}
 		return "", nil
 	}}
@@ -138,7 +138,7 @@ func TestCreateDinDUsesPrivateSidecarSocketNotHostSocket(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if h.ProviderID != "runner123" {
+	if h.ProviderID != strings.Repeat("b", 64) {
 		t.Fatalf("handle=%+v", h)
 	}
 	all := make([]string, 0, len(f.calls))
@@ -175,7 +175,7 @@ func TestCreateDinDUsesPrivateSidecarSocketNotHostSocket(t *testing.T) {
 	}
 	if !strings.Contains(joined, "--name runnerhub-w1-dind") ||
 		!strings.Contains(joined, "--privileged") ||
-		!strings.Contains(joined, "--network container:runner123") ||
+		!strings.Contains(joined, "--network container:"+strings.Repeat("b", 64)) ||
 		!strings.Contains(joined, images.DefaultDinDImage+" dockerd --host=unix:///run/runnerhub-docker/docker.sock") ||
 		!strings.Contains(joined, "--group=123") {
 		t.Fatalf("Docker-in-Docker sidecar missing required configuration: %s", joined)
@@ -248,9 +248,9 @@ func TestCreateDinDUsesRunnerProcessForSocketReadiness(t *testing.T) {
 		case len(a) > 0 && a[0] == "run" && strings.Contains(joined, "--entrypoint /bin/bash"):
 			return "1001:1001:123", nil
 		case len(a) > 0 && a[0] == "run" && strings.Contains(joined, "--name runnerhub-w1-dind"):
-			return "dind123\n", nil
+			return strings.Repeat("d", 64) + "\n", nil
 		case len(a) > 0 && a[0] == "run" && strings.Contains(joined, "--name runnerhub-w1"):
-			return "runner123\n", nil
+			return strings.Repeat("b", 64) + "\n", nil
 		case len(a) > 0 && a[0] == "exec":
 			return "", errors.New("docker exec readiness probe must not be used")
 		default:
@@ -271,7 +271,7 @@ func TestCreateDinDUsesRunnerProcessForSocketReadiness(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if h.ProviderID != "runner123" {
+	if h.ProviderID != strings.Repeat("b", 64) {
 		t.Fatalf("provider handle=%q, want runner123", h.ProviderID)
 	}
 
@@ -339,7 +339,7 @@ func TestPrivilegedDinDRejectsMovingImageTag(t *testing.T) {
 func TestCreateAllowsExplicitPullPolicy(t *testing.T) {
 	f := &fakeRunner{fn: func(_ string, a ...string) (string, error) {
 		if len(a) > 0 && a[0] == "run" {
-			return "abc123\n", nil
+			return strings.Repeat("a", 64) + "\n", nil
 		}
 		return "", nil
 	}}
@@ -368,7 +368,7 @@ func TestCreateRecoversExistingContainerAfterAmbiguousRunFailure(t *testing.T) {
 			return "", errors.New("name conflict")
 		}
 		if len(a) > 1 && a[0] == "inspect" && a[1] == "runnerhub-w1" {
-			return "existing123\n", nil
+			return strings.Repeat("e", 64) + "\n", nil
 		}
 		return "", nil
 	}}
@@ -377,7 +377,7 @@ func TestCreateRecoversExistingContainerAfterAmbiguousRunFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	h, err := p.Create(context.Background(), provider.WorkerSpec{WorkerID: "w1", PoolID: "p1", RunnerName: "r1", JITConfig: "jit", Image: "img", Isolation: core.IsolationContainerTrusted})
-	if err != nil || h.ProviderID != "existing123" {
+	if err != nil || h.ProviderID != strings.Repeat("e", 64) {
 		t.Fatalf("handle=%+v err=%v", h, err)
 	}
 }
@@ -555,7 +555,7 @@ func TestJITBindMountFileIsReadableByNonRootRunner(t *testing.T) {
 	stateDir := t.TempDir()
 	f := &fakeRunner{fn: func(_ string, a ...string) (string, error) {
 		if len(a) > 0 && a[0] == "run" {
-			return "abc123\n", nil
+			return strings.Repeat("a", 64) + "\n", nil
 		}
 		return "", nil
 	}}

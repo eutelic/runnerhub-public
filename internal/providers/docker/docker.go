@@ -282,6 +282,30 @@ func (p *Provider) Create(ctx context.Context, s provider.WorkerSpec) (provider.
 	return provider.WorkerHandle{ProviderID: id, HostID: p.cfg.HostID}, nil
 }
 
+// trustedWorkerStartError retains the underlying daemon error for errors.Is/As
+// without copying a JIT configuration that a daemon may echo into diagnostics.
+type trustedWorkerStartError struct {
+	name      string
+	cause     error
+	jitConfig string
+}
+
+func (e *trustedWorkerStartError) Error() string {
+	message := e.cause.Error()
+	if e.jitConfig != "" {
+		message = strings.ReplaceAll(message, e.jitConfig, "[REDACTED]")
+		// Docker may JSON-escape a daemon payload before returning it.
+		// Redact that representation as well without losing error identity.
+		escaped, _ := json.Marshal(e.jitConfig)
+		if len(escaped) > 2 {
+			message = strings.ReplaceAll(message, string(escaped[1:len(escaped)-1]), "[REDACTED]")
+		}
+	}
+	return fmt.Sprintf("start trusted Docker worker %q: %s", e.name, sanitizeDiagnostics(message))
+}
+
+func (e *trustedWorkerStartError) Unwrap() error { return e.cause }
+
 func (p *Provider) createTrustedWorker(ctx context.Context, s provider.WorkerSpec, secretDir, jitPath string) (string, error) {
 	name := workerContainerName(s.WorkerID)
 	args := p.runnerArgs(s, name, jitPath)
@@ -296,17 +320,17 @@ func (p *Provider) createTrustedWorker(ctx context.Context, s provider.WorkerSpe
 	)
 	out, err := p.run.Run(ctx, p.cfg.DockerBinary, args...)
 	if err != nil {
-		if id, findErr := p.findExact(ctx, name); findErr == nil && id != "" {
-			return id, nil
+		if id, findErr := p.findExact(ctx, name); findErr == nil && detachedContainerIDPattern.MatchString(strings.TrimSpace(id)) {
+			return strings.TrimSpace(id), nil
 		}
 		_ = os.RemoveAll(secretDir)
-		return "", err
+		return "", &trustedWorkerStartError{name: name, cause: err, jitConfig: s.JITConfig}
 	}
 	id, resolveErr := p.resolveRunContainerID(ctx, name, out)
 	if resolveErr != nil {
 		_, _ = p.run.Run(ctx, p.cfg.DockerBinary, "rm", "-f", "-v", name)
 		_ = os.RemoveAll(secretDir)
-		return "", resolveErr
+		return "", &trustedWorkerStartError{name: name, cause: resolveErr, jitConfig: s.JITConfig}
 	}
 	return id, nil
 }
@@ -575,14 +599,12 @@ func workerContainerName(workerID string) string { return "runnerhub-" + safeID(
 
 func (p *Provider) resolveRunContainerID(ctx context.Context, name, out string) (string, error) {
 	lines := strings.Split(out, "\n")
-	nonEmpty := make([]string, 0, len(lines))
 	var candidates []string
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
 		}
-		nonEmpty = append(nonEmpty, line)
 		if detachedContainerIDPattern.MatchString(line) {
 			candidates = append(candidates, line)
 		}
@@ -590,17 +612,18 @@ func (p *Provider) resolveRunContainerID(ctx context.Context, name, out string) 
 	if len(candidates) == 1 {
 		return candidates[0], nil
 	}
-	if len(nonEmpty) == 1 {
-		return nonEmpty[0], nil
-	}
+	// Docker can emit a single warning or diagnostic line instead of an ID.
+	// Never persist arbitrary daemon output as a container identifier: resolve
+	// the exact named container through inspect in that case.
 	id, err := p.findExact(ctx, name)
 	if err != nil {
 		return "", fmt.Errorf("resolve Docker container id for %q: %w", name, err)
 	}
-	if strings.TrimSpace(id) == "" {
-		return "", fmt.Errorf("docker created %q but returned no unambiguous container id", name)
+	id = strings.TrimSpace(id)
+	if !detachedContainerIDPattern.MatchString(id) {
+		return "", fmt.Errorf("docker created %q but inspect returned no valid container id", name)
 	}
-	return strings.TrimSpace(id), nil
+	return id, nil
 }
 
 func (p *Provider) findExact(ctx context.Context, name string) (string, error) {
