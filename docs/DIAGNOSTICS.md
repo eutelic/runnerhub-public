@@ -165,6 +165,43 @@ run is planned; jobs without a RunnerHub label are not listed in this panel.
 Inspect the linked GitHub job and live scale-set logs when the code is
 `unknown`. A queued job is not proof that RunnerHub is broken.
 
+## Scale-set message-session conflict (HTTP 409)
+
+A `GitHub message session conflict (409)` is a conflict opening or reconnecting
+to the GitHub scale-set message session. It is distinct from GitHub API rate
+limits (429 or rate-limit 403), worker startup errors, and late job events
+(404). A single 409 during listener handoff does not establish that a pool is
+unavailable or that a workflow failed.
+
+The managed scale-set supervisor allows only one listener owner per pool. On
+configuration change or shutdown it waits for the old listener to return and
+close its session before starting a replacement. When a listener exits with a
+409, it reports `backing_off`, retains the sanitized failure and retry
+sequence, then retries with bounded jitter. A later successful start reports
+`ready` with a recovery duration. If closing the old session fails, replacement
+is blocked and the pool reports `error`; do not manually start another
+listener for the same scale set while the old owner may still be active.
+
+To investigate a recurrence, correlate entries by pool ID and UTC time across
+the control-plane and scale-set logs. Record the container/process restart or
+configuration change, shutdown request, old listener exit/session-close
+result, each sanitized 409 retry attempt and retry timestamp, recovery-to-ready
+time, and whether a harmless workflow was accepted and completed afterward.
+Compare those timestamps with the GitHub request IDs in the authenticated
+support bundle. Preserve the original sanitized events even when recovery
+succeeds; a `ready` state means the listener recovered, not that a job has
+already run. If conflicts repeat without reaching `ready`, or a real queued job
+cannot be accepted, escalate with the per-pool timeline. A different pool
+readiness error (such as missing installation mapping) must be diagnosed
+separately.
+
+For a recurrence, the available bundle reports eight
+backing-off 409 events and then 33/34 configured scale sets ready. That evidence
+shows transient conflicts followed by broad readiness; it does not identify
+which restart or session handoff caused them, nor prove a subsequent workflow
+was accepted. Close the investigation only after correlating restart/session
+ownership logs and completing a controlled rolling-restart job acceptance.
+
 ## Bulk onboarding
 
 On the dashboard's **Repositories** page, open **Bulk connect selected
