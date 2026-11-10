@@ -523,6 +523,10 @@ func (c *TrueNASClient) EnsureCustomApp(ctx context.Context, app, compose string
 		if !candidate.CustomApp {
 			return fmt.Errorf("TrueNAS app %q already exists but is not a custom app", app)
 		}
+		// Do not replace an unrelated custom app that happens to share the name.
+		if !isRunnerHubDeployerCompose(candidate.Config.CustomComposeConfigString) {
+			return fmt.Errorf("TrueNAS app %q already exists but is not an identifiable RunnerHub deployer; refusing to overwrite it", app)
+		}
 		exists = true
 		break
 	}
@@ -634,6 +638,155 @@ func (c *TrueNASClient) EnsureCustomApp(ctx context.Context, app, compose string
 		case <-ticker.C:
 		}
 	}
+}
+
+// isRunnerHubDeployerCompose fails closed when the existing TrueNAS app does
+// not advertise the expected RunnerHub deployer image.
+func isRunnerHubDeployerCompose(compose string) bool {
+	// Reject duplicate deployer sections or image keys. A permissive scan could
+	// accept an earlier trusted image while Compose uses a later override.
+	inServices := false
+	inDeployer := false
+	seenServices := false
+	seenDeployer := false
+	seenImage := false
+	validImage := false
+	for _, line := range strings.Split(compose, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		if strings.Contains(line, "\t") {
+			return false
+		}
+		// YAML directives and merge keys can change mapping interpretation beyond
+		// this intentionally narrow ownership scanner. Require manual review.
+		if strings.HasPrefix(trimmed, "%YAML") || strings.HasPrefix(trimmed, "%TAG") ||
+			strings.HasPrefix(trimmed, "<<:") {
+			return false
+		}
+		// Multiple YAML documents can replace the trusted services mapping.
+		// This lightweight ownership scanner must not interpret only one document.
+		if trimmed == "---" || trimmed == "..." || strings.HasPrefix(trimmed, "--- ") || strings.HasPrefix(trimmed, "... ") {
+			return false
+		}
+		indent := len(line) - len(strings.TrimLeft(line, " "))
+		// Explicit YAML mapping keys can spell an ownership-critical key as
+		// "? image" followed by ": other-image". Do not trust an earlier
+		// image declaration when this scanner cannot interpret the override.
+		if (indent == 0 || (inServices && indent == 2) || (inDeployer && indent == 4)) &&
+			(strings.HasPrefix(trimmed, "? ") || trimmed == "?" || strings.HasPrefix(trimmed, ": ")) {
+			return false
+		}
+		// Quoted YAML keys can override an earlier trusted declaration.
+		// Reject alternate spellings of ownership-critical mapping keys.
+		// Quoted YAML mapping keys may contain escapes (e.g. "im\\u0061ge")
+		// that this lightweight ownership scanner cannot resolve safely.
+		// Fail closed rather than accepting an overriding escaped key.
+		if (indent == 0 || (inServices && indent == 2) || (inDeployer && indent == 4)) &&
+			(len(trimmed) > 0 && (trimmed[0] == '"' || trimmed[0] == '\'')) {
+			return false
+		}
+		// A second services/deployer/image key with an inline value (including
+		// aliases and flow mappings) is still a YAML override. Do not require
+		// the exact block-style "key:" spelling to detect it.
+		if (indent == 0 && strings.HasPrefix(trimmed, "services:")) ||
+			(inServices && indent == 2 && strings.HasPrefix(trimmed, "deployer:")) ||
+			(inDeployer && indent == 4 && strings.HasPrefix(trimmed, "image:")) {
+			keyName, value, _ := strings.Cut(trimmed, ":")
+			if strings.TrimSpace(value) != "" && keyName != "image" {
+				return false
+			}
+		}
+		// A mapping key followed by a YAML comment is still a declaration.
+		// In particular, "deployer: # override" must not evade duplicate
+		// ownership checks merely because it is not spelled "deployer:".
+		if (indent == 0 && strings.HasPrefix(trimmed, "services:")) ||
+			(inServices && indent == 2 && strings.HasPrefix(trimmed, "deployer:")) ||
+			(inDeployer && indent == 4 && strings.HasPrefix(trimmed, "image:")) {
+			_, suffix, _ := strings.Cut(trimmed, ":")
+			if strings.HasPrefix(strings.TrimSpace(suffix), "#") {
+				return false
+			}
+		}
+		key, _, hasColon := strings.Cut(trimmed, ":")
+		if hasColon {
+			// YAML permits whitespace before the mapping colon. Reject alternate
+			// spellings of ownership keys rather than missing an effective override.
+			if strings.TrimRight(key, " ") != key {
+				canonical := strings.TrimSpace(key)
+				if (indent == 0 && canonical == "services") ||
+					(inServices && indent == 2 && canonical == "deployer") ||
+					(inDeployer && indent == 4 && canonical == "image") {
+					return false
+				}
+			}
+			// YAML also permits whitespace between a quoted key and its colon.
+			// Normalize it before checking for ownership-critical aliases.
+			normalized := strings.Trim(strings.TrimSpace(key), "\"'")
+			if key != normalized && ((indent == 0 && normalized == "services") ||
+				(inServices && indent == 2 && normalized == "deployer") ||
+				(inDeployer && indent == 4 && normalized == "image")) {
+				return false
+			}
+		}
+		if indent == 0 {
+			if trimmed == "services:" {
+				if seenServices {
+					return false // duplicate top-level YAML key can override the trusted service
+				}
+				seenServices = true
+			}
+			inServices = trimmed == "services:"
+			inDeployer = false
+			continue
+		}
+		if !inServices {
+			continue
+		}
+		if indent == 2 {
+			inDeployer = trimmed == "deployer:"
+			if inDeployer {
+				if seenDeployer {
+					return false
+				}
+				seenDeployer = true
+			}
+			continue
+		}
+		if !inDeployer || indent != 4 || !strings.HasPrefix(trimmed, "image:") {
+			continue
+		}
+		if seenImage {
+			return false
+		}
+		seenImage = true
+		image := strings.TrimSpace(strings.TrimPrefix(trimmed, "image:"))
+		// Only strip balanced matching YAML quotes. strings.Trim would
+		// accept malformed mixed or unmatched quotes as trusted ownership.
+		if len(image) >= 2 && ((image[0] == '\'' && image[len(image)-1] == '\'') ||
+			(image[0] == '"' && image[len(image)-1] == '"')) {
+			image = image[1 : len(image)-1]
+		}
+		const digestPrefix = "ghcr.io/eutelic/runnerhub-deployer@sha256:"
+		validImage = image == "ghcr.io/eutelic/runnerhub-deployer:latest" ||
+			(strings.HasPrefix(image, digestPrefix) && validSHA256Digest(image[len(digestPrefix):]))
+	}
+	return seenDeployer && seenImage && validImage
+}
+
+// validSHA256Digest rejects truncated or malformed image references before an
+// existing TrueNAS app can be treated as owned by RunnerHub.
+func validSHA256Digest(digest string) bool {
+	if len(digest) != 64 {
+		return false
+	}
+	for _, char := range digest {
+		if (char < '0' || char > '9') && (char < 'a' || char > 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 func trueNASPortBindConflict(details ...string) bool {

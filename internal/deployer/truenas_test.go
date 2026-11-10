@@ -315,7 +315,7 @@ func TestTrueNASEnsureCustomAppCreatesAndUpdates(t *testing.T) {
 						}
 						apps := []map[string]any{}
 						if tc.existing {
-							apps = append(apps, map[string]any{"name": "runnerhub-deployer", "id": "runnerhub-deployer", "custom_app": true, "state": "RUNNING"})
+							apps = append(apps, map[string]any{"name": "runnerhub-deployer", "id": "runnerhub-deployer", "custom_app": true, "state": "RUNNING", "config": map[string]any{"custom_compose_config_string": "services:\n  deployer:\n    image: ghcr.io/eutelic/runnerhub-deployer:latest\n"}})
 						}
 						_ = conn.WriteJSON(map[string]any{"jsonrpc": "2.0", "id": req.ID, "result": apps})
 					case 2:
@@ -748,7 +748,7 @@ func TestTrueNASExistingAppIsNotReadyUntilInstallJobFinishes(t *testing.T) {
 					case "auth.login_ex":
 						result = map[string]any{"response_type": "SUCCESS"}
 					case "app.query":
-						result = []map[string]any{{"id": "runnerhub-deployer", "name": "runnerhub-deployer", "custom_app": true, "state": "RUNNING"}}
+						result = []map[string]any{{"id": "runnerhub-deployer", "name": "runnerhub-deployer", "custom_app": true, "state": "RUNNING", "config": map[string]any{"custom_compose_config_string": "services:\n  deployer:\n    image: ghcr.io/eutelic/runnerhub-deployer:latest\n"}}}
 					case "app.update":
 						_ = conn.WriteJSON(map[string]any{
 							"jsonrpc": "2.0", "method": "collection_update",
