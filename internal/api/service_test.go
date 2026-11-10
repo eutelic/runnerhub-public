@@ -429,7 +429,7 @@ func TestPoolRecommendationsUsePoolSpecificQueueAndCapacity(t *testing.T) {
 	defer st.Close()
 
 	fast := core.RunnerPool{ID: "fast", Name: "fast", Isolation: core.IsolationContainerTrusted, HostSelector: map[string]string{"lane": "fast"}, Resources: core.Resources{CPUMillis: 2500, MemoryBytes: 4 << 30}, MaxConcurrency: 1}
-	slow := core.RunnerPool{ID: "slow", Name: "slow", Isolation: core.IsolationContainerTrusted, HostSelector: map[string]string{"lane": "slow"}, Resources: core.Resources{CPUMillis: 2500, MemoryBytes: 4 << 30}, MaxConcurrency: 1}
+	slow := core.RunnerPool{ID: "slow", Name: "slow", Isolation: core.IsolationContainerTrusted, HostSelector: map[string]string{"lane": "slow"}, Resources: core.Resources{CPUMillis: 2500, MemoryBytes: 4 << 30}, MaxConcurrency: 2}
 	if err := st.UpsertPool(ctx, fast); err != nil {
 		t.Fatal(err)
 	}

@@ -68,13 +68,24 @@ func (s Scheduler) SelectHost(ctx context.Context, pool core.RunnerPool) (Decisi
 	for _, w := range workers {
 		if OccupiesHostResources(w) {
 			key := PlacementDomainForWorker(byID, w.HostID)
-			used[key] = core.Add(used[key], EffectiveWorkerResources(w))
+			used[key] = addReservationsSaturating(used[key], EffectiveWorkerResources(w))
 		}
 		if w.PoolID == pool.ID && CountsTowardPoolConcurrency(w.State) {
 			poolActive++
 		}
 	}
-	if poolActive >= pool.MaxConcurrency {
+	// Validate before checking concurrency so malformed requests are never
+	// reported as transient capacity shortages (which callers may retry).
+	if pool.Resources.CPUMillis == 0 && pool.Resources.MemoryBytes == 0 && pool.Resources.DiskBytes == 0 && pool.Resources.GPUs == 0 {
+		return Decision{}, fmt.Errorf("invalid pool resources: no positive reservation")
+	}
+	if pool.Resources.CPUMillis < 0 || pool.Resources.MemoryBytes < 0 || pool.Resources.DiskBytes < 0 || pool.Resources.GPUs < 0 {
+		return Decision{}, fmt.Errorf("invalid pool resources: negative reservation")
+	}
+	if pool.MaxConcurrency < 0 {
+		return Decision{}, fmt.Errorf("invalid pool max concurrency: %d", pool.MaxConcurrency)
+	}
+	if pool.MaxConcurrency > 0 && poolActive >= pool.MaxConcurrency {
 		return Decision{}, fmt.Errorf("%w: pool concurrency exhausted (%d/%d)", ErrNoCapacity, poolActive, pool.MaxConcurrency)
 	}
 	type candidate struct {
@@ -94,18 +105,38 @@ func (s Scheduler) SelectHost(ctx context.Context, pool core.RunnerPool) (Decisi
 		}
 		u := used[key]
 		req := EffectivePoolResources(h, pool)
-		score := (cap.CPUMillis - u.CPUMillis - req.CPUMillis) +
-			(cap.MemoryBytes-u.MemoryBytes-req.MemoryBytes)/(1024*1024)
+		// A feasible candidate can still have enormous residual capacity.
+		// Subtract only after checking bounds, and saturate the combined score
+		// rather than allowing a large host to wrap into a negative ranking.
+		cpuLeft := nonnegativeHeadroom(cap.CPUMillis, u.CPUMillis)
+		memLeft := nonnegativeHeadroom(cap.MemoryBytes, u.MemoryBytes)
+		cpuScore := nonnegativeHeadroom(cpuLeft, req.CPUMillis)
+		memScore := nonnegativeHeadroom(memLeft, req.MemoryBytes) / (1024 * 1024)
+		const maxInt64 = int64(^uint64(0) >> 1)
+		score := cpuScore
+		if memScore > maxInt64-score {
+			score = maxInt64
+		} else {
+			score += memScore
+		}
 		candidates = append(candidates, candidate{h: h, used: u, priority: h.Priority, score: score})
 	}
 	if len(candidates) == 0 {
+		if len(rejects) == 0 {
+			return Decision{}, fmt.Errorf("%w: no hosts registered", ErrNoCapacity)
+		}
+		sort.Strings(rejects)
 		return Decision{}, fmt.Errorf("%w: %s", ErrNoCapacity, strings.Join(rejects, "; "))
 	}
 	sort.SliceStable(candidates, func(i, j int) bool {
 		if candidates[i].priority != candidates[j].priority {
 			return candidates[i].priority > candidates[j].priority
 		}
-		return candidates[i].score > candidates[j].score
+		if candidates[i].score != candidates[j].score {
+			return candidates[i].score > candidates[j].score
+		}
+		// Stable placement independent of store iteration order on equal scores.
+		return candidates[i].h.ID < candidates[j].h.ID
 	})
 	c := candidates[0]
 	return Decision{Host: c.h, Used: c.used, Reason: fmt.Sprintf("best compatible host: priority=%d, residual-capacity-score=%d", c.priority, c.score)}, nil
@@ -131,7 +162,7 @@ func SummarizeCapacity(pool core.RunnerPool, hosts []core.Host, workers []core.W
 	for _, w := range workers {
 		if OccupiesHostResources(w) {
 			key := PlacementDomainForWorker(byID, w.HostID)
-			used[key] = core.Add(used[key], EffectiveWorkerResources(w))
+			used[key] = addReservationsSaturating(used[key], EffectiveWorkerResources(w))
 		}
 		if w.PoolID == pool.ID && CountsTowardPoolConcurrency(w.State) {
 			summary.ActiveWorkers++
@@ -139,6 +170,28 @@ func SummarizeCapacity(pool core.RunnerPool, hosts []core.Host, workers []core.W
 				summary.BusyWorkers++
 			}
 		}
+	}
+
+	// Invalid reservations must not produce misleading schedulable capacity.
+	// In particular, negative requirements can inflate resourceFitCount.
+	if pool.Resources.CPUMillis == 0 && pool.Resources.MemoryBytes == 0 && pool.Resources.DiskBytes == 0 && pool.Resources.GPUs == 0 {
+		summary.Bottleneck = "invalid_pool_resources"
+		summary.Reason = "invalid pool resources: no positive reservation"
+		summary.CapacityLimit = summary.ActiveWorkers
+		return summary
+	}
+	if pool.Resources.CPUMillis < 0 || pool.Resources.MemoryBytes < 0 || pool.Resources.DiskBytes < 0 || pool.Resources.GPUs < 0 {
+		summary.Bottleneck = "invalid_pool_resources"
+		summary.Reason = "invalid pool resources: negative reservation"
+		summary.CapacityLimit = summary.ActiveWorkers
+		return summary
+	}
+
+	if pool.MaxConcurrency < 0 {
+		summary.Bottleneck = "invalid_pool_concurrency"
+		summary.Reason = fmt.Sprintf("invalid pool max concurrency: %d", pool.MaxConcurrency)
+		summary.CapacityLimit = summary.ActiveWorkers
+		return summary
 	}
 
 	var capacityReasons []string
@@ -160,7 +213,13 @@ func SummarizeCapacity(pool core.RunnerPool, hosts []core.Host, workers []core.W
 			d = &eligibleDomain{capacity: domainCapacity[key], used: used[key]}
 			domains[key] = d
 		}
-		slots := resourceFitCount(d.capacity, d.used, EffectivePoolResources(h, pool))
+		// Mirror SelectHost: a disk-only pool on a trusted tmpfs host has
+		// no effective reservation and must not advertise infinite slots.
+		req := EffectivePoolResources(h, pool)
+		if req.CPUMillis == 0 && req.MemoryBytes == 0 && req.DiskBytes == 0 && req.GPUs == 0 {
+			continue
+		}
+		slots := resourceFitCount(d.capacity, d.used, req)
 		if !d.initialized || slots > d.slots {
 			d.slots = slots
 			d.reason = resourceExhaustionReason(d.capacity, d.used, EffectivePoolResources(h, pool))
@@ -169,12 +228,39 @@ func SummarizeCapacity(pool core.RunnerPool, hosts []core.Host, workers []core.W
 	}
 	for _, d := range domains {
 		summary.PlacementDomains++
-		summary.Capacity = core.Add(summary.Capacity, d.capacity)
-		summary.Reserved = core.Add(summary.Reserved, d.used)
-		summary.AdditionalWorkers += d.slots
+		// Domain totals are diagnostic, but must not wrap into negative values
+		// when multiple large hosts or reservations are aggregated.
+		summary.Capacity = addReservationsSaturating(summary.Capacity, d.capacity)
+		summary.Reserved = addReservationsSaturating(summary.Reserved, d.used)
+		// Saturate aggregate slots: multiple very large placement domains must
+		// never wrap the admission limit negative or below active workers.
+		maxInt := int(^uint(0) >> 1)
+		if d.slots > maxInt-summary.AdditionalWorkers {
+			summary.AdditionalWorkers = maxInt
+		} else {
+			summary.AdditionalWorkers += d.slots
+		}
 		if d.slots == 0 && d.reason != "" {
 			capacityReasons = append(capacityReasons, d.reason)
 		}
+	}
+	sort.Strings(capacityReasons)
+	// AdditionalWorkers is admission capacity, not raw physical slots.
+	// A full pool must advertise zero new workers even when hosts have room.
+	if pool.MaxConcurrency > 0 {
+		remaining := pool.MaxConcurrency - summary.ActiveWorkers
+		if remaining < 0 {
+			remaining = 0
+		}
+		if summary.AdditionalWorkers > remaining {
+			summary.AdditionalWorkers = remaining
+		}
+	}
+	// Preserve the active count and saturate the advertised limit when
+	// aggregate physical slots exceed the platform integer range.
+	maxInt := int(^uint(0) >> 1)
+	if summary.AdditionalWorkers > maxInt-summary.ActiveWorkers {
+		summary.AdditionalWorkers = maxInt - summary.ActiveWorkers
 	}
 	summary.CapacityLimit = summary.ActiveWorkers + summary.AdditionalWorkers
 
@@ -201,24 +287,77 @@ func SummarizeCapacity(pool core.RunnerPool, hosts []core.Host, workers []core.W
 	return summary
 }
 
+// addReservationsSaturating prevents aggregate worker reservations from wrapping
+// into apparent free capacity. Invalid negative accounting fails closed.
+func addReservationsSaturating(a, b core.Resources) core.Resources {
+	const maxInt64 = int64(^uint64(0) >> 1)
+	maxInt := int(^uint(0) >> 1)
+	add64 := func(x, y int64) int64 {
+		if x < 0 || y < 0 || x > maxInt64-y {
+			return maxInt64
+		}
+		return x + y
+	}
+	addInt := func(x, y int) int {
+		if x < 0 || y < 0 || x > maxInt-y {
+			return maxInt
+		}
+		return x + y
+	}
+	return core.Resources{
+		CPUMillis: add64(a.CPUMillis, b.CPUMillis),
+		MemoryBytes: add64(a.MemoryBytes, b.MemoryBytes),
+		DiskBytes: add64(a.DiskBytes, b.DiskBytes),
+		GPUs: addInt(a.GPUs, b.GPUs),
+	}
+}
+
+// nonnegativeHeadroom treats corrupt reservations as exhausted and avoids overflow.
+func nonnegativeHeadroom(total, reserved int64) int64 {
+	if total <= 0 || reserved < 0 || reserved >= total {
+		return 0
+	}
+	return total - reserved
+}
+
 func resourceFitCount(capacity, used, requested core.Resources) int {
 	slots := -1
 	apply := func(available, request int64) {
 		if request <= 0 {
 			return
 		}
-		n := int(available / request)
-		if n < 0 {
-			n = 0
+		// Clamp before converting to int: an unusually large host capacity
+		// must not wrap into a negative slot count and hide usable capacity.
+		n64 := available / request
+		if n64 < 0 {
+			n64 = 0
 		}
+		maxInt := int64(^uint(0) >> 1)
+		if n64 > maxInt {
+			n64 = maxInt
+		}
+		n := int(n64)
 		if slots < 0 || n < slots {
 			slots = n
 		}
 	}
-	apply(capacity.CPUMillis-used.CPUMillis, requested.CPUMillis)
-	apply(capacity.MemoryBytes-used.MemoryBytes, requested.MemoryBytes)
-	apply(capacity.DiskBytes-used.DiskBytes, requested.DiskBytes)
-	apply(int64(capacity.GPUs-used.GPUs), int64(requested.GPUs))
+	// Compute nonnegative headroom without subtracting first. A malformed or
+	// over-reserved host can have used > capacity; direct int64 subtraction
+	// may overflow and incorrectly advertise available worker slots.
+	remaining := func(total, reserved int64) int64 {
+		if total <= 0 || reserved >= total {
+			return 0
+		}
+		if reserved < 0 {
+			// Corrupt accounting cannot establish any safe headroom.
+			return 0
+		}
+		return total - reserved
+	}
+	apply(remaining(capacity.CPUMillis, used.CPUMillis), requested.CPUMillis)
+	apply(remaining(capacity.MemoryBytes, used.MemoryBytes), requested.MemoryBytes)
+	apply(remaining(capacity.DiskBytes, used.DiskBytes), requested.DiskBytes)
+	apply(remaining(int64(capacity.GPUs), int64(used.GPUs)), int64(requested.GPUs))
 	if slots < 0 {
 		return 0
 	}
@@ -256,6 +395,11 @@ func HostRejectionReasonWithCapacity(h core.Host, pool core.RunnerPool, used, ca
 func hostRejectionReasonWithCapacity(h core.Host, pool core.RunnerPool, used, capacity core.Resources) string {
 	if h.SchedulingDisabled {
 		return "host disabled for scheduling"
+	}
+	// A disk-only reservation becomes zero on trusted tmpfs workers. Such a
+	// worker would consume no accounted resources and permit unbounded admission.
+	if r := EffectivePoolResources(h, pool); r.CPUMillis == 0 && r.MemoryBytes == 0 && r.DiskBytes == 0 && r.GPUs == 0 {
+		return "effective pool reservation is zero on this host"
 	}
 	if h.State != core.HostOnline {
 		return "not online"
@@ -382,16 +526,27 @@ func tmpfsWorkdir(provider string, isolation core.IsolationMode) bool {
 
 func resourceExhaustionReason(cap, used, req core.Resources) string {
 	var reasons []string
-	if available := cap.CPUMillis - used.CPUMillis; available < req.CPUMillis {
+	// Check reservations before subtraction: over-reserved or malformed
+	// accounting must not overflow into apparent free host capacity.
+	remaining := func(total, reserved int64) int64 {
+		if total <= 0 || reserved >= total {
+			return 0
+		}
+		if reserved < 0 {
+			return 0
+		}
+		return total - reserved
+	}
+	if available := remaining(cap.CPUMillis, used.CPUMillis); available < req.CPUMillis {
 		reasons = append(reasons, fmt.Sprintf("cpu exhausted (available=%dm requested=%dm)", available, req.CPUMillis))
 	}
-	if available := cap.MemoryBytes - used.MemoryBytes; available < req.MemoryBytes {
+	if available := remaining(cap.MemoryBytes, used.MemoryBytes); available < req.MemoryBytes {
 		reasons = append(reasons, fmt.Sprintf("memory exhausted (available=%d requested=%d)", available, req.MemoryBytes))
 	}
-	if available := cap.DiskBytes - used.DiskBytes; available < req.DiskBytes {
+	if available := remaining(cap.DiskBytes, used.DiskBytes); available < req.DiskBytes {
 		reasons = append(reasons, fmt.Sprintf("disk exhausted (available=%d requested=%d)", available, req.DiskBytes))
 	}
-	if available := cap.GPUs - used.GPUs; available < req.GPUs {
+	if available := remaining(int64(cap.GPUs), int64(used.GPUs)); available < int64(req.GPUs) {
 		reasons = append(reasons, fmt.Sprintf("gpu exhausted (available=%d requested=%d)", available, req.GPUs))
 	}
 	return strings.Join(reasons, ", ")
