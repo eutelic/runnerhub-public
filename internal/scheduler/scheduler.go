@@ -53,7 +53,7 @@ func (s Scheduler) SelectHost(ctx context.Context, pool core.RunnerPool) (Decisi
 	domainCapacity := make(map[string]core.Resources)
 	for _, h := range hosts {
 		byID[h.ID] = h
-		if h.State != core.HostOnline {
+		if h.State != core.HostOnline || h.SchedulingDisabled {
 			continue
 		}
 		key := placementDomainKey(h)
@@ -116,7 +116,7 @@ func SummarizeCapacity(pool core.RunnerPool, hosts []core.Host, workers []core.W
 	domainCapacity := make(map[string]core.Resources)
 	for _, h := range hosts {
 		byID[h.ID] = h
-		if h.State != core.HostOnline {
+		if h.State != core.HostOnline || h.SchedulingDisabled {
 			continue
 		}
 		key := placementDomainKey(h)
@@ -150,7 +150,7 @@ func SummarizeCapacity(pool core.RunnerPool, hosts []core.Host, workers []core.W
 	}
 	domains := map[string]*eligibleDomain{}
 	for _, h := range hosts {
-		if h.State != core.HostOnline || !matchTags(h.Tags, pool.HostSelector) || !supportsIsolation(h, pool.Isolation) || specializedHostRejectionReason(h, pool) != "" {
+		if h.State != core.HostOnline || h.SchedulingDisabled || !matchTags(h.Tags, pool.HostSelector) || !supportsIsolation(h, pool.Isolation) || specializedHostRejectionReason(h, pool) != "" {
 			continue
 		}
 		key := placementDomainKey(h)
@@ -254,6 +254,9 @@ func HostRejectionReasonWithCapacity(h core.Host, pool core.RunnerPool, used, ca
 }
 
 func hostRejectionReasonWithCapacity(h core.Host, pool core.RunnerPool, used, capacity core.Resources) string {
+	if h.SchedulingDisabled {
+		return "host disabled for scheduling"
+	}
 	if h.State != core.HostOnline {
 		return "not online"
 	}

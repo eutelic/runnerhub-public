@@ -319,6 +319,8 @@ els.activeRunners.addEventListener('click',event=>{
   if(button)reconcileFinishedGitHubWorker(button);
 });
 els.hosts.addEventListener('click',e=>{
+  const scheduling=e.target.closest('button[data-host-scheduling-toggle]');
+  if(scheduling){toggleHostScheduling(scheduling);return}
   const inspectUpdate=e.target.closest('button[data-host-update-status]');
   if(inspectUpdate){inspectHostAgentUpdateOperation(inspectUpdate);return}
   const startUpdate=e.target.closest('button[data-host-update-start]');
@@ -525,7 +527,7 @@ function poolConcurrencyBlocker(pool,workers){
 function publisherHostBlocker(pool,hosts){
   if(!isPublisherPool(pool))return '';
   const fleet=Array.isArray(hosts)?hosts:[];
-  const qualified=fleet.filter(h=>String(h.state||'').toLowerCase()==='online'&&
+  const qualified=fleet.filter(h=>String(h.state||'').toLowerCase()==='online'&&h.schedulingDisabled!==true&&
     String(h.tags?.['isolation.container-dind']||'').toLowerCase()==='true');
   if(!qualified.length){
     return 'No online host advertises isolated Docker-in-Docker support. Check Hosts and the machine publisher capability; do not enable privileged workers without verifying its trust level.';
@@ -776,8 +778,9 @@ function renderHosts(hosts,workers=[],poolByID=new Map()){
   if(fallbackDinD.length)warnings.push('<div class="resource-note warn"><strong>DinD aggregate budget unavailable:</strong> '+
     fallbackDinD.map(h=>esc(h.name||h.id)).join(', ')+
     ' will keep conservative x2 CPU/RAM reservation until the aggregate cgroup probe passes.</div>');
+  const disabledCount=hosts.filter(h=>String(h.state||'').toLowerCase()!=='archived'&&h.schedulingDisabled===true).length;
   const summary='<div class="host-counts">'+online.length+' online · '+offline.length+
-    ' offline · '+archived.length+' archived · '+(hosts.length-archived.length)+' active records</div>';
+    ' offline · '+archived.length+' archived · '+(hosts.length-archived.length)+' active records · '+disabledCount+' disabled for scheduling</div>';
   const previousByHost=new Map();
   const hostByID=new Map(hosts.map(h=>[h.id,h]));
   const domainCapacity=new Map();
@@ -848,11 +851,13 @@ function renderHosts(hosts,workers=[],poolByID=new Map()){
     const badgeClass=state==='online'?'badge':state==='offline'?'badge warn':'badge neutral';
     return '<article class="host-card" data-host-id="'+esc(h.id)+'">'+
       '<div class="host-card-top"><div class="host-heading"><strong>'+esc(h.name)+'</strong> '+
-      '<span class="'+badgeClass+'">'+esc(h.state||'unknown')+'</span></div>'+
+      '<span class="'+badgeClass+'">'+esc(h.state||'unknown')+'</span>'+ 
+      (state==='archived'?'':' <span class="badge neutral">'+(h.schedulingDisabled?'Scheduling disabled':'Scheduling enabled')+'</span>')+'</div>'+
       (state==='online'&&String(h.provider||'').toLowerCase()==='docker'
        ? '<button type="button" class="secondary compact" data-host-update-check="'+esc(h.id)+'">Update agent</button>' : '')+
       (state!=='archived'&&String(h.provider||'').toLowerCase()==='docker'
        ? '<button type="button" class="secondary compact" data-host-update-status="'+esc(h.id)+'">Update status</button>' : '')+
+      (state==='archived'?'':'<button type="button" class="secondary compact" data-host-scheduling-toggle="'+esc(h.id)+'" data-host-scheduling-disabled="'+(h.schedulingDisabled?'false':'true')+'">'+(h.schedulingDisabled?'Enable host':'Disable host')+'</button>')+
       (state==='archived'?'':'<button type="button" class="secondary compact" data-host-recover="'+esc(h.id)+'">Repair / re-enroll</button>')+
       (state==='offline'?'<button type="button" class="secondary compact" data-host-archive="'+esc(h.id)+'">Archive old host</button>':'')+
       (state==='offline'&&mergeTargets.length?'<button type="button" class="secondary compact" data-host-archive="'+esc(h.id)+'" data-host-merge="true">Merge into active host</button>':'')+
@@ -863,6 +868,7 @@ function renderHosts(hosts,workers=[],poolByID=new Map()){
       (h.placementDomainId?'<div class="host-identity-note">Shared physical placement domain <code>'+esc(h.placementDomainId)+'</code>; reservations shown here include every agent in that domain.</div>':'')+
       '<div class="host-meta">Workers: '+used.busy+' busy / '+used.active+' active · Agent revision: '+
       '<code title="'+esc(version)+'">'+esc(version?version.slice(0,8):'unknown')+'</code></div>'+
+      (h.schedulingDisabled&&state!=='archived'?'<div class="host-identity-note">New runners will not be assigned here. Existing running workers are not stopped.</div>':'')+
       sameNameNote+sharedCapacityNote+offlineNote+mergedNote+previousNote+updateNote+updateOperationNote+
       (state==='archived'?'':'<details class="host-settings" data-host-settings="'+esc(h.id)+'"><summary>Capacity and scheduling settings</summary>'+
       '<div class="host-resources">'+(h.placementDomainId?'Shared placement-domain resources':'Agent capacity')+' · CPU: '+esc(capacity?.cpuMillis?cpuCores(used.cpu)+' / '+cpuCores(capacity.cpuMillis)+' cores':'unknown')+
@@ -2576,6 +2582,17 @@ async function archiveOldHost(button){
     await refresh(true);
   }catch(e){message('Host archival refused: '+e.message,'error')}
   finally{button.disabled=false}
+}
+
+async function toggleHostScheduling(button){
+  const id=button.dataset.hostSchedulingToggle;
+  const disabled=button.dataset.hostSchedulingDisabled==='true';
+  button.disabled=true;
+  try{
+    await j('/api/v1/hosts/'+encodeURIComponent(id)+'/scheduling',{method:'PUT',headers:{'content-type':'application/json'},body:JSON.stringify({schedulingDisabled:disabled})});
+    message(disabled?'Host disabled for new runner placement. Existing workers remain running.':'Host enabled for runner placement.','success');
+    await refresh(true);
+  }catch(e){message(e.message,'error')}finally{button.disabled=false}
 }
 
 async function saveHostTags(button){

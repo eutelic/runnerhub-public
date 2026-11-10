@@ -28,8 +28,12 @@ func (s *SQLite) Close() error { return nil }
 func (s *SQLite) UpsertHost(_ context.Context, v core.Host) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if old, ok := s.hosts[v.ID]; ok && old.State == core.HostArchived {
-		return ErrHostArchived
+	if old, ok := s.hosts[v.ID]; ok {
+		if old.State == core.HostArchived {
+			return ErrHostArchived
+		}
+		// Heartbeats must not overwrite an operator's scheduling preference.
+		v.SchedulingDisabled = old.SchedulingDisabled
 	}
 	s.hosts[v.ID] = v
 	return nil

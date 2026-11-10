@@ -1009,3 +1009,27 @@ test('inactive agent updater never displays a mutable update action',()=>{
   assert.doesNotMatch(element('hosts').innerHTML,/data-host-update-start=/);
   assert.match(element('hosts').innerHTML,/One-click updates are disabled/);
 });
+
+test('hosts show scheduling status and enable/disable controls regardless of connectivity',()=>{
+  const {ctx,element}=createDashboard();
+  vm.runInContext(`renderHosts([
+    {id:'enabled',name:'compute',state:'online'},
+    {id:'disabled',name:'spare',state:'offline',schedulingDisabled:true},
+    {id:'archived',name:'old',state:'archived',schedulingDisabled:true}
+  ])`,ctx);
+  const html=element('hosts').innerHTML;
+  assert.match(html,/1 disabled for scheduling/);
+  assert.match(html,/data-host-scheduling-toggle="enabled" data-host-scheduling-disabled="true">Disable host/);
+  assert.match(html,/data-host-scheduling-toggle="disabled" data-host-scheduling-disabled="false">Enable host/);
+  assert.match(html,/Existing running workers are not stopped/);
+  assert.doesNotMatch(html,/data-host-scheduling-toggle="archived"/);
+});
+
+test('host scheduling action sends boolean flag to API',async()=>{
+  const {ctx,requestOptions}=createDashboard();
+  vm.runInContext('refresh=async()=>{}',ctx);
+  await vm.runInContext(`toggleHostScheduling({dataset:{hostSchedulingToggle:'h1',hostSchedulingDisabled:'true'},disabled:false})`,ctx);
+  const req=requestOptions.get('/api/v1/hosts/h1/scheduling');
+  assert.equal(req.method,'PUT');
+  assert.deepEqual(JSON.parse(req.body),{schedulingDisabled:true});
+});

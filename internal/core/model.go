@@ -71,22 +71,23 @@ type ResourceUsageSummary struct {
 	UpdatedAt               time.Time `json:"updatedAt,omitempty"`
 }
 type Host struct {
-	ID                string            `json:"id"`
-	Name              string            `json:"name"`
-	Provider          string            `json:"provider"`
-	PlacementDomainID string            `json:"placementDomainId,omitempty"`
-	State             HostState         `json:"state"`
-	OS                string            `json:"os,omitempty"`
-	Architecture      string            `json:"architecture,omitempty"`
-	Tags              map[string]string `json:"tags,omitempty"`
-	SystemTags        map[string]string `json:"systemTags,omitempty"`
-	UserTags          map[string]string `json:"userTags,omitempty"`
-	Priority          int               `json:"priority,omitempty"`
-	Capacity          Resources         `json:"capacity"`
-	AgentVersion      string            `json:"agentVersion,omitempty"`
-	LastSeenAt        time.Time         `json:"lastSeenAt,omitempty"`
-	ArchivedAt        time.Time         `json:"archivedAt,omitempty"`
-	MergedIntoHostID  string            `json:"mergedIntoHostId,omitempty"`
+	ID                 string            `json:"id"`
+	Name               string            `json:"name"`
+	Provider           string            `json:"provider"`
+	PlacementDomainID  string            `json:"placementDomainId,omitempty"`
+	State              HostState         `json:"state"`
+	SchedulingDisabled bool              `json:"schedulingDisabled,omitempty"`
+	OS                 string            `json:"os,omitempty"`
+	Architecture       string            `json:"architecture,omitempty"`
+	Tags               map[string]string `json:"tags,omitempty"`
+	SystemTags         map[string]string `json:"systemTags,omitempty"`
+	UserTags           map[string]string `json:"userTags,omitempty"`
+	Priority           int               `json:"priority,omitempty"`
+	Capacity           Resources         `json:"capacity"`
+	AgentVersion       string            `json:"agentVersion,omitempty"`
+	LastSeenAt         time.Time         `json:"lastSeenAt,omitempty"`
+	ArchivedAt         time.Time         `json:"archivedAt,omitempty"`
+	MergedIntoHostID   string            `json:"mergedIntoHostId,omitempty"`
 }
 
 func MergeHostTags(system, user map[string]string) map[string]string {

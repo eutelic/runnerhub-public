@@ -79,6 +79,7 @@ func (s *Service) Handler() http.Handler {
 	m.HandleFunc("POST /api/v1/hosts/{id}/drain", s.drain)
 	m.HandleFunc("POST /api/v1/hosts/{id}/archive", s.archiveHost)
 	m.HandleFunc("PATCH /api/v1/hosts/{id}", s.updateHost)
+	m.HandleFunc("PUT /api/v1/hosts/{id}/scheduling", s.setHostScheduling)
 	m.HandleFunc("POST /api/v1/hosts/drain", s.bulkDrain)
 	m.HandleFunc("GET /api/v1/pools", s.pools)
 	m.HandleFunc("POST /api/v1/pools", s.createPool)

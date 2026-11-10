@@ -112,7 +112,9 @@ func (s *SQLite) UpsertHost(ctx context.Context, v core.Host) error {
 		return err
 	}
 	res, err := s.db.ExecContext(ctx, `INSERT INTO hosts(id,data,updated_at) VALUES(?,?,?)
- ON CONFLICT(id) DO UPDATE SET data=excluded.data,updated_at=excluded.updated_at
+ ON CONFLICT(id) DO UPDATE SET
+ data=json_set(excluded.data,'$.schedulingDisabled',json(CASE WHEN COALESCE(json_extract(hosts.data,'$.schedulingDisabled'),0)=1 THEN 'true' ELSE 'false' END)),
+ updated_at=excluded.updated_at
  WHERE json_extract(hosts.data,'$.state') != 'archived'`, v.ID, b, time.Now().UTC().Format(time.RFC3339Nano))
 	if err != nil {
 		return err
