@@ -8,6 +8,7 @@ RunnerHub resources. No inspect environment, mounts or credentials are emitted.
 import argparse
 import datetime
 import json
+import re
 import subprocess
 import sys
 
@@ -22,8 +23,8 @@ def json_lines(raw):
 
 
 def runnerhub_labels(labels):
-    return any("runnerhub" in key.lower() or "runnerhub" in str(value).lower()
-               for key, value in labels.items())
+    return any(re.match(r"^(?:org\.)?runnerhub(?:[._/-]|$)", str(key), re.IGNORECASE)
+               for key in labels)
 
 
 def snapshot():

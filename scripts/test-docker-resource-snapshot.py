@@ -12,6 +12,14 @@ spec.loader.exec_module(inventory)
 
 
 class SnapshotTests(unittest.TestCase):
+    def test_ownership_requires_explicit_label_key(self):
+        self.assertFalse(inventory.runnerhub_labels({"description": "not a runnerhub volume"}))
+        self.assertFalse(inventory.runnerhub_labels({"other.runnerhub.note": "runnerhub"}))
+        self.assertFalse(inventory.runnerhub_labels({"runnerhubish": "yes"}))
+        self.assertTrue(inventory.runnerhub_labels({"runnerhub.worker": "42"}))
+        self.assertTrue(inventory.runnerhub_labels({"org.runnerhub.worker": "42"}))
+
+
     def test_unlabeled_volume_never_assumed_owned(self):
         outputs = {
             ("ps", "-a", "--format", "{{json .}}"): '{"ID":"abc"}\n',
