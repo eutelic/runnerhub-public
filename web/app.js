@@ -362,6 +362,8 @@ els.repos.addEventListener('click',e=>{
   if(vercel){saveVercelProfile(vercel);return}
   const emulatorPreset=e.target.closest('button[data-android-emulator-preset]');
   if(emulatorPreset){applyAndroidEmulatorPreset(emulatorPreset);return}
+  const windowsPreset=e.target.closest('button[data-windows-native-preset]');
+  if(windowsPreset){applyWindowsNativePreset(windowsPreset);return}
   const profile=e.target.closest('button[data-profile-action]');
   if(profile){saveRunnerProfile(profile);return}
   const publisher=e.target.closest('button[data-publisher-action]');
@@ -2130,8 +2132,9 @@ function runnerProfileEditor(repo,profiles,standardConnected){
   const disabled=standardConnected?'':' disabled';
   return '<details class="repo-config profile-config">'+
     '<summary>Custom runner profiles'+(active.length?' ('+active.length+')':'')+'</summary>'+
-    '<div class="resource-note muted">Only the dedicated Android emulator profile may use native host execution; ordinary custom profiles must stay container-isolated. The KVM device is verified by the native agent.</div>'+
+    '<div class="resource-note muted">Native profiles run workflow code on the host. They are only for trusted private repositories and require a dedicated non-admin agent account. Windows jobs are pinned to system-reported Windows amd64 hosts; this does not provide VM isolation or make public/fork workflows safe.</div>'+
     '<button type="button" class="secondary compact" data-android-emulator-preset'+disabled+'>Fill Android emulator profile</button>'+
+    '<button type="button" class="secondary compact" data-windows-native-preset'+disabled+'>Fill Windows MSVC profile</button>'+
     '<div class="resource-note muted">Tags are hard placement constraints. Use host priority for normal scheduling preference; use a custom profile when a workflow must explicitly target a machine class such as <code>runnerhub-fast</code>. Verified aggregate-capable hosts enforce one total CPU/RAM budget per DinD worker; unsupported hosts keep conservative two-envelope reservations. DinD auto-sizing uses only verified aggregate samples.</div>'+
     (existing?'<div class="profile-list">'+existing+'</div>':'')+
     '<div class="resource-grid">'+
@@ -2692,6 +2695,26 @@ function applyAndroidEmulatorPreset(button) {
   const auto=panel.querySelector('[data-profile-field="autotune"]');
   if(auto)auto.checked=false;
   message('Dedicated Android emulator profile filled. Connect a native KVM host before enabling it.','info');
+}
+
+function applyWindowsNativePreset(button) {
+  const panel=button.closest('.profile-config');
+  if(!panel)return;
+  const fields={
+    name:'windows',
+    tags:'windows-msvc',
+    isolation:'host-persistent',
+    cpu:'4',
+    memory:'16',
+    concurrency:'1',
+  };
+  for(const [key,value] of Object.entries(fields)){
+    const el=panel.querySelector('[data-profile-field="'+key+'"]');
+    if(el)el.value=value;
+  }
+  const auto=panel.querySelector('[data-profile-field="autotune"]');
+  if(auto)auto.checked=false;
+  message('Windows MSVC profile filled. It targets system-reported Windows amd64 hosts and runs with the enrolled agent account.','info');
 }
 
 async function saveRunnerProfile(button){

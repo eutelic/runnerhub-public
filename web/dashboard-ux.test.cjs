@@ -687,7 +687,7 @@ test('Android emulator profile preset fills only trusted native KVM settings',()
   const {ctx}=createDashboard();
   const html=vm.runInContext("runnerProfileEditor({fullName:'example-org/mobile-app',installationId:1},[],true)",ctx);
   assert.match(html,/data-android-emulator-preset/);
-  assert.match(html,/Only the dedicated Android emulator profile/);
+  assert.match(html,/Native profiles run workflow code on the host/);
 
   const names=['name','tags','isolation','cpu','memory','concurrency','autotune'];
   const fields=new Map(names.map(name=>[name,{value:'',checked:true}]));
@@ -703,6 +703,30 @@ test('Android emulator profile preset fills only trusted native KVM settings',()
   assert.equal(fields.get('isolation').value,'host-persistent');
   assert.equal(fields.get('cpu').value,'4');
   assert.equal(fields.get('memory').value,'8');
+  assert.equal(fields.get('concurrency').value,'1');
+  assert.equal(fields.get('autotune').checked,false);
+});
+
+test('Windows MSVC profile preset selects native Windows amd64 with one worker',()=>{
+  const {ctx}=createDashboard();
+  const html=vm.runInContext("runnerProfileEditor({fullName:'eutelic/ark-compatibility',installationId:1},[],true)",ctx);
+  assert.match(html,/data-windows-native-preset/);
+  assert.match(html,/public\/fork workflows safe/);
+
+  const names=['name','tags','isolation','cpu','memory','concurrency','autotune'];
+  const fields=new Map(names.map(name=>[name,{value:'',checked:true}]));
+  const panel={querySelector(selector){
+    const match=selector.match(/data-profile-field="([^"]+)"/);
+    return match?fields.get(match[1]):null;
+  }};
+  ctx.testWindowsPreset={closest(){return panel}};
+  vm.runInContext('applyWindowsNativePreset(testWindowsPreset)',ctx);
+
+  assert.equal(fields.get('name').value,'windows');
+  assert.equal(fields.get('tags').value,'windows-msvc');
+  assert.equal(fields.get('isolation').value,'host-persistent');
+  assert.equal(fields.get('cpu').value,'4');
+  assert.equal(fields.get('memory').value,'16');
   assert.equal(fields.get('concurrency').value,'1');
   assert.equal(fields.get('autotune').checked,false);
 });

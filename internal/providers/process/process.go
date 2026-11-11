@@ -13,7 +13,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 )
 
@@ -123,11 +122,7 @@ func (p *Provider) Create(ctx context.Context, s provider.WorkerSpec) (provider.
 	if err := os.Remove(exitPath); err != nil && !os.IsNotExist(err) {
 		return provider.WorkerHandle{}, err
 	}
-	script := "run.sh"
-	if runtime.GOOS == "windows" {
-		script = "run.cmd"
-	}
-	cmd := exec.CommandContext(ctx, filepath.Join(workerRunnerDir, script))
+	cmd := nativeRunnerCommand(ctx, workerRunnerDir)
 	cmd.Dir = workerRunnerDir
 	cmd.Env = append(os.Environ(), "ACTIONS_RUNNER_INPUT_JITCONFIG="+s.JITConfig, "RUNNERHUB_WORKER_ID="+s.WorkerID)
 	logf, err := os.OpenFile(filepath.Join(dir, "runner.log"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
@@ -216,24 +211,23 @@ func (p *Provider) Inspect(_ context.Context, h provider.WorkerHandle) (provider
 			}
 		}
 	}
-	proc, err := os.FindProcess(pid)
+	alive, err := nativeProcessAlive(pid)
 	if err != nil {
 		return provider.WorkerState{}, err
 	}
-	if proc.Signal(syscall.Signal(0)) == nil {
+	if alive {
 		return provider.WorkerState{State: core.WorkerReady, SafeDetail: "runner process active"}, nil
 	}
 	// After an agent restart the local wait goroutine is unknown. Never
 	// report an unconfirmed exit as success.
 	return provider.WorkerState{State: core.WorkerFailed, SafeDetail: "native runner disappeared without a confirmed exit code"}, nil
 }
-func (p *Provider) Stop(_ context.Context, h provider.WorkerHandle) error {
+func (p *Provider) Stop(ctx context.Context, h provider.WorkerHandle) error {
 	pid, err := p.pid(h)
 	if err != nil {
 		return nil
 	}
-	proc, _ := os.FindProcess(pid)
-	return proc.Signal(os.Interrupt)
+	return stopNativeProcess(ctx, pid)
 }
 func (p *Provider) Delete(ctx context.Context, h provider.WorkerHandle) error {
 	key := safe(h.ProviderID)

@@ -108,6 +108,8 @@ func TestHostPersistentProfileIsNotGeneralPurpose(t *testing.T) {
 		wantError bool
 	}{
 		{"runnerhub-android-emulator", core.IsolationHostPersistent, false},
+		{"runnerhub-windows", core.IsolationHostPersistent, false},
+		{"runnerhub-windows", core.IsolationContainerTrusted, true},
 		{"runnerhub-fast", core.IsolationHostPersistent, true},
 		{"runnerhub", core.IsolationHostPersistent, true},
 		{"runnerhub-fast", core.IsolationContainerTrusted, false},
@@ -119,6 +121,21 @@ func TestHostPersistentProfileIsNotGeneralPurpose(t *testing.T) {
 		}
 	}
 }
+
+func TestWindowsProfileSelectorRequiresSystemReportedWindowsAMD64(t *testing.T) {
+	got := windowsProfileSelector(windowsScaleSetName, map[string]string{"windows-msvc": "true", "os": "linux", "arch": "arm64"})
+	if got["os"] != "windows" || got["arch"] != "amd64" {
+		t.Fatalf("Windows profile selector=%v, want Windows amd64", got)
+	}
+	if got["windows-msvc"] != "true" {
+		t.Fatalf("Windows profile lost operator tag: %v", got)
+	}
+
+	if got := windowsProfileSelector("runnerhub-fast", map[string]string{"fast": "true"}); len(got) != 1 || got["fast"] != "true" {
+		t.Fatalf("ordinary profile selector changed: %v", got)
+	}
+}
+
 func TestProfileIsolationDefaultsAndAllowsDinD(t *testing.T) {
 	got, err := profileIsolation("", nil)
 	if err != nil {

@@ -272,10 +272,27 @@ func profileIsolation(requested core.IsolationMode, existing *core.RunnerPool) (
 // A native process profile has direct access to the host OS account and must
 // not be selectable as a generic alternative to the isolated Docker profiles.
 func requireDedicatedNativeProfile(name string, isolation core.IsolationMode) error {
-	if isolation == core.IsolationHostPersistent && name != core.AndroidEmulatorScaleSet {
-		return errors.New("host-persistent native execution is restricted to runnerhub-android-emulator")
+	if isolation == core.IsolationHostPersistent && name != core.AndroidEmulatorScaleSet && name != windowsScaleSetName {
+		return errors.New("host-persistent native execution requires a dedicated Android emulator or Windows profile")
+	}
+	if name == windowsScaleSetName && isolation != core.IsolationHostPersistent {
+		return errors.New("runnerhub-windows requires host-persistent isolation on a native Windows host")
 	}
 	return nil
+}
+
+const windowsScaleSetName = "runnerhub-windows"
+
+func windowsProfileSelector(name string, selector map[string]string) map[string]string {
+	if name != windowsScaleSetName {
+		return selector
+	}
+	if selector == nil {
+		selector = map[string]string{}
+	}
+	selector["os"] = "windows"
+	selector["arch"] = "amd64"
+	return selector
 }
 func normalizePublisherResources(requested, fallback core.Resources) core.Resources {
 	if fallback.CPUMillis <= 0 {
@@ -463,7 +480,7 @@ func (s *Service) configureRunnerProfile(w http.ResponseWriter, r *http.Request)
 		problem(w, 400, err)
 		return
 	}
-	if in.Enabled && len(selector) == 0 {
+	if in.Enabled && len(selector) == 0 && name != windowsScaleSetName {
 		problem(w, 400, errors.New("custom runner profile requires at least one machine tag"))
 		return
 	}
@@ -519,6 +536,7 @@ func (s *Service) configureRunnerProfile(w http.ResponseWriter, r *http.Request)
 		problem(w, 400, err)
 		return
 	}
+	selector = windowsProfileSelector(name, selector)
 	max := in.MaxConcurrency
 	if max <= 0 && existing != nil {
 		max = existing.MaxConcurrency
