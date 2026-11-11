@@ -1,6 +1,7 @@
 package deployer
 
 import (
+	"bytes"
 	"context"
 	"crypto/hmac"
 	"crypto/rand"
@@ -13,6 +14,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -26,13 +28,42 @@ const (
 	managementNonceHeader     = "X-RunnerHub-Management-Nonce"
 )
 
+var managedDetailRedactions = []*regexp.Regexp{
+	regexp.MustCompile(`(?i)(authorization\s*:\s*(?:bearer|token|basic)\s+)\S+`),
+	regexp.MustCompile(`(?i)(bearer\s+)[A-Za-z0-9._~+/=-]+`),
+	regexp.MustCompile(`(?i)\b(?:gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,})\b`),
+	regexp.MustCompile(`(?i)\b([A-Z0-9_]*(?:token|secret|password|api[_-]?key|jit[_-]?config|private[_-]?key))(\s*[:=]\s*)("[^"]*"|'[^']*'|[^\s,;&]+)`),
+	regexp.MustCompile(`\b[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b`),
+}
+
+func safeManagedDeploymentDetail(value string) string {
+	value = strings.Join(strings.Fields(value), " ")
+	for i, pattern := range managedDetailRedactions {
+		if i == 3 {
+			value = pattern.ReplaceAllString(value, "$1$2[REDACTED]")
+		} else if i == 0 || i == 1 {
+			value = pattern.ReplaceAllString(value, "$1[REDACTED]")
+		} else {
+			value = pattern.ReplaceAllString(value, "[REDACTED]")
+		}
+	}
+	return bounded(value, 256)
+}
+
+type ManagedDeploymentStatus struct {
+	Result      string    `json:"result"`
+	CompletedAt time.Time `json:"completedAt"`
+	Detail      string    `json:"detail,omitempty"`
+}
+
 type ManagedApp struct {
-	Name      string   `json:"name"`
-	State     string   `json:"state"`
-	Enabled   bool     `json:"enabled"`
-	Protected bool     `json:"protected"`
-	CustomApp bool     `json:"customApp"`
-	Images    []string `json:"images"`
+	Name           string                   `json:"name"`
+	State          string                   `json:"state"`
+	Enabled        bool                     `json:"enabled"`
+	Protected      bool                     `json:"protected"`
+	CustomApp      bool                     `json:"customApp"`
+	Images         []string                 `json:"images"`
+	LastDeployment *ManagedDeploymentStatus `json:"lastDeployment,omitempty"`
 }
 
 type managedSettings struct {
@@ -200,6 +231,65 @@ func (s *Service) protectedApp(name string) bool {
 	return false
 }
 
+// recentManagedDeploymentResults reconstructs the latest durable manual or
+// automatic deployment outcome from the standalone deployer's audited JSONL.
+// Read at most the last 2 MiB, never the full unbounded history, and ignore
+// an incomplete first line when starting in the middle of the file. This is
+// a recent history view; the audit log remains the source of full history.
+func (s *Service) recentManagedDeploymentResults() (map[string]*ManagedDeploymentStatus, error) {
+	results := map[string]*ManagedDeploymentStatus{}
+	if strings.TrimSpace(s.AuditPath) == "" {
+		return results, nil
+	}
+	s.auditMu.Lock()
+	defer s.auditMu.Unlock()
+	file, err := os.Open(s.AuditPath)
+	if errors.Is(err, os.ErrNotExist) {
+		return results, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	stat, err := file.Stat()
+	if err != nil {
+		return nil, err
+	}
+	const maxRead = int64(2 << 20)
+	offset := stat.Size() - maxRead
+	if offset < 0 {
+		offset = 0
+	}
+	if _, err := file.Seek(offset, io.SeekStart); err != nil {
+		return nil, err
+	}
+	data, err := io.ReadAll(io.LimitReader(file, maxRead))
+	if err != nil {
+		return nil, err
+	}
+	if offset > 0 {
+		if firstEnd := bytes.IndexByte(data, '\n'); firstEnd >= 0 {
+			data = data[firstEnd+1:]
+		} else {
+			return results, nil
+		}
+	}
+	for _, raw := range bytes.Split(data, []byte{'\n'}) {
+		if len(raw) == 0 {
+			continue
+		}
+		var record deploymentRecord
+		if json.Unmarshal(raw, &record) != nil || !appNamePattern.MatchString(record.App) ||
+			record.CompletedAt.IsZero() || (record.Result != "success" && record.Result != "failed") {
+			continue
+		}
+		results[record.App] = &ManagedDeploymentStatus{
+			Result: record.Result, CompletedAt: record.CompletedAt, Detail: safeManagedDeploymentDetail(record.Detail),
+		}
+	}
+	return results, nil
+}
+
 func (s *Service) managedCatalog(ctx context.Context) ([]ManagedApp, error) {
 	catalog, ok := s.TrueNAS.(trueNASAppCatalog)
 	if !ok {
@@ -213,18 +303,23 @@ func (s *Service) managedCatalog(ctx context.Context) ([]ManagedApp, error) {
 	if err != nil {
 		return nil, err
 	}
+	lastDeployments, err := s.recentManagedDeploymentResults()
+	if err != nil {
+		return nil, fmt.Errorf("read deployment status: %w", err)
+	}
 	result := make([]ManagedApp, 0, len(apps))
 	for _, app := range apps {
 		if !appNamePattern.MatchString(app.Name) {
 			continue
 		}
 		result = append(result, ManagedApp{
-			Name:      app.Name,
-			State:     app.State,
-			Enabled:   enabled[app.Name],
-			Protected: s.protectedApp(app.Name),
-			CustomApp: app.CustomApp,
-			Images:    app.Images,
+			Name:           app.Name,
+			State:          app.State,
+			Enabled:        enabled[app.Name],
+			Protected:      s.protectedApp(app.Name),
+			CustomApp:      app.CustomApp,
+			Images:         app.Images,
+			LastDeployment: lastDeployments[app.Name],
 		})
 	}
 	sort.Slice(result, func(i, j int) bool { return result[i].Name < result[j].Name })

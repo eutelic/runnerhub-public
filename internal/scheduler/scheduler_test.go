@@ -346,7 +346,7 @@ func TestSummarizeCapacityIdentifiesPoolLimit(t *testing.T) {
 func TestSummarizeCapacityFullPoolAdvertisesNoAdditionalAdmission(t *testing.T) {
 	host := core.Host{
 		ID: "a", Provider: "docker", State: core.HostOnline,
-		Tags: map[string]string{"isolation.container-trusted": "true"},
+		Tags:     map[string]string{"isolation.container-trusted": "true"},
 		Capacity: core.Resources{CPUMillis: 10000, MemoryBytes: 16 << 30},
 	}
 	pool := testPool()
@@ -364,7 +364,7 @@ func TestSummarizeCapacityFullPoolAdvertisesNoAdditionalAdmission(t *testing.T) 
 func TestSummarizeCapacityUnlimitedPoolKeepsPhysicalLimit(t *testing.T) {
 	host := core.Host{
 		ID: "a", Provider: "docker", State: core.HostOnline,
-		Tags: map[string]string{"isolation.container-trusted": "true"},
+		Tags:     map[string]string{"isolation.container-trusted": "true"},
 		Capacity: core.Resources{CPUMillis: 6000, MemoryBytes: 16 << 30},
 	}
 	pool := testPool()
@@ -527,7 +527,9 @@ func TestSelectHostRejectionsAreStableAcrossHostInsertionOrder(t *testing.T) {
 			if err := st.UpsertHost(ctx, core.Host{
 				ID: id, Name: id, Provider: "docker", State: core.HostOffline,
 				Capacity: core.Resources{CPUMillis: 8000, MemoryBytes: 16 << 30},
-			}); err != nil { t.Fatal(err) }
+			}); err != nil {
+				t.Fatal(err)
+			}
 		}
 		_, err = (Scheduler{Store: st}).SelectHost(ctx, testPool())
 		st.Close()
@@ -548,7 +550,7 @@ func TestSelectHostRejectionsAreStableAcrossHostInsertionOrder(t *testing.T) {
 func TestSummarizeCapacityNeverFallsBelowActiveWorkers(t *testing.T) {
 	host := core.Host{
 		ID: "a", Provider: "docker", State: core.HostOnline,
-		Tags: map[string]string{"isolation.container-trusted": "true"},
+		Tags:     map[string]string{"isolation.container-trusted": "true"},
 		Capacity: core.Resources{CPUMillis: 10000, MemoryBytes: 16 << 30},
 	}
 	pool := testPool()
@@ -567,7 +569,7 @@ func TestSummarizeCapacityNeverFallsBelowActiveWorkers(t *testing.T) {
 func TestSelectHostRejectsNegativeResourceReservations(t *testing.T) {
 	for _, tc := range []struct {
 		name string
-		set func(*core.Resources)
+		set  func(*core.Resources)
 	}{
 		{"cpu", func(r *core.Resources) { r.CPUMillis = -1 }},
 		{"memory", func(r *core.Resources) { r.MemoryBytes = -1 }},
@@ -621,7 +623,7 @@ func TestSummarizeCapacityRejectsNegativeReservations(t *testing.T) {
 	pool := testPool()
 	pool.Resources.CPUMillis = -1000
 	host := core.Host{ID: "a", Provider: "docker", State: core.HostOnline,
-		Tags: map[string]string{"isolation.container-trusted": "true"},
+		Tags:     map[string]string{"isolation.container-trusted": "true"},
 		Capacity: core.Resources{CPUMillis: 8000, MemoryBytes: 16 << 30}}
 	got := SummarizeCapacity(pool, []core.Host{host}, nil)
 	if got.Bottleneck != "invalid_pool_resources" || got.AdditionalWorkers != 0 || got.CapacityLimit != 0 {
@@ -647,7 +649,7 @@ func TestNegativePoolConcurrencyFailsClosed(t *testing.T) {
 	}
 	summary := SummarizeCapacity(pool, []core.Host{{
 		ID: "a", Provider: "docker", State: core.HostOnline,
-		Tags: map[string]string{"isolation.container-trusted": "true"},
+		Tags:     map[string]string{"isolation.container-trusted": "true"},
 		Capacity: core.Resources{CPUMillis: 8000, MemoryBytes: 16 << 30},
 	}}, nil)
 	if summary.Bottleneck != "invalid_pool_concurrency" || summary.AdditionalWorkers != 0 || summary.CapacityLimit != 0 {
@@ -719,7 +721,7 @@ func TestZeroResourcePoolFailsClosed(t *testing.T) {
 	}
 	summary := SummarizeCapacity(pool, []core.Host{{
 		ID: "a", Provider: "docker", State: core.HostOnline,
-		Tags: map[string]string{"isolation.container-trusted": "true"},
+		Tags:     map[string]string{"isolation.container-trusted": "true"},
 		Capacity: core.Resources{CPUMillis: 8000, MemoryBytes: 16 << 30},
 	}}, nil)
 	if summary.AdditionalWorkers != 0 || summary.CapacityLimit != 0 || summary.Bottleneck != "invalid_pool_resources" {
@@ -752,7 +754,7 @@ func TestHostRejectionOverReservedDoesNotOverflow(t *testing.T) {
 	const maxInt64 = int64(9223372036854775807)
 	host := core.Host{
 		ID: "over-reserved", Provider: "docker", State: core.HostOnline,
-		Tags: map[string]string{"isolation.container-trusted": "true"},
+		Tags:     map[string]string{"isolation.container-trusted": "true"},
 		Capacity: core.Resources{CPUMillis: 1000, MemoryBytes: 1024, DiskBytes: 1024, GPUs: 1},
 	}
 	pool := testPool()
@@ -778,7 +780,7 @@ func TestWorkerReservationsSaturateWithoutAdvertisingCapacity(t *testing.T) {
 	const maxInt64 = int64(^uint64(0) >> 1)
 	host := core.Host{
 		ID: "a", Name: "a", Provider: "docker", State: core.HostOnline,
-		Tags: map[string]string{"isolation.container-trusted": "true"},
+		Tags:     map[string]string{"isolation.container-trusted": "true"},
 		Capacity: core.Resources{CPUMillis: maxInt64, MemoryBytes: maxInt64, DiskBytes: maxInt64, GPUs: 4},
 	}
 	pool := testPool()
@@ -850,7 +852,7 @@ func TestNegativeHostAccountingFailsClosed(t *testing.T) {
 	host := core.Host{
 		ID: "negative-accounting", Name: "negative-accounting",
 		Provider: "docker", State: core.HostOnline,
-		Tags: map[string]string{"isolation.container-trusted": "true"},
+		Tags:     map[string]string{"isolation.container-trusted": "true"},
 		Capacity: core.Resources{CPUMillis: 8000, MemoryBytes: 16 << 30, DiskBytes: 1000, GPUs: 2},
 	}
 	pool := testPool()
@@ -893,10 +895,10 @@ func TestSelectHostLargeResidualScoreDoesNotOverflow(t *testing.T) {
 	const maxInt64 = int64(^uint64(0) >> 1)
 	for _, h := range []core.Host{
 		{ID: "small", Name: "small", Provider: "docker", State: core.HostOnline,
-			Tags: map[string]string{"isolation.container-trusted": "true"},
+			Tags:     map[string]string{"isolation.container-trusted": "true"},
 			Capacity: core.Resources{CPUMillis: 8000, MemoryBytes: 16 << 30}},
 		{ID: "large", Name: "large", Provider: "docker", State: core.HostOnline,
-			Tags: map[string]string{"isolation.container-trusted": "true"},
+			Tags:     map[string]string{"isolation.container-trusted": "true"},
 			Capacity: core.Resources{CPUMillis: maxInt64, MemoryBytes: maxInt64}},
 	} {
 		if err := st.UpsertHost(ctx, h); err != nil {
@@ -917,7 +919,7 @@ func TestDiskOnlyTmpfsPoolCannotAdmitUnaccountedWorkers(t *testing.T) {
 	defer st.Close()
 	ctx := context.Background()
 	h := core.Host{ID: "tmpfs", Name: "tmpfs", Provider: "docker", State: core.HostOnline,
-		Tags: map[string]string{"isolation.container-trusted": "true"},
+		Tags:     map[string]string{"isolation.container-trusted": "true"},
 		Capacity: core.Resources{CPUMillis: 8000, MemoryBytes: 16 << 30, DiskBytes: 100 << 30}}
 	if err := st.UpsertHost(ctx, h); err != nil {
 		t.Fatal(err)

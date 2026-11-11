@@ -1250,11 +1250,16 @@ function renderManagedDeployerApps(apps){
     const lastStatus=automatic?.lastResult?
       '<span class="muted small">Last publishing run: '+esc(automatic.lastResult)+
       (automatic.lastDetail?' · '+esc(automatic.lastDetail):'')+'</span>':'';
+    const lastDeploy=app.lastDeployment;
+    const deployStatus=lastDeploy?.result?
+      '<span class="muted small">Last deployment: '+esc(lastDeploy.result)+
+      (lastDeploy.completedAt?' · '+esc(fmtTime(lastDeploy.completedAt)):'')+
+      (lastDeploy.detail?' · '+esc(lastDeploy.detail):'')+'</span>':'';
     return '<div class="deployer-app-row">'+
       '<div class="deployer-app-name"><strong>'+name+'</strong>'+
         '<span class="muted small">'+esc(app.state||'Unknown state')+
         (isProtected?' · Managed by existing deployment configuration':'')+'</span>'+
-        lastStatus+
+        lastStatus+deployStatus+
       '</div>'+
       '<div class="deployer-app-actions">'+
         '<label class="check-row"><input type="checkbox" data-deployer-enabled="'+name+'" '+

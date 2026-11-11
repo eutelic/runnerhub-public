@@ -143,6 +143,21 @@ func TestManagedAppTogglePersistenceAndRedeploy(t *testing.T) {
 		t.Fatalf("redeploy targets=%v", fake.apps)
 	}
 	fake.mu.Unlock()
+	// The last redeploy result is served from the durable audit after a
+	// service restart; it must not depend on transient browser notifications.
+	after, err := restarted.managedCatalog(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range after {
+		if item.Name != "file-ingest" {
+			continue
+		}
+		if item.LastDeployment == nil || item.LastDeployment.Result != "success" ||
+			item.LastDeployment.CompletedAt.IsZero() {
+			t.Fatalf("missing durable manual redeploy status: %+v", item.LastDeployment)
+		}
+	}
 
 	disable := httptest.NewRecorder()
 	restarted.Handler().ServeHTTP(disable, signedManagedRequest(t, key, "POST", enablePath, `{"enabled":false}`))
@@ -153,6 +168,43 @@ func TestManagedAppTogglePersistenceAndRedeploy(t *testing.T) {
 	restarted.Handler().ServeHTTP(denied, signedManagedRequest(t, key, "POST", managementPrefix+"/file-ingest/redeploy", ""))
 	if denied.Code != http.StatusForbidden {
 		t.Fatalf("disabled app redeploy status=%d, want 403", denied.Code)
+	}
+}
+
+func TestManagedAppLastDeploymentResultIsScopedAndDurable(t *testing.T) {
+	root := t.TempDir()
+	service := newManagedService(t, testManagedInventory(), root)
+	now := time.Now().UTC()
+	for _, rec := range []deploymentRecord{
+		{ID: "success-first", App: "file-ingest", Result: "success", CompletedAt: now.Add(-time.Minute)},
+		{ID: "failure-last", App: "file-ingest", Result: "failed", Detail: "image pull failed", CompletedAt: now},
+		{ID: "other-app", App: "jellyfin", Result: "success", CompletedAt: now},
+	} {
+		if err := service.appendAudit(rec); err != nil {
+			t.Fatal(err)
+		}
+	}
+	restarted := newManagedService(t, testManagedInventory(), root)
+	apps, err := restarted.managedCatalog(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, app := range apps {
+		switch app.Name {
+		case "file-ingest":
+			if app.LastDeployment == nil || app.LastDeployment.Result != "failed" ||
+				app.LastDeployment.Detail != "image pull failed" || !app.LastDeployment.CompletedAt.Equal(now) {
+				t.Fatalf("failed deploy result not preserved: %+v", app.LastDeployment)
+			}
+		case "jellyfin":
+			if app.LastDeployment == nil || app.LastDeployment.Result != "success" {
+				t.Fatalf("other app deployment missing: %+v", app.LastDeployment)
+			}
+		default:
+			if app.LastDeployment != nil {
+				t.Fatalf("app %q inherited unrelated deployment result: %+v", app.Name, app.LastDeployment)
+			}
+		}
 	}
 }
 
@@ -331,5 +383,26 @@ func TestManagedAppPinnedRedeployRequiresAuthenticationAndEnabledApp(t *testing.
 	svc.Handler().ServeHTTP(stale, signedManagedRequest(t, svc.ManagementKey, "POST", path, payload))
 	if stale.Code != http.StatusConflict || len(fake.apps) != 1 {
 		t.Fatalf("accepted pinned deployment with outdated source: %d apps=%v", stale.Code, fake.apps)
+	}
+}
+
+func TestSafeManagedDeploymentDetailRedactsCredentials(t *testing.T) {
+	for _, input := range []string{
+		"request failed: Authorization: Bearer very-secret-value",
+		"token=do-not-show-this",
+		"RUNNERHUB_DEPLOY_TOKEN=deploy-secret-do-not-show-this",
+		"GitHub PAT ghp_123456789012345678901234567890123456",
+		"service response: eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.signaturevalue123456",
+	} {
+		got := safeManagedDeploymentDetail(input)
+		if strings.Contains(got, "very-secret-value") || strings.Contains(got, "do-not-show-this") ||
+			strings.Contains(got, "deploy-secret-do-not-show-this") ||
+			strings.Contains(got, "ghp_123456789012345678901234567890123456") ||
+			strings.Contains(got, "eyJhbGciOiJIUzI1NiJ9") {
+			t.Fatalf("sensitive value was not redacted: %q", got)
+		}
+	}
+	if got := safeManagedDeploymentDetail("image pull failed"); got != "image pull failed" {
+		t.Fatalf("ordinary diagnostic changed: %q", got)
 	}
 }

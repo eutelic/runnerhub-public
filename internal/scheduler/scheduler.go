@@ -305,10 +305,10 @@ func addReservationsSaturating(a, b core.Resources) core.Resources {
 		return x + y
 	}
 	return core.Resources{
-		CPUMillis: add64(a.CPUMillis, b.CPUMillis),
+		CPUMillis:   add64(a.CPUMillis, b.CPUMillis),
 		MemoryBytes: add64(a.MemoryBytes, b.MemoryBytes),
-		DiskBytes: add64(a.DiskBytes, b.DiskBytes),
-		GPUs: addInt(a.GPUs, b.GPUs),
+		DiskBytes:   add64(a.DiskBytes, b.DiskBytes),
+		GPUs:        addInt(a.GPUs, b.GPUs),
 	}
 }
 
