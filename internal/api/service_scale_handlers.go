@@ -3,6 +3,7 @@ package api
 import (
 	"errors"
 	"github.com/eutelic/runnerhub/internal/core"
+	"github.com/eutelic/runnerhub/internal/githubrunner"
 	"net/http"
 	"strconv"
 	"strings"
@@ -90,7 +91,7 @@ func (s *Service) scaleSetConfigs(w http.ResponseWriter, r *http.Request) {
 	}
 	out := []scaleSetConfigResponse{}
 	for _, p := range pools {
-		if p.Scope.Kind != core.ScopeRepository {
+		if p.Scope.Kind != core.ScopeRepository && p.Scope.Kind != core.ScopeOrganization {
 			continue
 		}
 		if p.ScaleSetDisabled {
@@ -109,11 +110,55 @@ func (s *Service) scaleSetConfigs(w http.ResponseWriter, r *http.Request) {
 			}
 			continue
 		}
+		registrationURL := "https://github.com/" + p.Scope.Owner + "/" + p.Scope.Repository
+		runnerGroup := ""
+		if p.Scope.Kind == core.ScopeOrganization {
+			if len(p.AllowedRepositories) == 0 || s.Catalog == nil {
+				detail := "organization pool needs an explicit private repository allowlist and verified runner group"
+				status, changed := s.setScaleSetStatus(p.ID, "error", detail)
+				if changed {
+					_ = s.Store.AppendAudit(r.Context(), core.AuditEvent{Actor: "control", Action: "scaleset_configuration", ResourceType: "pool", ResourceID: p.ID, Result: "error", SafeDetail: status.Detail})
+				}
+				continue
+			}
+			posture, err := githubrunner.InspectPoolSecurity(r.Context(), s.Catalog, p)
+			if err != nil || !posture.Safe || len(posture.Warnings) > 0 {
+				detail := "organization runner group security check failed"
+				if err != nil {
+					detail += ": " + truncate(err.Error())
+				} else {
+					reasons := append([]string(nil), posture.Reasons...)
+					reasons = append(reasons, posture.Warnings...)
+					detail += ": " + strings.Join(reasons, "; ")
+				}
+				status, changed := s.setScaleSetStatus(p.ID, "error", detail)
+				if changed {
+					_ = s.Store.AppendAudit(r.Context(), core.AuditEvent{Actor: "control", Action: "scaleset_configuration", ResourceType: "pool", ResourceID: p.ID, Result: "error", SafeDetail: status.Detail})
+				}
+				continue
+			}
+			group, err := s.Catalog.GetRunnerGroup(r.Context(), p.Scope.Owner, int64(p.RunnerGroupID))
+			if err != nil || group.Name == "" {
+				detail := "organization runner group name could not be verified"
+				if err != nil {
+					detail += ": " + truncate(err.Error())
+				}
+				status, changed := s.setScaleSetStatus(p.ID, "error", detail)
+				if changed {
+					_ = s.Store.AppendAudit(r.Context(), core.AuditEvent{Actor: "control", Action: "scaleset_configuration", ResourceType: "pool", ResourceID: p.ID, Result: "error", SafeDetail: status.Detail})
+				}
+				continue
+			}
+			registrationURL = "https://github.com/" + p.Scope.Owner
+			runnerGroup = group.Name
+		} else if p.Scope.Kind != core.ScopeRepository {
+			continue
+		}
 		name := strings.TrimSpace(p.ScaleSetName)
 		if name == "" {
 			name = "runnerhub"
 		}
-		out = append(out, scaleSetConfigResponse{RegistrationURL: "https://github.com/" + p.Scope.Owner + "/" + p.Scope.Repository, Name: name, Labels: p.Labels, PoolID: p.ID, MinRunners: p.MinIdle, MaxRunners: p.MaxConcurrency, AppInstallationID: p.GitHubInstallationID})
+		out = append(out, scaleSetConfigResponse{RegistrationURL: registrationURL, Name: name, Labels: p.Labels, RunnerGroup: runnerGroup, PoolID: p.ID, MinRunners: p.MinIdle, MaxRunners: p.MaxConcurrency, AppInstallationID: p.GitHubInstallationID})
 	}
 	writeJSON(w, 200, out)
 }

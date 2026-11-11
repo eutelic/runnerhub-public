@@ -24,6 +24,36 @@ The default Docker path uses the same GitHub App private key as the control plan
 
 For repository-scoped scale sets, follow GitHub's current Actions Runner Controller guidance for GitHub App permissions: repository Administration read/write, Actions read-only, Pull requests read-only, and Metadata read-only. Organization-scoped scale sets require the corresponding organization self-hosted-runner permission and should use a deliberately restricted runner group.
 
+## Shared organization pools
+
+The Repositories page can configure a shared organization pool for selected
+private repositories. First install the RunnerHub GitHub App on the
+organization with organization self-hosted-runner administration and access to
+the repositories that should use the pool. In GitHub, create or select a runner
+group whose visibility is **selected repositories**, allow only the intended
+private repositories, and disable public repository access. If workflows also
+need a GitHub-enforced allowlist, restrict that runner group to the selected
+workflow refs.
+
+In RunnerHub, choose the organization, the restricted runner group, the private
+repository allowlist, and a scale-set label such as `runnerhub-org`. Use a new
+label while migrating from repository pools; RunnerHub rejects a label that
+would route the same repository through both a shared and dedicated pool.
+Update workflow `runs-on` labels deliberately, verify the shared listener and a
+real smoke job, then disable the old pool after its jobs drain. RunnerHub
+checks every repository against the signed-in App installation, checks the
+group's live visibility and selected repositories, and refuses public or
+broader-than-allowlisted access. The listener registers at the organization
+URL and uses the verified runner-group name. Pool policy checks the same
+repository/workflow allowlists again when a runner is admitted. Disabling the
+pool stops its listener configuration; existing jobs can drain.
+
+The `runnerhub` label can be shared by approved trusted repositories. Keep
+publisher and hardware-specific pools dedicated when their privilege or
+placement requirements differ. Shared organization pools change routing and
+do not add physical capacity. They still require a live multi-repository
+smoke and migration/rollback acceptance before production reliance.
+
 ## Lifecycle behavior
 
 The adapter restores active RunnerHub workers after listener restart and clamps its configured maximum to the RunnerHub pool's `maxConcurrency` value. Completed jobs remove the corresponding in-memory scale-set worker entry, while RunnerHub independently reconciles provider cleanup.

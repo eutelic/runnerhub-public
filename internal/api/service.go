@@ -111,6 +111,7 @@ func (s *Service) Handler() http.Handler {
 	m.HandleFunc("GET /api/v1/github/connected-repositories", s.connectedRepositories)
 	m.HandleFunc("GET /api/v1/github/repositories/{owner}/{repo}/queued-jobs", s.queuedGitHubJobs)
 	m.HandleFunc("POST /api/v1/github/connect", s.connectRepository)
+	m.HandleFunc("POST /api/v1/github/organization-pools", s.configureOrganizationPool)
 	m.HandleFunc("POST /api/v1/github/profile", s.configureRunnerProfile)
 	m.HandleFunc("POST /api/v1/github/publisher", s.configurePublisherRepository)
 	m.HandleFunc("GET /api/v1/github/runner-groups", s.runnerGroups)

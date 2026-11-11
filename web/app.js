@@ -36,6 +36,10 @@ const els={
 let csrf='';
 let auth={enabled:false,authenticated:false};
 let lastRepoRenderArgs=null;
+let organizationPoolInstallations=[];
+let organizationPoolRepositories=[];
+let organizationPoolRecords=new Map();
+let organizationPoolLoadedAccount='';
 const bulkSelected=new Set();
 let bulkConnecting=false;
 let hiddenRepoAccounts=loadHiddenRepoAccounts();
@@ -383,6 +387,19 @@ els.repos.addEventListener('change',e=>{
   if(!account)return;
   setRepoAccountVisibility(account.dataset.repoAccountToggle,account.checked);
   rerenderRepositories();
+});
+document.getElementById('org-pool-account')?.addEventListener('change',()=>{
+  organizationPoolLoadedAccount='';
+  if(lastRepoRenderArgs)renderOrganizationPoolSetup(lastRepoRenderArgs[0],lastRepoRenderArgs[1],lastRepoRenderArgs[2],lastRepoRenderArgs[5]);
+});
+document.getElementById('org-pool-save')?.addEventListener('click',()=>saveOrganizationPool(true));
+document.getElementById('org-pool-isolation')?.addEventListener('change',e=>{
+  const name=document.getElementById('org-pool-name');
+  if(name)name.value=e.target.value==='container-dind'?'runnerhub-publisher':'runnerhub-org';
+});
+document.getElementById('org-pool-existing')?.addEventListener('click',e=>{
+  const button=e.target.closest('button[data-org-pool-toggle]');
+  if(button)saveOrganizationPool(!organizationPoolRecords.get(button.dataset.orgPoolToggle)?.scaleSetDisabled,organizationPoolRecords.get(button.dataset.orgPoolToggle));
 });
 
 function loadHiddenRepoAccounts(){
@@ -2152,6 +2169,7 @@ function runnerProfileEditor(repo,profiles,standardConnected){
 
 function renderRepos(repos,pools,statuses,runtimeHealth,hosts,installations){
   lastRepoRenderArgs=[repos,pools,statuses,runtimeHealth,hosts,installations];
+  renderOrganizationPoolSetup(repos,pools,statuses,installations);
   const poolsByRepo=new Map();
   (pools||[]).filter(p=>p.scope?.kind==='repository').forEach(p=>{
     const key=(p.scope.owner+'/'+p.scope.repository).toLowerCase();
@@ -2286,6 +2304,85 @@ function renderRepos(repos,pools,statuses,runtimeHealth,hosts,installations){
   const empty=visibleRepos.length?'':'<div class="empty">No repositories match the current search and visibility filters.</div>';
   els.repos.innerHTML=accountHint+count+groups+empty;
   updateBulkCount();
+}
+
+function renderOrganizationPoolSetup(repos,pools,statuses,installations){
+  const accountSelect=document.getElementById('org-pool-account');
+  const groupSelect=document.getElementById('org-pool-group');
+  const repoSelect=document.getElementById('org-pool-repositories');
+  const existing=document.getElementById('org-pool-existing');
+  if(!accountSelect||!groupSelect||!repoSelect||!existing)return;
+  organizationPoolInstallations=(installations||[]).filter(x=>String(x.accountType||'').toLowerCase()==='organization');
+  organizationPoolRepositories=(repos||[]).filter(x=>String(x.accountType||'').toLowerCase()==='organization'&&x.private);
+  organizationPoolRecords=new Map((pools||[]).filter(p=>p.scope?.kind==='organization').map(p=>[p.id,p]));
+  const selected=accountSelect.value||organizationPoolInstallations[0]?.account||'';
+  accountSelect.innerHTML=organizationPoolInstallations.map(x=>'<option value="'+esc(x.account)+'" data-installation="'+esc(x.installationId)+'">@'+esc(x.account)+'</option>').join('');
+  if(organizationPoolInstallations.some(x=>String(x.account).toLowerCase()===String(selected).toLowerCase()))accountSelect.value=selected;
+  else accountSelect.selectedIndex=0;
+  const org=accountSelect.value;
+  const installation=organizationPoolInstallations.find(x=>String(x.account).toLowerCase()===String(org).toLowerCase());
+  const allowed=organizationPoolRepositories.filter(x=>String(x.account||x.fullName?.split('/')[0]||'').toLowerCase()===String(org).toLowerCase()&&Number(x.installationId)===Number(installation?.installationId));
+  const prior=new Set([...(repoSelect.selectedOptions||[])].map(x=>x.value.toLowerCase()));
+  repoSelect.innerHTML=allowed.map(x=>'<option value="'+esc(x.fullName)+'"'+(prior.has(String(x.fullName).toLowerCase())?' selected':'')+'>'+esc(x.fullName)+'</option>').join('');
+  if(!allowed.length)repoSelect.innerHTML='<option disabled>No private repositories are available in this installation</option>';
+  if(!organizationPoolLoadedAccount||organizationPoolLoadedAccount.toLowerCase()!==String(org).toLowerCase()){
+    organizationPoolLoadedAccount=String(org||'');
+    groupSelect.disabled=true;
+    groupSelect.innerHTML='<option value="">Loading restricted groups…</option>';
+    if(org)loadOrganizationRunnerGroups();
+    else groupSelect.innerHTML='<option value="">Install RunnerHub on an organization first</option>';
+  }
+  const statusByPool=new Map((statuses||[]).map(s=>[s.poolId,s]));
+  const configured=[...organizationPoolRecords.values()].map(p=>{
+    const status=statusByPool.get(p.id)?.state||'unknown';
+    const action=p.scaleSetDisabled?'Enable':'Disable';
+    return '<div class="profile-row"><div><strong>@'+esc(p.scope.owner)+' / '+esc(p.scaleSetName||'runnerhub')+'</strong><div class="muted small">'+esc((p.allowedRepositories||[]).length)+' private repositories · group '+esc(p.runnerGroupId)+' · '+esc(status)+'</div></div><button type="button" class="secondary compact" data-org-pool-toggle="'+esc(p.id)+'">'+action+'</button></div>';
+  }).join('');
+  existing.innerHTML=configured||'<div class="muted small">No shared organization pools configured.</div>';
+}
+
+async function loadOrganizationRunnerGroups(){
+  const account=document.getElementById('org-pool-account')?.value||'';
+  const select=document.getElementById('org-pool-group');
+  if(!select)return;
+  if(!account){select.disabled=true;select.innerHTML='<option value="">Choose an organization first</option>';return}
+  select.disabled=true;
+  try{
+    const groups=await j('/api/v1/github/runner-groups?org='+encodeURIComponent(account));
+    const safe=(groups||[]).filter(g=>String(g.visibility).toLowerCase()==='selected'&&!g.allows_public_repositories);
+    select.innerHTML=safe.map(g=>'<option value="'+esc(g.id)+'">'+esc(g.name)+' · selected repositories only</option>').join('')||'<option value="">No restricted runner groups available</option>';
+    select.disabled=!safe.length;
+  }catch(e){select.innerHTML='<option value="">Could not verify organization runner groups</option>';message(e.message,'error')}
+}
+
+async function saveOrganizationPool(enabled,pool){
+  const status=document.getElementById('org-pool-status');
+  const account=document.getElementById('org-pool-account');
+  const installation=organizationPoolInstallations.find(x=>String(x.account).toLowerCase()===String(account?.value||'').toLowerCase());
+  const repositories=pool?(pool.allowedRepositories||[]):[...document.getElementById('org-pool-repositories').selectedOptions].map(x=>x.value);
+  const body={
+    organization:pool?.scope?.owner||account?.value||'',
+    installationId:Number(pool?.githubInstallationId||installation?.installationId),
+    runnerGroupId:Number(pool?.runnerGroupId||document.getElementById('org-pool-group').value),
+    scaleSetName:pool?.scaleSetName||document.getElementById('org-pool-name').value.trim()||'runnerhub-org',
+    allowedRepositories:repositories,
+    allowedWorkflows:pool?.allowedWorkflows||document.getElementById('org-pool-workflows').value.split(',').map(x=>x.trim()).filter(Boolean),
+    maxConcurrency:Number(pool?.maxConcurrency||document.getElementById('org-pool-concurrency').value||2),
+    isolation:pool?.isolation||document.getElementById('org-pool-isolation').value||'container-trusted',
+    resources:pool?.resources||{cpuMillis:2500,memoryBytes:4294967296,diskBytes:21474836480},
+    enabled
+  };
+  if(!body.organization||!body.installationId||!body.runnerGroupId||!body.allowedRepositories.length){
+    if(status)status.textContent='Choose an organization, restricted runner group, and at least one private repository.';
+    return;
+  }
+  const button=document.getElementById('org-pool-save');if(button)button.disabled=true;
+  try{
+    await j('/api/v1/github/organization-pools',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});
+    if(status)status.textContent=enabled?'Shared organization pool saved. Wait for listener readiness, then run a real smoke workflow.':'Shared organization listener disabled; active jobs can drain.';
+    await refresh();
+  }catch(e){if(status)status.textContent=e.message}
+  finally{if(button)button.disabled=false}
 }
 function loadMachineBootstrap(){
   try{

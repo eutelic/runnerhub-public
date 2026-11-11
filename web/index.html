@@ -233,6 +233,25 @@
           <button id="copy-smoke-workflow" class="secondary compact" type="button">Copy smoke workflow</button>
         </div>
       </details>
+      <details class="advanced-details" id="organization-pool-setup">
+        <summary>Shared organization runner pool</summary>
+        <div class="advanced-body">
+          <p class="resource-note">Share standard capacity across selected private repositories. RunnerHub requires a GitHub organization runner group restricted to selected repositories; public access is rejected. Existing repository-specific pools remain available for publishers and specialized workloads.</p>
+          <div class="resource-grid">
+            <label>GitHub organization<select id="org-pool-account"></select></label>
+            <label>Runner group<select id="org-pool-group" disabled><option value="">Choose an organization first</option></select></label>
+            <label>Workload class<select id="org-pool-isolation"><option value="container-trusted">Shared standard</option><option value="container-dind">Restricted shared publisher (privileged Docker)</option></select></label>
+            <label>Scale-set label<input id="org-pool-name" value="runnerhub-org" maxlength="63"></label>
+            <label>Max concurrent runners<input id="org-pool-concurrency" type="number" min="1" max="500" value="2"></label>
+          </div>
+          <label>Authorized private repositories<select id="org-pool-repositories" multiple size="6"></select></label>
+          <div class="resource-note muted">For a shared publisher pool, GitHub runner-group access must stay limited to the selected private repositories, and RunnerHub must have privileged workers enabled with a compatible Docker host.</div>
+          <label>Allowed workflows (optional, comma-separated full refs)<input id="org-pool-workflows" placeholder="acme/app/.github/workflows/ci.yml@main"></label>
+          <button type="button" id="org-pool-save">Create / update shared pool</button>
+          <div id="org-pool-status" class="status-message" aria-live="polite"></div>
+          <div id="org-pool-existing" class="profile-list"></div>
+        </div>
+      </details>
       <div class="repo-toolbar" role="search">
         <label class="repo-search-label">
           <span class="muted small">Find repositories</span>
