@@ -120,9 +120,10 @@ The scale-set process fetches this limit **before opening its GitHub message
 session**, and refreshes it every 10 seconds independently of job message
 arrival. A missing/malformed field fails closed instead of falling back to
 static, potentially fictitious pool concurrency. **Upgrade the controller
-first**; older controllers do not expose this field. A transient refresh
-error retains the last verified limit; the control-plane scheduler still
-independently enforces fresh host/resource admission.
+first**; older controllers do not expose this field. A failed refresh withdraws the advertised limit to zero until a fresh
+controller read succeeds. This is deliberately conservative: stale capacity is
+not advertised during an outage, and the control-plane scheduler independently
+enforces current host/resource admission.
 
 This remains a **per-pool upper bound**, not a distributed atomic claim on a
 shared physical slot. Separate pools may simultaneously see the same free slot
@@ -133,3 +134,20 @@ updates do not guarantee instantaneous GitHub queue dispatch or a reduction
 in queue p95 until tested against production workloads.
 
 Reference: https://pkg.go.dev/github.com/actions/scaleset@v0.5.0/listener
+
+## 2026-11-10 deterministic contention evidence
+
+`TestSimultaneousScaleSetDemandsCannotDoubleReserveOnePhysicalSlot` starts two
+repository pools against one host that can fit exactly one worker, releases the
+admission calls simultaneously, and verifies one durable provisioning
+reservation wins. This checks the current single-control-plane lock and shared
+placement-domain accounting across pools. It does not establish a distributed
+lease across multiple control-plane processes or global fairness under sustained
+demand.
+
+The per-pool advertisement can still show the same unreserved slot to multiple
+listeners until one admission wins. Keep GitHub as the job queue and preserve
+the server admission fence; a durable cross-pool lease and work-conserving
+fairness policy remain internal follow-up work. Production acceptance still requires the
+controlled bursts and cancellation/restart experiments above, measured against
+the internal follow-up baseline.

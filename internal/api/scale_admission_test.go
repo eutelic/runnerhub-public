@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/eutelic/runnerhub/internal/agent"
@@ -106,6 +107,80 @@ func TestScaleAdmissionRedeliveryIsIdempotentAcrossControllerRestart(t *testing.
 	}
 	if newRunner.ID == first.ID {
 		t.Fatal("new job reused a terminal worker ID")
+	}
+}
+
+func TestSimultaneousScaleSetDemandsCannotDoubleReserveOnePhysicalSlot(t *testing.T) {
+	ctx := context.Background()
+	db, err := store.OpenSQLite(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	hub, err := agenthub.New(db, "0123456789abcdef", "0123456789abcdef0123456789abcdef")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = hub.Enroll(ctx, "0123456789abcdef", agent.EnrollRequest{
+		Name: "single-slot", Provider: "docker", Capabilities: provider.Capabilities{
+			Provider: "docker", Capacity: core.Resources{CPUMillis: 1000, MemoryBytes: 1 << 30},
+			IsolationModes: []core.IsolationMode{core.IsolationContainerTrusted},
+			Labels:         map[string]string{"isolation.container-trusted": "true"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pools := []core.RunnerPool{
+		{ID: "pool-a", Name: "a", Scope: core.GitHubScope{Kind: core.ScopeRepository, Owner: "acme", Repository: "a"}, Labels: []string{"runnerhub"}, Isolation: core.IsolationContainerTrusted, Resources: core.Resources{CPUMillis: 1000, MemoryBytes: 1 << 30}, MaxConcurrency: 1, RunnerGroupID: 1, Image: "img"},
+		{ID: "pool-b", Name: "b", Scope: core.GitHubScope{Kind: core.ScopeRepository, Owner: "acme", Repository: "b"}, Labels: []string{"runnerhub"}, Isolation: core.IsolationContainerTrusted, Resources: core.Resources{CPUMillis: 1000, MemoryBytes: 1 << 30}, MaxConcurrency: 1, RunnerGroupID: 1, Image: "img"},
+	}
+	for _, pool := range pools {
+		if err := db.UpsertPool(ctx, pool); err != nil {
+			t.Fatal(err)
+		}
+	}
+	service := &Service{Store: db, Hub: hub, Scheduler: scheduler.Scheduler{Store: db}}
+	type result struct {
+		worker core.Worker
+		err    error
+	}
+	results := make(chan result, len(pools))
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for i, pool := range pools {
+		wg.Add(1)
+		go func(i int, pool core.RunnerPool) {
+			defer wg.Done()
+			<-start
+			worker, err := service.enqueueWorker(ctx, pool, "runner-"+pool.ID, int64(100+i), "encoded-jit", pool.Scope.Owner+"/"+pool.Scope.Repository, "")
+			results <- result{worker: worker, err: err}
+		}(i, pool)
+	}
+	close(start)
+	wg.Wait()
+	close(results)
+	admitted := 0
+	rejected := 0
+	for item := range results {
+		if item.err == nil {
+			admitted++
+			if item.worker.HostID == "" {
+				t.Fatalf("admitted worker has no host: %+v", item.worker)
+			}
+		} else {
+			rejected++
+		}
+	}
+	if admitted != 1 || rejected != 1 {
+		t.Fatalf("two pools contending for one physical slot: admitted=%d rejected=%d", admitted, rejected)
+	}
+	workers, err := db.ListWorkers(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(workers) != 1 || !scheduler.OccupiesHostResources(workers[0]) {
+		t.Fatalf("unexpected physical reservation ledger: %+v", workers)
 	}
 }
 

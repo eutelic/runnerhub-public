@@ -35,8 +35,8 @@ type runnerCapacitySetter interface {
 // The SDK makes SetMaxRunners concurrently safe with listener.Run. Polling is
 // independent of GitHub demand messages, so an offline/drained host becoming
 // eligible can raise the advertised capacity without restarting the session.
-// A failed refresh retains the last verified bound; host admission still
-// independently rejects stale capacity and no new unlimited value is used.
+// A failed refresh drops the advertised bound to zero until fresh controller
+// evidence returns; an unreachable controller cannot keep stale capacity open.
 func refreshAdvertisedCapacity(ctx context.Context, hub runnerHubClient, max int,
 	listener runnerCapacitySetter, initial int, interval time.Duration) {
 	ticker := time.NewTicker(interval)
@@ -53,7 +53,7 @@ func refreshAdvertisedCapacity(ctx context.Context, hub runnerHubClient, max int
 					return
 				}
 				slog.Warn("refresh scale-set capacity", "pool", hub.poolID, "error", err)
-				continue
+				current = 0
 			}
 			if current != last {
 				listener.SetMaxRunners(current)

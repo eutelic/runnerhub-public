@@ -109,3 +109,51 @@ func TestCapacityRefreshUpdatesWithoutSessionRestart(t *testing.T) {
 		t.Fatal("capacity reconciliation did not stop on cancellation")
 	}
 }
+
+func TestCapacityRefreshFailsClosedAndRecovers(t *testing.T) {
+	var unavailable atomic.Bool
+	unavailable.Store(true)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if unavailable.Load() {
+			http.Error(w, "temporarily unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		_, _ = fmt.Fprint(w, `{"healthy":true,"capacityLimit":3}`)
+	}))
+	defer srv.Close()
+	hub := runnerHubClient{base: srv.URL, poolID: "pool", http: srv.Client()}
+	updates := &capacityUpdates{signal: make(chan int, 8)}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		refreshAdvertisedCapacity(ctx, hub, 5, updates, 2, 5*time.Millisecond)
+	}()
+
+	select {
+	case observed := <-updates.signal:
+		if observed != 0 {
+			t.Fatalf("unavailable control plane retained capacity %d, want zero", observed)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("failed capacity refresh did not withdraw stale advertised capacity")
+	}
+
+	unavailable.Store(false)
+	select {
+	case observed := <-updates.signal:
+		if observed != 3 {
+			t.Fatalf("recovered capacity=%d, want 3", observed)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("fresh controller evidence did not restore advertised capacity")
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("capacity reconciliation did not stop on cancellation")
+	}
+}
