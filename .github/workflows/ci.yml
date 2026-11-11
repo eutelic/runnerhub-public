@@ -173,7 +173,7 @@ jobs:
         run: bash scripts/test-recovery-preflight.sh
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
-          go-version: '1.26.10'
+          go-version: '1.26.11'
           cache: true
       - name: Enforce gofmt for tracked Go sources
         run: |
@@ -244,7 +244,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
-          go-version: '1.26.10'
+          go-version: '1.26.11'
           cache: true
       - name: Verify root JIT secret ownership normalization
         run: |
@@ -252,7 +252,7 @@ jobs:
           docker run --rm \
             -v "$GITHUB_WORKSPACE:$GITHUB_WORKSPACE" \
             -w "$GITHUB_WORKSPACE" \
-            golang:1.26.10 \
+            golang:1.26.11 \
             bash -lc '/usr/local/go/bin/go test ./internal/providers/docker ./internal/providers/truenas -run TestWriteJITSecretNormalizesPermissions -count=1'
 
   core-race:
@@ -264,7 +264,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
-          go-version: '1.26.10'
+          go-version: '1.26.11'
           cache: true
       - name: Run race detector in toolchain container
         run: |
@@ -272,7 +272,7 @@ jobs:
           docker run --rm \
             -v "$GITHUB_WORKSPACE:$GITHUB_WORKSPACE" \
             -w "$GITHUB_WORKSPACE" \
-            golang:1.26.10 \
+            golang:1.26.11 \
             bash -lc '/usr/local/go/bin/go test -race ./internal/...'
 
   scaleset:
@@ -315,7 +315,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
-          go-version: '1.26.10'
+          go-version: '1.26.11'
           cache: true
       - run: GOOS=${{ matrix.goos }} GOARCH=amd64 CGO_ENABLED=0 go build ./cmd/runnerhub-agent
 

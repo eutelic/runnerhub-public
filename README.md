@@ -96,6 +96,10 @@ The TrueNAS stack stores control, agent and secret state in explicit datasets an
 
 The Docker agent intentionally mounts the host Docker socket and must be treated as trusted/root-equivalent infrastructure. Workflow containers never receive that host socket. The default `container-trusted` pool therefore does not support Docker container actions/service containers. Repositories that need those GitHub features can explicitly opt into `container-dind`, which gives each worker a private Docker daemon but uses a privileged sidecar and remains trusted-workload-only. See [docs/providers/docker.md](docs/providers/docker.md) and [docs/SECURITY.md](docs/SECURITY.md).
 
+## RunnerHub MCP
+
+RunnerHub includes a small stdio MCP server for fleet status, diagnostics, worker history, and operator-approved worker requests. It uses the existing RunnerHub API and role checks; requesting a worker does not dispatch a GitHub Actions workflow. See [MCP setup and tool guide](docs/MCP.md).
+
 ## Development
 
 CI and production container builds use **Go 1.26**. The core module remains compatible with its declared Go version, while the `scaleset/` module is tested separately against GitHub's standalone scale-set client.

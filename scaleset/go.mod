@@ -1,6 +1,6 @@
 module github.com/eutelic/runnerhub/scaleset
 
-go 1.27.3
+go 1.27.4
 
 require (
 	github.com/actions/scaleset v0.5.0
