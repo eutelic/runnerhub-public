@@ -43,6 +43,7 @@ func (s *SQLite) migrate(ctx context.Context) error {
 CREATE TABLE IF NOT EXISTS hosts(id TEXT PRIMARY KEY, data BLOB NOT NULL, updated_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS pools(id TEXT PRIMARY KEY, data BLOB NOT NULL, updated_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS workers(id TEXT PRIMARY KEY, data BLOB NOT NULL, updated_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS fleet_alerts(id TEXT PRIMARY KEY, data BLOB NOT NULL, updated_at TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS idx_workers_updated_history ON workers(updated_at DESC,id DESC);
 -- Live control-plane paths must never scan historical deleted workers.
 CREATE INDEX IF NOT EXISTS idx_workers_non_deleted ON workers(updated_at DESC,id DESC) WHERE COALESCE(json_extract(data,'$.state'),'') != 'deleted';

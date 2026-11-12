@@ -19,6 +19,7 @@ type SQLite struct {
 	commands           map[string]CommandRecord
 	operations         map[string]Operation
 	providerDeleteSeen map[string]bool
+	fleetAlerts        map[string]FleetAlert
 }
 
 func OpenSQLite(string) (*SQLite, error) {

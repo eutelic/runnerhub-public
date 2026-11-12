@@ -41,6 +41,7 @@ type Service struct {
 	AgentUpdateEnabled        bool
 	DeployerBootstrap         *deployer.BootstrapManager
 	CIReconcilerStatus        *cireconcile.Status
+	fleetAlertMu              sync.Mutex
 	workerScheduleMu          sync.Mutex
 	poolMutationMu            sync.Mutex
 	workflowJobsMu            sync.Mutex
@@ -94,6 +95,8 @@ func (s *Service) Handler() http.Handler {
 	m.HandleFunc("GET /api/v1/pools/{id}/health", s.poolHealth)
 	m.HandleFunc("GET /api/v1/pools/health", s.poolHealthAll)
 	m.HandleFunc("GET /api/v1/runtime-health", s.runtimeHealth)
+	m.HandleFunc("GET /api/v1/fleet-alerts", s.fleetAlerts)
+	m.HandleFunc("POST /api/v1/fleet-alerts/{id}/{action}", s.updateFleetAlert)
 	m.HandleFunc("GET /api/v1/pools/{id}/recommendation", s.poolRecommendation)
 	m.HandleFunc("POST /api/v1/pools/{id}/learning/reset", s.resetPoolLearning)
 	m.HandleFunc("GET /api/v1/pools/{id}/security", s.poolSecurity)

@@ -125,6 +125,7 @@ func main() {
 		}()
 	}
 	hub.SetResultHandler(svc.HandleAgentResult)
+	go svc.RunFleetAlertMonitor(ctx, time.Minute)
 	if err := svc.RecoverAgentUpdates(ctx); err != nil {
 		log.Printf("agent update recovery could not inspect durable operations: %v", err)
 	}

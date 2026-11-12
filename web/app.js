@@ -81,8 +81,6 @@ function clearDashboardSnapshot(){
   historyLastUpdated=0;
   historyRequestSequence++;
 }
-const fleetAlertFirstSeen=loadFleetAlertFirstSeen();
-const fleetAlertSilences=loadFleetAlertSilences();
 const smokeWorkflow=[
   'name: RunnerHub smoke',
   'on:',
@@ -285,14 +283,16 @@ bind('history-copy-link','click',async()=>{
 });
 document.getElementById('smoke-workflow').value=smokeWorkflow;
 document.getElementById('fleet-alerts')?.addEventListener('click',event=>{
-  const button=event.target.closest('button[data-fleet-alert-silence]');
-  if(!button)return;
-  const key=button.dataset.fleetAlertSilence;
-  if(button.dataset.fleetAlertAction==='unmute')fleetAlertSilences.delete(key);
-  else fleetAlertSilences.set(key,Date.now()+60*60*1000);
-  try{localStorage.setItem('runnerhub-fleet-alert-silences',JSON.stringify([...fleetAlertSilences]))}catch{}
-  if(snapshot.hosts&&snapshot.pools&&snapshot.workers&&snapshot.scalesets&&snapshot.runtime)
-    renderFleetAlerts(snapshot.hosts,snapshot.pools,snapshot.workers,snapshot.scalesets,snapshot.runtime);
+  const serverButton=event.target.closest('button[data-fleet-alert-server-action]');
+  if(serverButton){
+    const id=serverButton.dataset.fleetAlertServerId;
+    const action=serverButton.dataset.fleetAlertServerAction;
+    if(!id||!['acknowledge','mute','unmute'].includes(action))return;
+    serverButton.disabled=true;
+    void j('/api/v1/fleet-alerts/'+encodeURIComponent(id)+'/'+action,{method:'POST'})
+      .then(()=>refresh(true)).catch(error=>message(error.message,'error'));
+    return;
+  }
 });
 bind('copy-smoke-workflow','click',async()=>{
   try{
@@ -1418,118 +1418,34 @@ async function loadAuth(){
   }catch(e){message(e.message,'error')}
 }
 
-function loadFleetAlertFirstSeen(){
-  const result=new Map();
-  const now=Date.now();
-  try{
-    const saved=JSON.parse(localStorage.getItem('runnerhub-fleet-alert-first-seen-v1')||'[]');
-    if(!Array.isArray(saved))return result;
-    // Only retain recent and well-formed incident timestamps. Never trust
-    // persisted data to claim an issue was observed indefinitely.
-    for(const item of saved.slice(0,500)){
-      if(!Array.isArray(item)||typeof item[0]!=='string'||
-          !/^(host|listener|runtime|startup):[\w.-]{1,150}$/.test(item[0]))continue;
-      const timestamp=item[1];
-      if(typeof timestamp!=='number'||!Number.isFinite(timestamp)||
-          timestamp>now||now-timestamp>24*60*60*1000)continue;
-      result.set(item[0],timestamp);
-    }
-  }catch{/* Storage may be disabled, corrupt or from an older version. */}
-  return result;
-}
-function persistFleetAlertFirstSeen(){
-  try{localStorage.setItem('runnerhub-fleet-alert-first-seen-v1',JSON.stringify([...fleetAlertFirstSeen]))}
-  catch{/* Work in memory when storage is unavailable. */}
-}
-function loadFleetAlertSilences(){
-  try{
-    const saved=JSON.parse(localStorage.getItem('runnerhub-fleet-alert-silences')||'[]');
-    return new Map((Array.isArray(saved)?saved:[]).filter(x=>
-      Array.isArray(x)&&typeof x[0]==='string'&&Number.isFinite(x[1])&&x[1]>Date.now()));
-  }catch{return new Map()}
-}
-function detectFleetAlertCandidates(hosts,pools,workers,statuses,runtimes,now=Date.now()){
-  const issues=[];
-  for(const host of hosts||[]){
-    if(!host.id)continue;
-    const state=String(host.state||'').toLowerCase();
-    if(state==='offline'||state==='unreachable')
-      issues.push({id:'host:'+host.id,title:'Host '+(host.name||host.id)+' offline',
-        detail:'Check agent connectivity and host reachability.',href:'/diagnostics.html'});
-  }
-  const listener=new Map((statuses||[]).map(x=>[x.poolId,x]));
-  const runtime=new Map((runtimes||[]).map(x=>[x.poolId,x]));
-  for(const pool of pools||[]){
-    if(!pool.id||Number(pool.githubInstallationId)<=0)continue;
-    const label=repoName(pool)+' / '+(pool.scaleSetName||'runnerhub');
-    const state=String(listener.get(pool.id)?.state||'').toLowerCase();
-    if(['error','backing_off'].includes(state))
-      issues.push({id:'listener:'+pool.id,title:'Listener '+label+' '+state,
-        detail:'Inspect GitHub API rate limits, listener authentication and startup evidence.',href:'/diagnostics.html'});
-    const health=runtime.get(pool.id);
-    if(health&&(health.state==='degraded'||health.healthy===false))
-      issues.push({id:'runtime:'+pool.id,title:'Runtime '+label+' degraded',
-        detail:'Host eligibility, worker provisioning, or registration may be blocking CI.',href:'/diagnostics.html'});
-  }
-  const recent=new Map();
-  const cutoff=now-30*60*1000;
-  for(const worker of workers||[]){
-    if(worker.jobName||worker.jobResult||worker.workflowRunId)continue;
-    if(!worker.failureReason||String(worker.state||'').toLowerCase()!=='failed')continue;
-    const at=Date.parse(worker.failedAt||worker.updatedAt||'');
-    if(!Number.isFinite(at)||at<cutoff||at>now)continue;
-    const key=String(worker.poolId||'unknown');
-    recent.set(key,(recent.get(key)||0)+1);
-  }
-  for(const [poolId,count] of recent){
-    if(count<3)continue;
-    issues.push({id:'startup:'+poolId,title:count+' recent runner startup failures',
-      detail:'Multiple runners failed before a job started in the last 30 minutes. Review startup diagnostics.',href:'/diagnostics.html'});
-  }
-  return issues;
-}
-function renderFleetAlerts(hosts,pools,workers,statuses,runtime,fresh=true){
+function renderPersistentFleetAlerts(alerts){
   const container=document.getElementById('fleet-alerts');
   if(!container)return;
-  if(!fresh){
-    // An outage is not evidence that a condition persisted throughout the gap.
-    // Restart the observation window once fresh telemetry resumes.
-    if(fleetAlertFirstSeen.size){
-      fleetAlertFirstSeen.clear();
-      persistFleetAlertFirstSeen();
-    }
-    container.innerHTML='<div class="muted small">Alert watch paused: some fleet data is stale. Sustained-alert timers will restart after refresh.</div>';
-    return;
-  }
-  const now=Date.now();
-  const issues=detectFleetAlertCandidates(hosts,pools,workers,statuses,runtime,now);
-  const ids=new Set(issues.map(x=>x.id));
-  let changed=false;
-  for(const key of fleetAlertFirstSeen.keys())if(!ids.has(key)){
-    fleetAlertFirstSeen.delete(key);
-    changed=true;
-  }
-  for(const issue of issues)if(!fleetAlertFirstSeen.has(issue.id)){
-    fleetAlertFirstSeen.set(issue.id,now);
-    changed=true;
-  }
-  if(changed)persistFleetAlertFirstSeen();
-  const sustained=issues.filter(x=>now-fleetAlertFirstSeen.get(x.id)>=5*60*1000);
-  const visible=sustained.filter(x=>(fleetAlertSilences.get(x.id)||0)<=now);
-  const muted=sustained.filter(x=>(fleetAlertSilences.get(x.id)||0)>now);
-  const alertRow=(issue,isMuted)=>'<div class="fleet-alert-item"><div><strong>'+esc(issue.title)+'</strong><div class="muted small">'+
-    esc(issue.detail)+(isMuted?' · Muted until '+esc(fmtTime(new Date(fleetAlertSilences.get(issue.id)).toISOString())):'')+
-    '</div></div><div class="actions"><a class="button secondary compact" href="'+issue.href+'">Investigate</a>'+
-    '<button type="button" class="secondary compact" data-fleet-alert-silence="'+esc(issue.id)+'" data-fleet-alert-action="'+(isMuted?'unmute':'mute')+'">'+(isMuted?'Unmute':'Mute 1h')+'</button></div></div>';
-  const html='<div class="fleet-alert-heading"><strong>Alert watch</strong><span class="muted small">'+
-    'Sustained conditions (5 min) · browser-only</span></div>'+
-    (sustained.length?'<div class="fleet-alert-list">'+visible.slice(0,8).map(issue=>alertRow(issue,false)).join('')+
-      muted.slice(0,8).map(issue=>alertRow(issue,true)).join('')+'</div>':
-    '<div class="muted small">'+(issues.length?
-      'Conditions are being observed; no sustained alerts yet.':'No sustained problems detected.')+'</div>');
-  // Preserve keyboard focus when a background refresh does not change the UI.
-  if(container.innerHTML!==html)container.innerHTML=html;
+  const items=Array.isArray(alerts)?alerts:[];
+  const active=items.filter(x=>x.state==='active'||x.state==='observing'||x.state==='resolving');
+  const resolved=items.filter(x=>x.state==='resolved').slice(0,5);
+  const row=alert=>{
+    const observing=alert.state==='observing';
+    const muted=alert.mutedUntil&&Date.parse(alert.mutedUntil)>Date.now();
+    const affected=[alert.repository,alert.affectedType&&alert.affectedId?alert.affectedType+' '+alert.affectedId:''].filter(Boolean).join(' · ');
+    const actions=alert.state!=='active'?'':
+      '<div class="actions">'+(alert.acknowledgedAt?'<span class="badge neutral">Acknowledged</span>':
+      '<button type="button" class="secondary compact" data-fleet-alert-server-id="'+esc(alert.id)+'" data-fleet-alert-server-action="acknowledge">Acknowledge</button>')+
+      (muted?'<span class="muted small">Muted until '+esc(fmtTime(alert.mutedUntil))+'</span><button type="button" class="secondary compact" data-fleet-alert-server-id="'+esc(alert.id)+'" data-fleet-alert-server-action="unmute">Unmute</button>':
+      '<button type="button" class="secondary compact" data-fleet-alert-server-id="'+esc(alert.id)+'" data-fleet-alert-server-action="mute">Mute 1h</button>')+
+      '<a class="button secondary compact" href="'+esc(alert.href||'/diagnostics.html')+'">Investigate</a></div>';
+    return '<div class="fleet-alert-item"><div><strong>'+esc(alert.title||'Fleet alert')+'</strong><div class="muted small">'+
+      esc(alert.detail||'')+(affected?' · '+esc(affected):'')+' · '+(observing?'Observing for 5 minutes':alert.state==='resolving'?'Condition cleared · confirming recovery':esc(alert.severity||'warning')+' · first seen '+esc(fmtTime(alert.firstSeenAt)))+
+      (alert.state==='active'&&alert.lastSeenAt?' · last observed '+esc(fmtTime(alert.lastSeenAt)):'')+
+      (alert.state==='resolved'&&alert.resolvedAt?' · resolved '+esc(fmtTime(alert.resolvedAt)):'')+
+      (alert.acknowledgedAt?' · acknowledged '+esc(fmtTime(alert.acknowledgedAt)):'')+'</div></div>'+actions+'</div>';
+  };
+  const body=active.length?'<div class="fleet-alert-list">'+active.slice(0,12).map(row).join('')+'</div>':
+    '<div class="muted small">No active sustained fleet alerts.</div>';
+  container.innerHTML='<div class="fleet-alert-heading"><strong>Fleet alerts</strong><span class="muted small">Server monitored · durable across tabs and restarts</span></div>'+body+
+    (resolved.length?'<details><summary>Recent resolved alerts ('+resolved.length+')</summary><div class="fleet-alert-list">'+resolved.map(row).join('')+'</div></details>':'');
 }
+
 function renderFleetOverview(hosts,pools,workers,statuses,runtimeHealth,progress=[]){
   const allHosts=Array.isArray(hosts)?hosts:[];
   // Archived enrollments remain in the API for history, but are not fleet capacity.
@@ -1699,6 +1615,7 @@ async function refresh(force=false){
       collect('audit','/api/v1/audit?limit=12',[]),
       collect('scalesets','/api/v1/scalesets/status',[]),
       collect('runtime','/api/v1/runtime-health',[]),
+      collect('fleetAlerts','/api/v1/fleet-alerts',[]),
       collect('deployer','/api/v1/deployer/status',{available:false,detail:'Not available'}),
       collect('maintenance','/api/v1/maintenance',{paused:false,activeWorkers:0,phase:'unknown'})
     ];
@@ -1714,7 +1631,7 @@ async function refresh(force=false){
         requests.push(Promise.resolve(snapshot.installations));
       }
     }
-    const [h,p,w,progress,a,statuses,runtimeHealth,deployer,maintenance,repos,installations]=await Promise.all(requests);
+    const [h,p,w,progress,a,statuses,runtimeHealth,fleetAlerts,deployer,maintenance,repos,installations]=await Promise.all(requests);
     const now=Date.now();
     const poolKey=(p||[]).map(pool=>String(pool.id)).sort().join(',');
     if(force||poolKey!==recommendationCache.key||now-recommendationCache.at>30000){
@@ -1745,8 +1662,7 @@ async function refresh(force=false){
     const hostByID=new Map((h||[]).map(x=>[x.id,x]));
     const progressByWorker=new Map((progress||[]).map(x=>[x.workerId,x]));
     renderFleetOverview(h,p,w,statuses,runtimeHealth,progress);
-    renderFleetAlerts(h,p,w,statuses,runtimeHealth,
-      !errors.some(error=>/^(hosts|pools|workers|scalesets|runtime):/.test(error)));
+    renderPersistentFleetAlerts(fleetAlerts);
     renderOnboardingChecklist(h,p,statuses,installations,repos);
     renderDeployerStatus(deployer,maintenance);
     renderCIEfficiency(efficiencyCache.value);

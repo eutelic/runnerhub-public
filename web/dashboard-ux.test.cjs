@@ -107,6 +107,24 @@ test('empty Active runners is not mistaken for an empty GitHub queue',()=>{
   assert.ok(!element('active-runners').innerHTML.includes('No queued jobs'));
 });
 
+test('server fleet alerts render persisted state and separate observing, acknowledged, muted, and resolved incidents',()=>{
+  const {ctx,element}=createDashboard();
+  ctx.serverAlerts=[
+    {id:'listener:pool-1',title:'Listener pool-1 backing_off',detail:'Inspect listener diagnostics',href:'/diagnostics.html',severity:'warning',state:'active',firstSeenAt:'2026-11-10T10:00:00Z',lastSeenAt:'2026-11-10T10:06:00Z',acknowledgedAt:'2026-11-10T10:04:00Z',mutedUntil:'2030-01-01T00:00:00Z'},
+    {id:'host:host-1',title:'Host compute offline',detail:'Check connectivity',href:'/diagnostics.html',severity:'warning',state:'observing',firstSeenAt:'2026-11-10T10:05:00Z',lastSeenAt:'2026-11-10T10:06:00Z'},
+    {id:'runtime:old',title:'Runtime recovered',detail:'Resolved',state:'resolved'}
+  ];
+  vm.runInContext('renderPersistentFleetAlerts(serverAlerts)',ctx);
+  const html=element('fleet-alerts').innerHTML;
+  assert.ok(html.includes('Server monitored · durable across tabs and restarts'));
+  assert.ok(html.includes('Acknowledged'));
+  assert.ok(html.includes('Muted until'));
+  assert.ok(html.includes('Unmute'));
+  assert.ok(html.includes('Observing for 5 minutes'));
+  assert.ok(html.includes('Recent resolved alerts'));
+  assert.ok(!html.includes('data-fleet-alert-server-action="acknowledge" data-fleet-alert-server-id="listener:pool-1"'));
+});
+
 test('GitHub queue summary counts only observed RunnerHub labels and deduplicates workflow runs',()=>{
   const {ctx}=createDashboard();
   ctx.sampleQueue={checkedRuns:3,truncated:true,jobs:[
@@ -496,26 +514,6 @@ test('history search pages results without requiring a full worker snapshot',asy
   assert.match(element('history-count').textContent,/1–1 of 21/);
   assert.equal(element('history-next').disabled,false);
 });
-test('alert watch requires a sustained problem and excludes healthy idle pools',()=>{
-  const {ctx,element}=createDashboard();
-  vm.runInContext(`renderFleetAlerts(
-    [{id:'h1',name:'compute',state:'online'}],
-    [{id:'p1',scope:{owner:'eutelic',repository:'runnerhub'},githubInstallationId:1,maxConcurrency:1}],
-    [],[{poolId:'p1',state:'ready'}],[{poolId:'p1',state:'healthy',healthy:true}]
-  )`,ctx);
-  assert.match(element('fleet-alerts').innerHTML,/No sustained problems detected/);
-  vm.runInContext(`renderFleetAlerts(
-    [{id:'h1',name:'compute',state:'offline'}],
-    [],[],[],[]
-  )`,ctx);
-  assert.match(element('fleet-alerts').innerHTML,/being observed/);
-  vm.runInContext(`fleetAlertFirstSeen.set('host:h1',Date.now()-6*60*1000)`,ctx);
-  vm.runInContext(`renderFleetAlerts(
-    [{id:'h1',name:'compute',state:'offline'}],[],[],[],[]
-  )`,ctx);
-  assert.match(element('fleet-alerts').innerHTML,/Host compute offline/);
-  assert.match(element('fleet-alerts').innerHTML,/Mute 1h/);
-});
 test('onboarding never treats an unconnected listener as passing',()=>{
   const {ctx,element}=createDashboard();
   vm.runInContext(`auth.authenticated=true;renderOnboardingChecklist(
@@ -527,60 +525,6 @@ test('onboarding never treats an unconnected listener as passing',()=>{
   )`,ctx);
   assert.match(element('repository-onboarding-checks').innerHTML,/5 \/ 6 preflight checks passed/);
   assert.match(element('repository-onboarding-checks').innerHTML,/0 of 1 ready/);
-});
-
-test('sustained fleet alert survives a page reload and resets after recovery',()=>{
-  const offline=`renderFleetAlerts([{id:'h1',name:'compute',state:'offline'}],[],[],[],[])`;
-  const first=createDashboard();
-  vm.runInContext(offline,first.ctx);
-  vm.runInContext(`fleetAlertFirstSeen.set('host:h1',Date.now()-6*60*1000);persistFleetAlertFirstSeen()`,first.ctx);
-  assert.ok(first.storage.has('runnerhub-fleet-alert-first-seen-v1'));
-  const second=createDashboard({},first.storage);
-  vm.runInContext(offline,second.ctx);
-  assert.match(second.element('fleet-alerts').innerHTML,/Host compute offline/);
-  vm.runInContext(`renderFleetAlerts([{id:'h1',name:'compute',state:'online'}],[],[],[],[])`,second.ctx);
-  assert.equal(JSON.parse(second.storage.get('runnerhub-fleet-alert-first-seen-v1')).length,0);
-  vm.runInContext(offline,second.ctx);
-  assert.match(second.element('fleet-alerts').innerHTML,/being observed/);
-});
-test('stale fleet telemetry resets persisted sustained-alert timers',()=>{
-  const {ctx,element,storage}=createDashboard();
-  const offline=`renderFleetAlerts([{id:'h1',name:'compute',state:'offline'}],[],[],[],[])`;
-  vm.runInContext(offline,ctx);
-  vm.runInContext(`fleetAlertFirstSeen.set('host:h1',Date.now()-6*60*1000);persistFleetAlertFirstSeen()`,ctx);
-  vm.runInContext(`renderFleetAlerts([],[],[],[],[],false)`,ctx);
-  assert.match(element('fleet-alerts').innerHTML,/timers will restart/);
-  assert.equal(JSON.parse(storage.get('runnerhub-fleet-alert-first-seen-v1')).length,0);
-  vm.runInContext(offline,ctx);
-  assert.match(element('fleet-alerts').innerHTML,/being observed/);
-  assert.doesNotMatch(element('fleet-alerts').innerHTML,/Host compute offline/);
-});
-test('muted incidents remain visible and may be unmuted immediately',()=>{
-  const {ctx,element,storage}=createDashboard();
-  vm.runInContext(`fleetAlertFirstSeen.set('host:h1',Date.now()-6*60*1000)`,ctx);
-  vm.runInContext(`fleetAlertSilences.set('host:h1',Date.now()+3600000)`,ctx);
-  const offline=`renderFleetAlerts([{id:'h1',name:'compute',state:'offline'}],[],[],[],[])`;
-  vm.runInContext(offline,ctx);
-  assert.match(element('fleet-alerts').innerHTML,/Unmute/);
-  assert.match(element('fleet-alerts').innerHTML,/Muted until/);
-  element('fleet-alerts').handlers.click({
-    target:{closest(){return {dataset:{fleetAlertSilence:'host:h1',fleetAlertAction:'unmute'}}}}
-  });
-  assert.equal(storage.get('runnerhub-fleet-alert-silences'),'[]');
-  vm.runInContext(offline,ctx);
-  assert.match(element('fleet-alerts').innerHTML,/Mute 1h/);
-  assert.doesNotMatch(element('fleet-alerts').innerHTML,/Unmute/);
-});
-test('unchanged alert content does not overwrite a focused mute control',()=>{
-  const {ctx,element}=createDashboard();
-  vm.runInContext(`fleetAlertFirstSeen.set('host:h1',Date.now()-6*60*1000)`,ctx);
-  const container=element('fleet-alerts');
-  let writes=0,html='';
-  Object.defineProperty(container,'innerHTML',{get(){return html},set(value){html=value;writes++}});
-  const script=`renderFleetAlerts([{id:'h1',name:'compute',state:'offline'}],[],[],[],[])`;
-  vm.runInContext(script,ctx);
-  vm.runInContext(script,ctx);
-  assert.equal(writes,1);
 });
 
 test('current runner telemetry ages out while retained peak metrics remain historical',()=>{
