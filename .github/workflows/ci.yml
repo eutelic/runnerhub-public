@@ -167,6 +167,8 @@ jobs:
         run: bash scripts/test-ci-changes.sh
       - name: Validate scoped exited-worker cleanup safety
         run: bash scripts/test-cleanup-exited-workers.sh
+      - name: Validate independent recovery publisher CLI
+        run: bash scripts/test-publish-recovery-images.sh
       - name: Validate read-only Docker cleanup audit
         run: python3 -m unittest discover -s scripts -p 'test_docker_cleanup_audit.py'
       - name: Validate recovery preflight readiness semantics

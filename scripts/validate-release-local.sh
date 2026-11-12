@@ -19,14 +19,14 @@ Default validation:
   - deployment shell syntax
   - TrueNAS generator/preflight/verifier/image-tool mock suites
   - development, release, and TrueNAS Compose parsing
-  - native builds of control, agent, bootstrap, scale-set, and deployer runtime images
+  - native builds of control, agent, bootstrap, scale-set, deployer, and updater runtime images
   - persisted control DB ownership/symlink migration smoke
 
 --full additionally runs the core/scaleset Go test, race, soak, vet,
-govulncheck, and agent cross-build checks inside the same Go 1.26.6 container
-image used by production builds.
+govulncheck, and agent cross-build checks inside the declared root and scale-set Go toolchain container
+images.
 
---registry-tag TAG additionally verifies that all five GHCR images for TAG are
+--registry-tag TAG additionally verifies all six GHCR images for TAG are
 readable and publish linux/amd64 + linux/arm64. Docker must already be logged in
 when the packages are private.
 
@@ -93,6 +93,7 @@ images=(
   "$image_prefix-bootstrap"
   "$image_prefix-scaleset"
   "$image_prefix-deployer"
+  "$image_prefix-updater"
 )
 
 tmp="$(mktemp -d "${RUNNER_TEMP:-/tmp}/runnerhub-release.XXXXXX")"
@@ -171,17 +172,23 @@ if [ "$skip_runtime_builds" != true ]; then
   docker build --build-arg "VERSION=$version" --target bootstrap -f deploy/docker/Dockerfile -t "${images[2]}" .
   docker build --build-arg "VERSION=$version" --target scaleset -f deploy/docker/Dockerfile -t "${images[3]}" .
   docker build --build-arg "VERSION=$version" --target deployer -f deploy/docker/Dockerfile -t "${images[4]}" .
+  docker build --build-arg "VERSION=$version" --target updater -f deploy/docker/Dockerfile -t "${images[5]}" .
 
   step 'Exercise persisted control-data ownership migration'
   bash deploy/docker/test-control-data-ownership.sh "${images[0]}"
 fi
 
 if [ "$full" = true ]; then
-  step 'Run full core Go validation in production toolchain'
+  root_go_version="$(awk '$1 == "go" {print $2; exit}' go.mod)"
+  scaleset_go_version="$(awk '$1 == "go" {print $2; exit}' scaleset/go.mod)"
+  for declared in "$root_go_version" "$scaleset_go_version"; do
+    [[ "$declared" =~ ^1\.[0-9]+\.[0-9]+$ ]] || { echo 'Invalid declared Go toolchain' >&2; exit 1; }
+  done
+  step 'Run full core Go validation in declared toolchain'
   docker run --rm \
     -v "$repo_root:/src:ro" \
     -w /src \
-    golang:1.26.6-bookworm \
+    "golang:${root_go_version}-bookworm" \
     bash -c '
       set -euo pipefail
       go test ./...
@@ -197,7 +204,7 @@ if [ "$full" = true ]; then
   docker run --rm \
     -v "$repo_root:/src:ro" \
     -w /src/scaleset \
-    golang:1.26.6-bookworm \
+    "golang:${scaleset_go_version}-bookworm" \
     bash -c '
       set -euo pipefail
       go test ./...
