@@ -110,6 +110,7 @@ services:
       RUNNERHUB_ALLOW_INSECURE_HTTP: "true"
       RUNNERHUB_ENROLLMENT_TOKEN_FILE: /run/runnerhub-secrets/enrollment-token
       RUNNERHUB_PROVIDER: docker
+      RUNNERHUB_PORT_PROBE_IMAGE: *agent-image
       RUNNERHUB_STATE_DIR: *state-path
       RUNNERHUB_HOST_NAME: truenas-host
       RUNNERHUB_RUNNER_IMAGE: *runner-image

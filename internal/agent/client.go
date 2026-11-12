@@ -23,6 +23,9 @@ import (
 type AgentUpdater interface {
 	Launch(context.Context, AgentUpdateSpec) error
 }
+type HostPortProber interface {
+	ProbeHostPort(context.Context, int) (HostPortProbeResult, error)
+}
 type ClientConfig struct {
 	ControlPlaneURL   string
 	EnrollmentToken   string
@@ -34,6 +37,7 @@ type ClientConfig struct {
 	HTTPClient        *http.Client
 	AllowInsecureHTTP bool
 	Updater           AgentUpdater
+	HostPortProber    HostPortProber
 }
 type storedCredential struct {
 	HostID string `json:"hostId"`
@@ -242,11 +246,37 @@ func (c *Client) execute(ctx context.Context, p provider.Provider, cmd Command) 
 			return r
 		}
 		r.OK = true
+	case CommandHostPortProbe:
+		return c.executeHostPortProbe(ctx, cmd, r)
 	default:
 		r.SafeError = "unsupported command type"
 	}
 	return r
 }
+
+// executeHostPortProbe is restricted to the enrolled Docker host and accepts
+// only an explicit port, never a user-selected command or image.
+func (c *Client) executeHostPortProbe(ctx context.Context, cmd Command, r CommandResult) CommandResult {
+	if c.cfg.Provider != "docker" || cmd.HostPortProbe == nil || cmd.HostPortProbe.HostID != c.hostID || cmd.HostPortProbe.Port < 1024 || cmd.HostPortProbe.Port > 65535 {
+		r.SafeError = "host port probe command does not match this enrolled Docker host"
+		return r
+	}
+	if c.cfg.HostPortProber == nil {
+		r.SafeError = "host port probe is unavailable on this host"
+		r.HostPortProbe = &HostPortProbeResult{Port: cmd.HostPortProbe.Port, Status: "unknown"}
+		return r
+	}
+	probe, err := c.cfg.HostPortProber.ProbeHostPort(ctx, cmd.HostPortProbe.Port)
+	if err != nil || probe.Port != cmd.HostPortProbe.Port || (probe.Status != "available" && probe.Status != "occupied") {
+		r.SafeError = "host port could not be verified"
+		r.HostPortProbe = &HostPortProbeResult{Port: cmd.HostPortProbe.Port, Status: "unknown"}
+		return r
+	}
+	r.OK = true
+	r.HostPortProbe = &probe
+	return r
+}
+
 func (c *Client) do(ctx context.Context, method, path string, body any, out any, bearer string) error {
 	var rd io.Reader
 	if body != nil {

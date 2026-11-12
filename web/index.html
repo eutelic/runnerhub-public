@@ -191,10 +191,12 @@
             <label>TrueNAS service user<input id="deployer-username" autocomplete="username" value="runnerhub_deployer"></label>
             <label>TrueNAS API key<input id="deployer-api-key" type="password" autocomplete="new-password"></label>
             <label>RunnerHub TrueNAS app<input id="deployer-runnerhub-app" value="runnerhub"></label>
-            <label>Redeployer port<input id="deployer-port" type="number" min="1024" max="65535" value="8789"></label>
+            <label>Redeployer port<input id="deployer-port" type="number" min="1024" max="65535" value="8790"><span id="deployer-port-preflight" class="resource-note muted" role="status" aria-live="polite">Select an online Docker host to check port 8790.</span></label>
+            <label>TrueNAS Docker host<select id="deployer-port-host"><option value="">Select an online Docker host</option></select></label>
             <label>RunnerHub data path override (optional)<input id="deployer-host-data-path" autocomplete="off" placeholder="Auto-detected from the runnerhub app"></label>
             <label>RunnerHub health URL<input id="deployer-health-url" autocomplete="off" placeholder="http://truenas.example:8788/healthz"></label>
           </div>
+          <button type="button" id="deployer-check-port" class="secondary compact">Check port</button>
           <label class="check-row"><input id="deployer-insecure-tls" type="checkbox"> Allow a self-signed/private TrueNAS certificate without CA verification</label>
           <div class="resource-note muted">The TrueNAS account needs <code>APPS_READ</code> and <code>APPS_WRITE</code>. RunnerHub auto-detects the host path backing its <code>/data</code> mount. The API key is written only to RunnerHub's persistent bootstrap directory and mounted into the standalone deployer as a file-backed secret. The deployer remains a separate TrueNAS app so it survives RunnerHub restarting itself.</div>
           <button id="install-deployer">Install / update redeployer</button>

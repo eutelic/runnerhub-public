@@ -1,6 +1,7 @@
 package api
 
 import (
+	"github.com/eutelic/runnerhub/internal/agent"
 	"github.com/eutelic/runnerhub/internal/agenthub"
 	"github.com/eutelic/runnerhub/internal/auth"
 	cachepkg "github.com/eutelic/runnerhub/internal/cache"
@@ -43,6 +44,8 @@ type Service struct {
 	CIReconcilerStatus        *cireconcile.Status
 	fleetAlertMu              sync.Mutex
 	workerScheduleMu          sync.Mutex
+	hostPortProbeMu           sync.Mutex
+	hostPortProbeWaiters      map[string]chan agent.CommandResult
 	poolMutationMu            sync.Mutex
 	workflowJobsMu            sync.Mutex
 	workflowJobsCache         map[string]workflowJobsCacheEntry
@@ -87,6 +90,7 @@ func (s *Service) Handler() http.Handler {
 	m.HandleFunc("POST /api/v1/hosts/{id}/archive", s.archiveHost)
 	m.HandleFunc("PATCH /api/v1/hosts/{id}", s.updateHost)
 	m.HandleFunc("PUT /api/v1/hosts/{id}/scheduling", s.setHostScheduling)
+	m.HandleFunc("POST /api/v1/hosts/{id}/port-preflight", s.hostPortPreflight)
 	m.HandleFunc("POST /api/v1/hosts/drain", s.bulkDrain)
 	m.HandleFunc("GET /api/v1/pools", s.pools)
 	m.HandleFunc("POST /api/v1/pools", s.createPool)

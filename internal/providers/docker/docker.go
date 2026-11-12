@@ -59,6 +59,7 @@ func (execRunner) Run(ctx context.Context, name string, args ...string) (string,
 
 type Config struct {
 	DockerBinary           string
+	PortProbeImage         string
 	StateDir               string
 	CgroupRoot             string
 	AllowedImages          []string

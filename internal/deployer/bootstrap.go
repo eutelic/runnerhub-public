@@ -48,6 +48,7 @@ type BootstrapManager struct {
 type BootstrapRequest struct {
 	Endpoint           string `json:"endpoint"`
 	Port               int    `json:"port,omitempty"`
+	PortCheckHostID    string `json:"portCheckHostId,omitempty"`
 	Username           string `json:"username"`
 	APIKey             string `json:"apiKey"`
 	HostDataPath       string `json:"hostDataPath"`

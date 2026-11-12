@@ -31,11 +31,13 @@ func main() {
 	kind := env("RUNNERHUB_PROVIDER", "docker")
 	stateDir := env("RUNNERHUB_STATE_DIR", "/var/lib/runnerhub")
 	providers := map[string]provider.Provider{}
+	var hostPortProber agent.HostPortProber
 
 	switch kind {
 	case "docker":
 		p, err := dockerprovider.New(dockerprovider.Config{
 			HostID:                 name,
+			PortProbeImage:         env("RUNNERHUB_PORT_PROBE_IMAGE", ""),
 			StateDir:               stateDir,
 			CgroupRoot:             env("RUNNERHUB_CGROUP_ROOT", "/sys/fs/cgroup"),
 			AllowedImages:          []string{env("RUNNERHUB_RUNNER_IMAGE", images.DefaultRunnerImage)},
@@ -44,6 +46,7 @@ func main() {
 			AllowPrivilegedWorkers: boolEnv("RUNNERHUB_ALLOW_PRIVILEGED_WORKERS", false),
 		})
 		must(err)
+		hostPortProber = p
 		var selected provider.Provider = p
 		if boolEnv("RUNNERHUB_DIAGNOSTICS_ENABLED", false) {
 			selected = newDiagnosticProvider(p, env("RUNNERHUB_DOCKER_BINARY", "docker"))
@@ -127,6 +130,7 @@ func main() {
 		Provider:          kind,
 		AgentVersion:      version,
 		Updater:           updater,
+		HostPortProber:    hostPortProber,
 		PlacementDomainID: env("RUNNERHUB_PLACEMENT_DOMAIN_ID", ""),
 		AllowInsecureHTTP: boolEnv("RUNNERHUB_ALLOW_INSECURE_HTTP", false),
 	}, providers)

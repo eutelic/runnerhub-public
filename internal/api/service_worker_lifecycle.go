@@ -14,9 +14,25 @@ import (
 	"time"
 )
 
+// handleSpecialAgentResult routes host-scoped command acknowledgements before
+// worker lifecycle updates; neither command represents a normal worker event.
+func (s *Service) handleSpecialAgentResult(ctx context.Context, hostID string, res agent.CommandResult) (bool, error) {
+	rec, err := s.Store.GetCommand(ctx, res.CommandID)
+	if err != nil {
+		return false, nil
+	}
+	switch rec.Command.Type {
+	case agent.CommandUpdateAgent:
+		return true, s.handleAgentUpdaterLaunchResult(ctx, rec, hostID, res)
+	case agent.CommandHostPortProbe:
+		return true, s.handleHostPortProbeResult(ctx, rec, hostID, res)
+	}
+	return false, nil
+}
+
 func (s *Service) HandleAgentResult(ctx context.Context, hostID string, res agent.CommandResult) error {
-	if rec, err := s.Store.GetCommand(ctx, res.CommandID); err == nil && rec.Command.Type == agent.CommandUpdateAgent {
-		return s.handleAgentUpdaterLaunchResult(ctx, rec, hostID, res)
+	if handled, err := s.handleSpecialAgentResult(ctx, hostID, res); handled {
+		return err
 	}
 	wk, err := s.Store.GetWorker(ctx, res.WorkerID)
 	if err != nil {

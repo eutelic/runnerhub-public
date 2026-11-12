@@ -64,7 +64,7 @@ func (s *Service) results(w http.ResponseWriter, r *http.Request) {
 	// host from the exact persisted command before checking the bearer token.
 	hostID := ""
 	if command, err := s.Store.GetCommand(r.Context(), in.CommandID); err == nil &&
-		command.Command.Type == agent.CommandUpdateAgent {
+		(command.Command.Type == agent.CommandUpdateAgent || command.Command.Type == agent.CommandHostPortProbe) {
 		if command.Command.WorkerID != in.WorkerID {
 			unauthorizedAgent(w)
 			return

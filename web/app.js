@@ -64,6 +64,9 @@ let dashboardIdentity='';
 let deployerAppsLastLoaded=0;
 let deployerAppsBusy=false;
 let deployerAppsError='';
+let deployerPortProbeGeneration=0;
+let deployerPortProbeResult=null;
+let deployerPortProbeTimer=null;
 function clearDashboardSnapshot(){
   deployerAppsLastLoaded=0;
   deployerAppsError='';
@@ -179,6 +182,14 @@ document.getElementById('machine-bootstrap-status')?.addEventListener('click',ev
   renderMachineBootstrap();
 });
 bind('install-deployer','click',installDeployer);
+bind('deployer-port-host','change',()=>{deployerPortProbeGeneration++;deployerPortProbeResult=null;void checkDeployerPort()});
+bind('deployer-check-port','click',()=>void checkDeployerPort(true));
+bind('deployer-port','input',()=>{
+  deployerPortProbeGeneration++;
+  deployerPortProbeResult=null;
+  clearTimeout(deployerPortProbeTimer);
+  deployerPortProbeTimer=setTimeout(()=>void checkDeployerPort(),350);
+});
 bind('copy-deployer-token','click',copyDeployerToken);
 bind('refresh-deployer-apps','click',()=>{void loadManagedDeployerApps(true)});
 els.deployerAppsList?.addEventListener('change',event=>{
@@ -1348,11 +1359,68 @@ function renderDeployerStatus(status,maintenance={}){
   else if(els.deployerAppsList)els.deployerAppsList.textContent='Deployer is currently unreachable.';
 }
 
+function renderDeployerPortHosts(hosts=[]){
+  const select=document.getElementById('deployer-port-host');
+  if(!select||typeof select.replaceChildren!=='function'||select===document.activeElement)return;
+  const previous=select.value;
+  const eligible=(hosts||[]).filter(host=>host.provider==='docker'&&
+    String(host.state||'').toLowerCase()==='online');
+  select.replaceChildren(new Option('Select an online Docker host',''));
+  for(const host of eligible){
+    const name=host.name||host.id;
+    select.add(new Option(name+' · '+host.id,host.id));
+  }
+  if(eligible.some(host=>host.id===previous))select.value=previous;
+  else if(eligible.length===1)select.value=eligible[0].id;
+  if(select.value)void checkDeployerPort();
+  else{
+    if(previous)deployerPortProbeGeneration++;
+    deployerPortProbeResult=null;
+    document.getElementById('deployer-port-preflight').textContent=eligible.length?
+      'Select the TrueNAS Docker host where the redeployer will be installed.':
+      'No online Docker host is available for the host-side port check.';
+  }
+}
+
+async function checkDeployerPort(force=false){
+  const select=document.getElementById('deployer-port-host');
+  const portInput=document.getElementById('deployer-port');
+  const status=document.getElementById('deployer-port-preflight');
+  const hostID=select?.value||'';
+  const port=Number(portInput?.value);
+  if(!hostID){status.textContent='Select an online Docker host to check the selected port.';return false}
+  if(!Number.isInteger(port)||port<1024||port>65535){status.textContent='Choose a port between 1024 and 65535.';return false}
+  const key=hostID+':'+port;
+  if(!force&&deployerPortProbeResult?.key===key)return deployerPortProbeResult.status==='available';
+  const generation=++deployerPortProbeGeneration;
+  deployerPortProbeResult={key,status:'checking'};
+  status.textContent='Checking port '+port+' on the selected TrueNAS Docker host…';
+  try{
+    const result=await j('/api/v1/hosts/'+encodeURIComponent(hostID)+'/port-preflight',{
+      method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({port})
+    });
+    if(generation!==deployerPortProbeGeneration)return false;
+    if(result.hostId!==hostID||result.port!==port)throw new Error('The host returned a mismatched port-check result.');
+    if(result.status!=='available'&&result.status!=='occupied')throw new Error('The host returned an unknown port-check result.');
+    deployerPortProbeResult={key,status:result.status};
+    if(result.status==='available')status.textContent='Port '+port+' is available on '+(select.selectedOptions[0]?.textContent||hostID)+'.';
+    else status.textContent='Port '+port+' is already occupied on '+(select.selectedOptions[0]?.textContent||hostID)+'. Choose another port.';
+    return result.status==='available';
+  }catch(e){
+    if(generation===deployerPortProbeGeneration){
+      deployerPortProbeResult={key,status:'error'};
+      status.textContent='Could not verify port '+port+' on the selected host: '+e.message;
+    }
+    return false;
+  }
+}
+
 async function installDeployer(){
   const button=document.getElementById('install-deployer');
   const body={
     endpoint:document.getElementById('deployer-endpoint').value.trim(),
     port:Number(document.getElementById('deployer-port').value),
+    portCheckHostId:document.getElementById('deployer-port-host').value,
     username:document.getElementById('deployer-username').value.trim(),
     apiKey:document.getElementById('deployer-api-key').value.trim(),
     hostDataPath:document.getElementById('deployer-host-data-path').value.trim(),
@@ -1366,6 +1434,10 @@ async function installDeployer(){
   button.disabled=true;
   show(els.deployerTokenResult,false);
   try{
+    if(!await checkDeployerPort(true)){
+      message('The selected TrueNAS host must confirm that the redeployer port is available before installation.','error');
+      return;
+    }
     message('Installing the standalone RunnerHub redeployer on TrueNAS…');
     const result=await j('/api/v1/deployer/install',{
       method:'POST',
@@ -1665,6 +1737,7 @@ async function refresh(force=false){
     renderPersistentFleetAlerts(fleetAlerts);
     renderOnboardingChecklist(h,p,statuses,installations,repos);
     renderDeployerStatus(deployer,maintenance);
+    renderDeployerPortHosts(h);
     renderCIEfficiency(efficiencyCache.value);
     renderHosts(h,w,poolByID);
     renderPools(p,statuses,runtimeHealth,recommendationCache.value,h,w,progress);

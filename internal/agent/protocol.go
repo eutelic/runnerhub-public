@@ -28,11 +28,12 @@ type Heartbeat struct {
 type CommandType string
 
 const (
-	CommandCreate      CommandType = "create"
-	CommandInspect     CommandType = "inspect"
-	CommandStop        CommandType = "stop"
-	CommandDelete      CommandType = "delete"
-	CommandUpdateAgent CommandType = "update-agent"
+	CommandCreate        CommandType = "create"
+	CommandInspect       CommandType = "inspect"
+	CommandStop          CommandType = "stop"
+	CommandDelete        CommandType = "delete"
+	CommandUpdateAgent   CommandType = "update-agent"
+	CommandHostPortProbe CommandType = "host-port-probe"
 )
 
 // AgentUpdateSpec is never an arbitrary Docker execution request. It is
@@ -46,15 +47,29 @@ type AgentUpdateSpec struct {
 	HelperImage    string `json:"helperImage"`
 }
 
+// HostPortProbeSpec asks the enrolled Docker host to check a single TCP
+// host-port mapping. It contains no shell command, image reference, or host
+// path supplied by the caller.
+type HostPortProbeSpec struct {
+	HostID string `json:"hostId"`
+	Port   int    `json:"port"`
+}
+
+type HostPortProbeResult struct {
+	Port   int    `json:"port"`
+	Status string `json:"status"`
+}
+
 type Command struct {
-	ID          string                 `json:"id"`
-	Type        CommandType            `json:"type"`
-	WorkerID    string                 `json:"workerId"`
-	Provider    string                 `json:"provider"`
-	Spec        *provider.WorkerSpec   `json:"spec,omitempty"`
-	Handle      *provider.WorkerHandle `json:"handle,omitempty"`
-	AgentUpdate *AgentUpdateSpec       `json:"agentUpdate,omitempty"`
-	CreatedAt   time.Time              `json:"createdAt"`
+	ID            string                 `json:"id"`
+	Type          CommandType            `json:"type"`
+	WorkerID      string                 `json:"workerId"`
+	Provider      string                 `json:"provider"`
+	Spec          *provider.WorkerSpec   `json:"spec,omitempty"`
+	Handle        *provider.WorkerHandle `json:"handle,omitempty"`
+	AgentUpdate   *AgentUpdateSpec       `json:"agentUpdate,omitempty"`
+	HostPortProbe *HostPortProbeSpec     `json:"hostPortProbe,omitempty"`
+	CreatedAt     time.Time              `json:"createdAt"`
 }
 type CommandResult struct {
 	CommandID string                 `json:"commandId"`
@@ -64,9 +79,10 @@ type CommandResult struct {
 	State     *provider.WorkerState  `json:"state,omitempty"`
 	// ProviderDeleteDurationNanos measures the agent-side provider Delete call only.
 	// Zero means unavailable (for example, an older agent); it does not imply success.
-	ProviderDeleteDurationNanos int64     `json:"providerDeleteDurationNanos,omitempty"`
-	SafeError                   string    `json:"safeError,omitempty"`
-	At                          time.Time `json:"at"`
+	ProviderDeleteDurationNanos int64                `json:"providerDeleteDurationNanos,omitempty"`
+	SafeError                   string               `json:"safeError,omitempty"`
+	HostPortProbe               *HostPortProbeResult `json:"hostPortProbe,omitempty"`
+	At                          time.Time            `json:"at"`
 }
 type HostView struct {
 	Host         core.Host             `json:"host"`
