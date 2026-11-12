@@ -123,7 +123,13 @@ RunnerHub's GitHub session and back in to refresh its user token. GitHub App
 installation access and the OAuth user session are separate from the App's
 runner-registration/scale-set credentials. The diagnostic response returns a
 sanitized error code and GitHub request ID; it never returns the upstream
-response body or credentials.
+response body or credentials. When GitHub supplies an
+`X-Accepted-GitHub-Permissions` header, the response includes only a bounded,
+sanitized summary of permission names and levels for troubleshooting. It is
+diagnostic evidence, not proof of successful authorization. If the installation
+inventory explicitly reports missing Actions permissions, the inspector refuses
+to issue futile workflow-run requests and gives a permission-specific error.
+Unknown/missing permission metadata is not assumed to mean access is denied.
 
 After two clear Actions permission denials in the same installation, the
 on-demand scan pauses remaining repositories **in that installation** to avoid

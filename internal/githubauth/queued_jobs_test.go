@@ -135,6 +135,7 @@ func TestQueuedJobsClassifiesSanitizedGitHubFailures(t *testing.T) {
 				calls++
 				header := make(http.Header)
 				header.Set("X-GitHub-Request-Id", "BEEF:1")
+				header.Set("X-Accepted-GitHub-Permissions", "actions=read")
 				header.Set("X-RateLimit-Remaining", tc.remaining)
 				header.Set("X-RateLimit-Reset", "1794013200")
 				return &http.Response{
@@ -148,8 +149,8 @@ func TestQueuedJobsClassifiesSanitizedGitHubFailures(t *testing.T) {
 			if !errors.As(err, &classified) {
 				t.Fatalf("expected typed queue error, got %T: %v", err, err)
 			}
-			if classified.Code != tc.code || classified.RequestID != "BEEF:1" {
-				t.Fatalf("code=%q id=%q, want %q/BEEF:1", classified.Code, classified.RequestID, tc.code)
+			if classified.Code != tc.code || classified.RequestID != "BEEF:1" || classified.AcceptedPermissions != "actions=read" {
+				t.Fatalf("code=%q id=%q permissions=%q, want %q/BEEF:1/actions=read", classified.Code, classified.RequestID, classified.AcceptedPermissions, tc.code)
 			}
 			if tc.code == "github-rate-limited" && classified.RetryAt == "" {
 				t.Fatal("rate-limit reset timestamp was not retained")
@@ -161,5 +162,37 @@ func TestQueuedJobsClassifiesSanitizedGitHubFailures(t *testing.T) {
 				t.Fatalf("expected one GitHub request, got %d", calls)
 			}
 		})
+	}
+}
+
+func TestQueuedJobsChecksKnownInstallationActionsPermissionBeforeAnyNetworkRead(t *testing.T) {
+	calls := 0
+	m, r := queuedJobsTestManager(t, true, roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		calls++
+		return &http.Response{StatusCode: 500, Header: make(http.Header),
+			Body: io.NopCloser(strings.NewReader("unexpected request")), Request: req}, nil
+	}))
+	entry := m.repositoriesCache["example-user"]
+	entry.Items[0].PermissionsKnown = true
+	entry.Items[0].ActionsPermission = ""
+	m.repositoriesCache["example-user"] = entry
+	_, err := m.QueuedJobs(r, "eutelic/private")
+	var classified *QueueInspectionError
+	if !errors.As(err, &classified) || classified.Code != "github-actions-permission" {
+		t.Fatalf("expected actionable missing Actions permission, got %T %v", err, err)
+	}
+	if calls != 0 {
+		t.Fatalf("known missing permission triggered %d GitHub API calls", calls)
+	}
+}
+
+func TestAcceptedGitHubPermissionsHeaderIsSafeAndBounded(t *testing.T) {
+	if got := safeAcceptedGitHubPermissions(" actions=read,contents=read "); got != "actions=read,contents=read" {
+		t.Fatalf("expected sanitized permission header, got %q", got)
+	}
+	for _, unsafe := range []string{"actions=read\\nAuthorization: secret", strings.Repeat("x", 161), "actions=read;token=<secret>"} {
+		if got := safeAcceptedGitHubPermissions(unsafe); got != "" {
+			t.Fatalf("unsafe permission header was reflected: %q", got)
+		}
 	}
 }

@@ -203,7 +203,7 @@ func TestConnectedRepositoriesComeFromAccessibleInstallations(t *testing.T) {
 		body := ""
 		switch {
 		case r.URL.Path == "/user/installations":
-			body = `{"installations":[{"id":42,"account":{"login":"eutelic","type":"Organization"}}]}`
+			body = `{"installations":[{"id":42,"permissions":{"actions":"read","metadata":"read"},"account":{"login":"eutelic","type":"Organization"}}]}`
 		case r.URL.Path == "/user/installations/42/repositories":
 			body = `{"repositories":[{"id":7,"full_name":"eutelic/runnerhub","private":true,"default_branch":"main"}]}`
 		default:
@@ -226,7 +226,7 @@ func TestConnectedRepositoriesComeFromAccessibleInstallations(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(repos) != 1 || repos[0].FullName != "eutelic/runnerhub" || repos[0].InstallationID != 42 || repos[0].Account != "eutelic" || repos[0].AccountType != "Organization" || !repos[0].Private {
+	if len(repos) != 1 || repos[0].FullName != "eutelic/runnerhub" || repos[0].InstallationID != 42 || repos[0].Account != "eutelic" || repos[0].AccountType != "Organization" || !repos[0].Private || !repos[0].PermissionsKnown || repos[0].ActionsPermission != "read" {
 		t.Fatalf("unexpected repositories: %#v", repos)
 	}
 }

@@ -14,10 +14,11 @@ import (
 // Codes are stable enough for the UI to distinguish per-repo access failures
 // from an OAuth/App permission problem and global API throttling.
 type QueueInspectionError struct {
-	Code      string
-	Detail    string
-	RequestID string
-	RetryAt   string
+	Code                string
+	Detail              string
+	RequestID           string
+	AcceptedPermissions string
+	RetryAt             string
 }
 
 func (e *QueueInspectionError) Error() string { return e.Detail }
@@ -28,7 +29,10 @@ func classifyQueueInspectionError(err error) error {
 		return err
 	}
 	message := strings.ToLower(upstream.Message)
-	result := &QueueInspectionError{RequestID: upstream.RequestID}
+	result := &QueueInspectionError{
+		RequestID:           upstream.RequestID,
+		AcceptedPermissions: upstream.AcceptedPermissions,
+	}
 	switch {
 	case upstream.StatusCode == http.StatusUnauthorized:
 		result.Code = "github-auth-expired"
@@ -109,6 +113,15 @@ func (m *Manager) QueuedJobs(r *http.Request, fullName string) (QueuedJobsReport
 	}
 	if !matched.Private {
 		return QueuedJobsReport{}, errors.New("public repositories require separate untrusted runner isolation")
+	}
+	// A confirmed missing Actions permission cannot be repaired by retrying
+	// the same user-to-server token across every repository. GitHub may omit
+	// permission metadata, so an unknown scope still attempts a bounded read.
+	if matched.PermissionsKnown && !strings.EqualFold(matched.ActionsPermission, "read") && !strings.EqualFold(matched.ActionsPermission, "write") {
+		return QueuedJobsReport{}, &QueueInspectionError{
+			Code:   "github-actions-permission",
+			Detail: "GitHub App installation has no Actions: read permission. Enable it and approve the installation update, then sign in with GitHub again.",
+		}
 	}
 	parts := strings.Split(matched.FullName, "/")
 	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {

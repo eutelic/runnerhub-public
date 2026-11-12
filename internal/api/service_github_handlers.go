@@ -78,7 +78,8 @@ func (s *Service) queuedGitHubJobs(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusBadGateway, map[string]any{
 				"error": "Bad Gateway", "detail": truncate(err.Error()),
 				"code": queueError.Code, "requestId": queueError.RequestID,
-				"retryAt": queueError.RetryAt,
+				"acceptedPermissions": queueError.AcceptedPermissions,
+				"retryAt":             queueError.RetryAt,
 			})
 			return
 		}

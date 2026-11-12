@@ -91,19 +91,23 @@ type oauthTokenResponse struct {
 }
 
 type Installation struct {
-	ID          int64  `json:"id"`
-	Account     string `json:"account"`
-	AccountType string `json:"accountType,omitempty"`
+	ID                int64  `json:"id"`
+	Account           string `json:"account"`
+	AccountType       string `json:"accountType,omitempty"`
+	ActionsPermission string `json:"actionsPermission,omitempty"`
+	PermissionsKnown  bool   `json:"permissionsKnown,omitempty"`
 }
 
 type ConnectedRepository struct {
-	ID             int64  `json:"id"`
-	FullName       string `json:"fullName"`
-	Private        bool   `json:"private"`
-	DefaultBranch  string `json:"defaultBranch"`
-	InstallationID int64  `json:"installationId"`
-	Account        string `json:"account"`
-	AccountType    string `json:"accountType,omitempty"`
+	ID                int64  `json:"id"`
+	FullName          string `json:"fullName"`
+	Private           bool   `json:"private"`
+	DefaultBranch     string `json:"defaultBranch"`
+	InstallationID    int64  `json:"installationId"`
+	Account           string `json:"account"`
+	AccountType       string `json:"accountType,omitempty"`
+	ActionsPermission string `json:"actionsPermission,omitempty"`
+	PermissionsKnown  bool   `json:"permissionsKnown,omitempty"`
 }
 
 type installationCacheEntry struct {
@@ -635,8 +639,9 @@ func (m *Manager) githubLogin(r *http.Request, token string) (string, error) {
 func (m *Manager) installations(r *http.Request, token string) ([]Installation, error) {
 	var out struct {
 		Installations []struct {
-			ID      int64 `json:"id"`
-			Account struct {
+			ID          int64             `json:"id"`
+			Permissions map[string]string `json:"permissions"`
+			Account     struct {
 				Login string `json:"login"`
 				Type  string `json:"type"`
 			} `json:"account"`
@@ -648,7 +653,13 @@ func (m *Manager) installations(r *http.Request, token string) ([]Installation, 
 	installations := make([]Installation, 0, len(out.Installations))
 	for _, item := range out.Installations {
 		if item.ID > 0 {
-			installations = append(installations, Installation{ID: item.ID, Account: item.Account.Login, AccountType: item.Account.Type})
+			installations = append(installations, Installation{
+				ID:                item.ID,
+				Account:           item.Account.Login,
+				AccountType:       item.Account.Type,
+				ActionsPermission: item.Permissions["actions"],
+				PermissionsKnown:  item.Permissions != nil,
+			})
 		}
 	}
 	return installations, nil
@@ -671,13 +682,15 @@ func (m *Manager) repositoriesForInstallation(r *http.Request, token string, ins
 		}
 		for _, repo := range out.Repositories {
 			all = append(all, ConnectedRepository{
-				ID:             repo.ID,
-				FullName:       repo.FullName,
-				Private:        repo.Private,
-				DefaultBranch:  repo.DefaultBranch,
-				InstallationID: installation.ID,
-				Account:        installation.Account,
-				AccountType:    installation.AccountType,
+				ID:                repo.ID,
+				FullName:          repo.FullName,
+				Private:           repo.Private,
+				DefaultBranch:     repo.DefaultBranch,
+				InstallationID:    installation.ID,
+				Account:           installation.Account,
+				AccountType:       installation.AccountType,
+				ActionsPermission: installation.ActionsPermission,
+				PermissionsKnown:  installation.PermissionsKnown,
 			})
 		}
 		if len(out.Repositories) < 100 {
@@ -690,16 +703,34 @@ func (m *Manager) repositoriesForInstallation(r *http.Request, token string, ins
 // githubAPIError preserves safe API failure metadata for queue diagnostics.
 // Never persist Authorization or raw response bodies in this error.
 type githubAPIError struct {
-	StatusCode    int
-	Message       string
-	RequestID     string
-	RateRemaining string
-	RateReset     string
-	RetryAfter    string
+	StatusCode          int
+	Message             string
+	RequestID           string
+	AcceptedPermissions string
+	RateRemaining       string
+	RateReset           string
+	RetryAfter          string
 }
 
 func (e *githubAPIError) Error() string {
 	return fmt.Sprintf("github api returned %d: %s", e.StatusCode, e.Message)
+}
+
+// Keep only bounded, printable permission names and levels. This header is
+// diagnostic evidence from an upstream API, never an authorization grant.
+func safeAcceptedGitHubPermissions(raw string) string {
+	value := strings.TrimSpace(raw)
+	if len(value) > 160 {
+		return ""
+	}
+	for _, ch := range value {
+		if ch >= 'a' && ch <= 'z' || ch >= 'A' && ch <= 'Z' ||
+			ch >= '0' && ch <= '9' || strings.ContainsRune("_-=,; .", ch) {
+			continue
+		}
+		return ""
+	}
+	return value
 }
 
 func (m *Manager) apiGET(r *http.Request, token, path string, out any) error {
@@ -740,10 +771,13 @@ func (m *Manager) apiGET(r *http.Request, token, path string, out any) error {
 			requestID = ""
 		}
 		return &githubAPIError{
-			StatusCode: resp.StatusCode, Message: message, RequestID: requestID,
-			RateRemaining: resp.Header.Get("X-RateLimit-Remaining"),
-			RateReset:     resp.Header.Get("X-RateLimit-Reset"),
-			RetryAfter:    resp.Header.Get("Retry-After"),
+			StatusCode:          resp.StatusCode,
+			Message:             message,
+			RequestID:           requestID,
+			AcceptedPermissions: safeAcceptedGitHubPermissions(resp.Header.Get("X-Accepted-GitHub-Permissions")),
+			RateRemaining:       resp.Header.Get("X-RateLimit-Remaining"),
+			RateReset:           resp.Header.Get("X-RateLimit-Reset"),
+			RetryAfter:          resp.Header.Get("Retry-After"),
 		}
 	}
 	return json.NewDecoder(resp.Body).Decode(out)
