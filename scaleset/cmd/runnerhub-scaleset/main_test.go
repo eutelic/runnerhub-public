@@ -161,6 +161,39 @@ func TestHelpers(t *testing.T) {
 	}
 }
 
+func TestHandleJobCompletedReportsIdentityAndAcknowledgesRecoverableEvent(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/api/v1/scale-events" {
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer admin" {
+			t.Fatalf("authorization=%q", got)
+		}
+		var event scaleEvent
+		if err := json.NewDecoder(r.Body).Decode(&event); err != nil {
+			t.Fatal(err)
+		}
+		if event.PoolID != "pool-a" || event.RunnerName != "runner-a" || event.State != "completed" ||
+			event.Repository != "acme/app" || event.WorkflowRunID != 1234 || event.JobID != "5678" ||
+			event.WorkflowRef != "acme/app/.github/workflows/build.yml@main" {
+			t.Fatalf("completion event identity=%+v", event)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	s := &scaler{
+		names: map[string]string{"runner-a": "worker-a"},
+		hub:   runnerHubClient{base: srv.URL, token: "admin", poolID: "pool-a", http: srv.Client()},
+	}
+	info := &scaleset.JobCompleted{RunnerName: "runner-a", OwnerName: "acme", RepositoryName: "app", JobWorkflowRef: "acme/app/.github/workflows/build.yml@main", WorkflowRunID: 1234, JobID: "5678", JobDisplayName: "build", FinishTime: time.Now().UTC(), Result: "success"}
+	if err := s.HandleJobCompleted(context.Background(), info); err != nil {
+		t.Fatalf("recoverable completion callback failed: %v", err)
+	}
+	if got := s.count(); got != 0 {
+		t.Fatalf("completed runner remains in listener state: count=%d", got)
+	}
+}
+
 func TestAllDesiredListenersReady(t *testing.T) {
 	if !allDesiredListenersReady(map[string]managedConfig{}, map[string]managedListener{}) {
 		t.Fatal("zero desired listeners should be ready")
@@ -180,6 +213,36 @@ func TestAllDesiredListenersReady(t *testing.T) {
 	desired["pool-b"] = managedConfig{PoolID: "pool-b"}
 	if allDesiredListenersReady(desired, active) {
 		t.Fatal("partially ready listener set reported ready")
+	}
+}
+
+func TestAllDesiredListenersReadyThirtyFourPoolMatrix(t *testing.T) {
+	desired := make(map[string]managedConfig, 34)
+	active := make(map[string]managedListener, 34)
+	for i := 0; i < 34; i++ {
+		id := fmt.Sprintf("pool-%02d", i)
+		desired[id] = managedConfig{PoolID: id}
+		active[id] = managedListener{ready: true}
+	}
+	if !allDesiredListenersReady(desired, active) {
+		t.Fatal("34/34 ready listeners reported degraded")
+	}
+	delete(active, "pool-17")
+	if allDesiredListenersReady(desired, active) {
+		t.Fatal("33/34 ready listeners reported fully ready")
+	}
+	active["pool-17"] = managedListener{ready: false}
+	if allDesiredListenersReady(desired, active) {
+		t.Fatal("blocked listener reported fully ready")
+	}
+	for id := range active {
+		delete(active, id)
+	}
+	if allDesiredListenersReady(desired, active) {
+		t.Fatal("0/34 available listeners reported fully ready")
+	}
+	if !allDesiredListenersReady(map[string]managedConfig{}, map[string]managedListener{}) {
+		t.Fatal("zero configured pools should not block manager readiness")
 	}
 }
 

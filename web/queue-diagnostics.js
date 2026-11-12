@@ -8,7 +8,7 @@
     const source = pool?.scope || {};
     const repo = source.owner && source.repository
       ? source.owner + '/' + source.repository : (source.owner || '');
-    return [repo, pool?.scaleSetName || pool?.name || pool?.id].filter(Boolean).join(' — ');
+    return [repo, pool?.scaleSetName || pool?.name || pool?.id, pool?.id ? 'pool '+pool.id : ''].filter(Boolean).join(' — ');
   }
 
   function summarize(pools, statuses, runtime) {

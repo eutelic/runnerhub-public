@@ -57,7 +57,8 @@ grep -Fq 'ghcr.io/eutelic/runnerhub-control:latest' "$trusted"
 grep -Fq 'RUNNERHUB_MACHINE_AGENT_IMAGE: *agent-image' "$trusted"
 grep -Fq 'io.runnerhub.component: scaleset' "$trusted"
 grep -Fq 'RUNNERHUB_DYNAMIC_CONFIG: "true"' "$trusted"
-grep -Fq 'test -s /run/runnerhub/scaleset-ready' "$trusted"
+grep -Fq 'test -r /proc/1/cmdline' "$trusted"
+! grep -Fq 'test -s /run/runnerhub/scaleset-ready' "$trusted"
 ! grep -Eq 'CHANGE_ME|TRUENAS_HOST|/mnt/POOL/runnerhub|github-installation-id|github-url:' "$trusted"
 
 bash "$prepare" \

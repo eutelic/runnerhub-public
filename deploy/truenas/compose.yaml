@@ -160,8 +160,10 @@ services:
         source: *secrets-path
         target: /run/runnerhub-secrets
         read_only: true
+    # Container health is manager liveness only. Per-pool readiness is reported by RunnerHub status APIs.
+    # A single GitHub listener outage must not hold the whole TrueNAS app in DEPLOYING.
     healthcheck:
-      test: ["CMD-SHELL", "test -s /run/runnerhub/scaleset-ready"]
+      test: ["CMD-SHELL", "test -r /proc/1/cmdline"]
       interval: 5s
       timeout: 2s
       retries: 24

@@ -334,6 +334,51 @@ func (s *Service) createScaleWorker(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 202, worker)
 }
 
+func validateRegistrationTerminalEvent(wk core.Worker, in scaleEventRequest) error {
+	jobID := strings.TrimSpace(in.JobID)
+	jobNumber, err := strconv.ParseInt(jobID, 10, 64)
+	if err != nil || jobNumber <= 0 {
+		return errors.New("registration completion requires a positive GitHub job ID")
+	}
+	if in.WorkflowRunID <= 0 {
+		return errors.New("registration completion requires a GitHub workflow run ID")
+	}
+	repository := strings.TrimSpace(in.Repository)
+	parts := strings.Split(repository, "/")
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return errors.New("registration completion requires an owner/repository identity")
+	}
+	if strings.TrimSpace(in.WorkflowRef) == "" {
+		return errors.New("registration completion requires a workflow identity")
+	}
+	switch wk.Scope.Kind {
+	case core.ScopeRepository:
+		expected := wk.Scope.Owner + "/" + wk.Scope.Repository
+		if !strings.EqualFold(repository, expected) {
+			return fmt.Errorf("completion repository %q does not match runner scope %q", repository, expected)
+		}
+	case core.ScopeOrganization:
+		if !strings.EqualFold(parts[0], wk.Scope.Owner) {
+			return fmt.Errorf("completion repository %q is outside organization runner scope %q", repository, wk.Scope.Owner)
+		}
+	default:
+		return errors.New("registration completion has an unsupported runner scope")
+	}
+	if wk.Repository != "" && !strings.EqualFold(repository, wk.Repository) {
+		return errors.New("completion repository does not match the worker's recorded job")
+	}
+	if wk.WorkflowRunID > 0 && in.WorkflowRunID != wk.WorkflowRunID {
+		return errors.New("completion workflow run does not match the worker's recorded job")
+	}
+	if wk.WorkflowRef != "" && !strings.EqualFold(strings.TrimSpace(in.WorkflowRef), strings.TrimSpace(wk.WorkflowRef)) {
+		return errors.New("completion workflow does not match the worker's recorded job")
+	}
+	if wk.JobID != "" && jobID != wk.JobID {
+		return errors.New("completion job ID does not match the worker's recorded job")
+	}
+	return nil
+}
+
 type scaleEventRequest struct {
 	PoolID        string    `json:"poolId"`
 	RunnerName    string    `json:"runnerName"`
@@ -348,6 +393,59 @@ type scaleEventRequest struct {
 	StartedAt     time.Time `json:"startedAt,omitempty"`
 	CompletedAt   time.Time `json:"completedAt,omitempty"`
 	Result        string    `json:"result,omitempty"`
+}
+
+func (s *Service) applyScaleEventState(wk *core.Worker, in scaleEventRequest, state string, wasStarted bool) error {
+	switch state {
+	case "started", "busy":
+		if wk.RegisteredAt.IsZero() {
+			wk.RegisteredAt = time.Now().UTC()
+		}
+		if wk.StartedAt.IsZero() {
+			wk.StartedAt = time.Now().UTC()
+		}
+		if wk.State == core.WorkerRegistering {
+			wk.State = core.WorkerReady
+		}
+		if wk.State != core.WorkerBusy {
+			if !core.CanTransitionWorker(wk.State, core.WorkerBusy) {
+				return fmt.Errorf("invalid worker transition %s -> busy", wk.State)
+			}
+			wk.State = core.WorkerBusy
+		}
+		if s.Metrics != nil && !wasStarted && !wk.QueuedAt.IsZero() && !wk.StartedAt.IsZero() && !wk.StartedAt.Before(wk.QueuedAt) {
+			s.Metrics.Queue(wk.PoolID, wk.StartedAt.Sub(wk.QueuedAt))
+		}
+	case "completed", "canceled":
+		if wk.CompletedAt.IsZero() {
+			wk.CompletedAt = time.Now().UTC()
+		}
+		if wk.State != core.WorkerCompleted {
+			if wk.State == core.WorkerRegistering {
+				// A trusted scale-set completion may arrive before RunnerHub
+				// observes the started callback. The handler verified the complete
+				// pool, runner, repository, workflow, run, and job identity above;
+				// keep this exception local to the authenticated event path.
+				wk.State = core.WorkerCompleted
+			} else {
+				if !core.CanTransitionWorker(wk.State, core.WorkerCompleted) {
+					return fmt.Errorf("invalid worker transition %s -> completed", wk.State)
+				}
+				wk.State = core.WorkerCompleted
+			}
+		}
+		if wk.JobResult == "" {
+			wk.JobResult = state
+		}
+	case "failed":
+		wk.State = core.WorkerFailed
+		wk.FailureReason = truncate(in.Detail)
+		wk.FailedAt = time.Now().UTC()
+		if wk.JobResult == "" {
+			wk.JobResult = "failed"
+		}
+	}
+	return nil
 }
 
 func (s *Service) scaleEvent(w http.ResponseWriter, r *http.Request) {
@@ -402,6 +500,23 @@ func (s *Service) scaleEvent(w http.ResponseWriter, r *http.Request) {
 		problem(w, 404, errors.New("scale-set worker not found"))
 		return
 	}
+	terminalEvent := state == "completed" || state == "canceled" || state == "failed"
+	if terminalEvent {
+		if wk.JobID != "" && in.JobID != "" && strings.TrimSpace(wk.JobID) != strings.TrimSpace(in.JobID) {
+			problem(w, 409, errors.New("terminal event job ID does not match the worker"))
+			return
+		}
+		if wk.WorkflowRunID > 0 && in.WorkflowRunID > 0 && wk.WorkflowRunID != in.WorkflowRunID {
+			problem(w, 409, errors.New("terminal event workflow run does not match the worker"))
+			return
+		}
+		if wk.State == core.WorkerRegistering && (state == "completed" || state == "canceled") {
+			if err := validateRegistrationTerminalEvent(*wk, in); err != nil {
+				problem(w, 409, err)
+				return
+			}
+		}
+	}
 	wasStarted := !wk.StartedAt.IsZero() || wk.State == core.WorkerBusy
 	wk.Repository = firstNonEmpty(in.Repository, wk.Repository)
 	wk.WorkflowRef = firstNonEmpty(in.WorkflowRef, wk.WorkflowRef)
@@ -420,49 +535,11 @@ func (s *Service) scaleEvent(w http.ResponseWriter, r *http.Request) {
 		wk.CompletedAt = in.CompletedAt
 	}
 	wk.JobResult = firstNonEmpty(in.Result, wk.JobResult)
-	switch state {
-	case "started", "busy":
-		if wk.RegisteredAt.IsZero() {
-			wk.RegisteredAt = time.Now().UTC()
-		}
-		if wk.StartedAt.IsZero() {
-			wk.StartedAt = time.Now().UTC()
-		}
-		if wk.State == core.WorkerRegistering {
-			wk.State = core.WorkerReady
-		}
-		if wk.State != core.WorkerBusy {
-			if !core.CanTransitionWorker(wk.State, core.WorkerBusy) {
-				problem(w, 409, fmt.Errorf("invalid worker transition %s -> busy", wk.State))
-				return
-			}
-			wk.State = core.WorkerBusy
-		}
-		if s.Metrics != nil && !wasStarted && !wk.QueuedAt.IsZero() && !wk.StartedAt.IsZero() && !wk.StartedAt.Before(wk.QueuedAt) {
-			s.Metrics.Queue(wk.PoolID, wk.StartedAt.Sub(wk.QueuedAt))
-		}
-	case "completed", "canceled":
-		if wk.CompletedAt.IsZero() {
-			wk.CompletedAt = time.Now().UTC()
-		}
-		if wk.State != core.WorkerCompleted {
-			if !core.CanTransitionWorker(wk.State, core.WorkerCompleted) {
-				problem(w, 409, fmt.Errorf("invalid worker transition %s -> completed", wk.State))
-				return
-			}
-			wk.State = core.WorkerCompleted
-		}
-		if wk.JobResult == "" {
-			wk.JobResult = state
-		}
-	case "failed":
-		wk.State = core.WorkerFailed
-		wk.FailureReason = truncate(in.Detail)
-		wk.FailedAt = time.Now().UTC()
-		if wk.JobResult == "" {
-			wk.JobResult = "failed"
-		}
+	if err := s.applyScaleEventState(wk, in, state, wasStarted); err != nil {
+		problem(w, 409, err)
+		return
 	}
+
 	now := time.Now().UTC()
 	wk.CompletedAt = normalizeCompletionTime(wk.StartedAt, wk.CompletedAt, now)
 	wk.UpdatedAt = now

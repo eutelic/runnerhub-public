@@ -435,6 +435,75 @@ func TestProviderFailureRetainsOnlyPreJobDiagnostics(t *testing.T) {
 		t.Fatalf("post-job diagnostics unexpectedly retained: %q", got.ProviderDiagnostics)
 	}
 }
+func TestScaleCompletionBeforeStartedRequiresAndPersistsMatchingJobIdentity(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.OpenSQLite(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	pool := core.RunnerPool{ID: "pool-early-completion", Name: "early-completion", Scope: core.GitHubScope{Kind: core.ScopeRepository, Owner: "acme", Repository: "app"}, Resources: core.Resources{CPUMillis: 1000, MemoryBytes: 1 << 30}, MaxConcurrency: 1, RunnerGroupID: 1}
+	if err := st.UpsertPool(ctx, pool); err != nil {
+		t.Fatal(err)
+	}
+	worker := core.Worker{ID: "worker-early-completion", PoolID: pool.ID, RunnerName: "runnerhub-abc", State: core.WorkerRegistering, Scope: pool.Scope, RegisteredAt: time.Now().UTC()}
+	if err := st.UpsertWorker(ctx, worker); err != nil {
+		t.Fatal(err)
+	}
+	svc := &Service{Store: st}
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/scale-events", bytes.NewBufferString(
+		`{"poolId":"pool-early-completion","runnerName":"runnerhub-abc","state":"completed","repository":"acme/app","workflowRef":"acme/app/.github/workflows/build.yml@main","workflowRunId":1234,"jobId":"5678","result":"success"}`,
+	))
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	svc.Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("scale completion status=%d body=%s", response.Code, response.Body.String())
+	}
+	got, err := st.GetWorker(ctx, worker.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.State != core.WorkerCompleted || got.JobID != "5678" || got.WorkflowRunID != 1234 ||
+		got.Repository != "acme/app" || got.StartedAt.IsZero() == false || got.CompletedAt.IsZero() {
+		t.Fatalf("early terminal event did not preserve truthful lifecycle identity: %+v", got)
+	}
+}
+
+func TestScaleCompletionBeforeStartedRejectsMismatchedRepository(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.OpenSQLite(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	pool := core.RunnerPool{ID: "pool-early-completion", Name: "early-completion", Scope: core.GitHubScope{Kind: core.ScopeRepository, Owner: "acme", Repository: "app"}, Resources: core.Resources{CPUMillis: 1000, MemoryBytes: 1 << 30}, MaxConcurrency: 1, RunnerGroupID: 1}
+	if err := st.UpsertPool(ctx, pool); err != nil {
+		t.Fatal(err)
+	}
+	worker := core.Worker{ID: "worker-early-completion", PoolID: pool.ID, RunnerName: "runnerhub-abc", State: core.WorkerRegistering, Scope: pool.Scope}
+	if err := st.UpsertWorker(ctx, worker); err != nil {
+		t.Fatal(err)
+	}
+	svc := &Service{Store: st}
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/scale-events", bytes.NewBufferString(
+		`{"poolId":"pool-early-completion","runnerName":"runnerhub-abc","state":"completed","repository":"acme/other","workflowRef":"acme/other/.github/workflows/build.yml@main","workflowRunId":1234,"jobId":"5678","result":"success"}`,
+	))
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	svc.Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusConflict {
+		t.Fatalf("mismatched completion status=%d body=%s, want 409", response.Code, response.Body.String())
+	}
+	got, err := st.GetWorker(ctx, worker.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.State != core.WorkerRegistering || got.JobID != "" || !got.CompletedAt.IsZero() {
+		t.Fatalf("rejected completion mutated worker: %+v", got)
+	}
+}
+
 func TestCanceledPublisherExitQueuesExactCleanupAndHoldsReservationUntilDelete(t *testing.T) {
 	ctx := context.Background()
 	st, err := store.OpenSQLite(":memory:")

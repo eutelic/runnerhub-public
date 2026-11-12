@@ -58,6 +58,11 @@ test('host rejection reasons and occupied concurrency are visible', () => {
   assert.match(result[0].explanation,/insufficient RAM/);
   assert.match(result[0].explanation,/additional jobs can wait/);
 });
+test('readiness diagnostics identify the affected pool ID', () => {
+  const result = summarize([pool()],[listener('backing_off')],[healthy()]);
+  assert.match(result[0].label, /pool p1/);
+});
+
 test('unknown listener is explicitly uncertain', () => {
   const result = summarize([pool()],[],[healthy()]);
   assert.equal(result[0].listener,'unknown');
