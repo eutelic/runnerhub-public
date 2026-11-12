@@ -178,11 +178,20 @@ jobs:
       - name: Enforce gofmt for tracked Go sources
         run: |
           set -euo pipefail
-          mapfile -d '' files < <(git ls-files -z -- '*.go')
+          mapfile -d '' tracked < <(git ls-files -z -- '*.go' ':(exclude)scaleset/**')
+          # git ls-files includes paths deleted from the working tree.
+          # Filter these before invoking gofmt, as in the scale-set lane.
+          files=()
+          for file in "${tracked[@]}"; do
+            [[ -f "$file" ]] && files+=("$file")
+          done
           if [[ ${#files[@]} -eq 0 ]]; then exit 0; fi
           unformatted="$(gofmt -l "${files[@]}")"
           if [[ -n "$unformatted" ]]; then
             printf 'Run gofmt on these files:\n%s\n' "$unformatted"
+            # Include exact formatting differences so an off-runner maintainer
+            # can repair the source without needing shell access to the runner.
+            gofmt -d "${files[@]}"
             exit 1
           fi
       - name: Lint GitHub Actions workflows
@@ -190,16 +199,37 @@ jobs:
       - run: go test ./...
       - run: go test -tags localtest ./tests/soak -count=1
       - run: go vet ./...
+      - name: Report production cyclomatic complexity baseline
+        run: |
+          set -euo pipefail
+          baseline="$(GOMAXPROCS=2 go run -p=1 github.com/fzipp/gocyclo/cmd/gocyclo@v0.6.0 -top 20 -ignore '_test\.go' .)"
+          printf '%s\n' "$baseline"
+
+
+      - name: Prevent production complexity regressions
+        run: |
+          set -euo pipefail
+          GOMAXPROCS=2 go run -p=1 github.com/fzipp/gocyclo/cmd/gocyclo@v0.6.0 -ignore '_test\.go' . | python3 scripts/check-go-complexity.py
+          python3 -m unittest discover -s scripts -p 'test_go_complexity.py'
+
       - name: Staticcheck correctness checks
         run: GOMAXPROCS=2 go run -p=1 honnef.co/go/tools/cmd/staticcheck@v0.8.2 -checks=SA* ./...
-      - name: Select scale-set Go toolchain for workspace-wide security scans
+      - name: Run Go security static analysis for the root module
+        run: GOMAXPROCS=2 go run -p=1 github.com/securego/gosec/v2/cmd/gosec@v2.30.0 -exclude-generated -exclude-dir=scaleset -severity high ./...
+      - name: Run Go vulnerability scan for the root module
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...
+      - name: Select scale-set Go toolchain for security scans
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version-file: scaleset/go.mod
           cache: false
-      - name: Run Go security static analysis
-        run: GOMAXPROCS=2 go run -p=1 github.com/securego/gosec/v2/cmd/gosec@v2.30.0 -exclude-generated -exclude-dir=scaleset -severity high ./...
-      - run: go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...
+      - name: Run Go security static analysis for the scale-set module
+        working-directory: scaleset
+        run: GOMAXPROCS=2 go run -p=1 github.com/securego/gosec/v2/cmd/gosec@v2.30.0 -exclude-generated -severity high ./...
+      - name: Run Go vulnerability scan for the scale-set module
+        working-directory: scaleset
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...
+
 
   dashboard-ux:
     needs: plan
@@ -288,10 +318,24 @@ jobs:
         with:
           go-version-file: scaleset/go.mod
           cache-dependency-path: scaleset/go.sum
+      - name: Regression-test scale-set gofmt path selection
+        working-directory: .
+        run: bash scripts/test-scaleset-gofmt-paths.sh
       - name: Enforce gofmt for tracked Go sources
+        # git ls-files emits repository-root paths, even from the scaleset module.
+        # Run gofmt at the checkout root so those paths resolve correctly.
+        working-directory: .
         run: |
           set -euo pipefail
-          mapfile -d '' files < <(git ls-files -z -- '*.go')
+          # Scope this check to the scale-set module; root-module formatting
+          # is checked by the separate Go CI job.
+          mapfile -d '' tracked < <(git ls-files -z -- 'scaleset/*.go' 'scaleset/**/*.go')
+          # The index also lists tracked files deleted in this PR; do not pass
+          # paths absent from the checkout to gofmt.
+          files=()
+          for file in "${tracked[@]}"; do
+            [[ -f "$file" ]] && files+=("$file")
+          done
           if [[ ${#files[@]} -eq 0 ]]; then exit 0; fi
           unformatted="$(gofmt -l "${files[@]}")"
           if [[ -n "$unformatted" ]]; then
