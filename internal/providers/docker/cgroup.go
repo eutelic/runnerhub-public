@@ -109,7 +109,7 @@ func (p *Provider) probeAggregateResourceGroups(ctx context.Context) (bool, stri
 	defer os.RemoveAll(runDir)
 	name := "runnerhub-cgroup-probe-" + strconv.FormatInt(time.Now().UnixNano(), 36)
 	defer func() {
-		_, _ = p.run.Run(context.Background(), p.cfg.DockerBinary, "rm", "-f", name)
+		_, _ = p.run.Run(context.Background(), p.cfg.DockerBinary, "rm", "-f", "-v", name)
 	}()
 
 	_, err = p.run.Run(ctx, p.cfg.DockerBinary,
