@@ -14,7 +14,7 @@ import (
 	"github.com/rhysd/actionlint"
 )
 
-const ParserVersion = "actionlint-v1.7.7"
+const ParserVersion = "actionlint-v1.7.12-semantic-v2"
 
 type JobFingerprint struct {
 	JobID                  string   `json:"jobId"`
@@ -89,7 +89,8 @@ func FingerprintJob(source []byte, githubJobName string) (JobFingerprint, error)
 	}
 	sort.Strings(refs)
 
-	mutableAction, opaqueAction := actionPolicy(job)
+	mutableAction, opaqueAction, actionExternalState := actionPolicy(job)
+	externalState = externalState || actionExternalState
 
 	return JobFingerprint{
 		JobID:                  job.ID.Value,
@@ -145,7 +146,33 @@ func baseDisplayName(job *actionlint.Job) string {
 	return strings.TrimSpace(job.ID.Value)
 }
 
-func actionPolicy(job *actionlint.Job) (mutable, opaque bool) {
+func checkoutUsesExternalState(action *actionlint.ExecAction) bool {
+	if action == nil {
+		return true
+	}
+	for _, name := range []string{"repository", "ref", "submodules", "lfs"} {
+		input := action.Inputs[name]
+		if input == nil || input.Value == nil {
+			continue
+		}
+		value := strings.ToLower(strings.TrimSpace(input.Value.Value))
+		if value == "" {
+			continue
+		}
+		if name == "submodules" || name == "lfs" {
+			if value == "false" || value == "no" {
+				continue
+			}
+			return true
+		}
+		// Explicit repository/ref values are not represented by the current
+		// repository's HeadTreeSHA, even when they happen to resolve to it.
+		return true
+	}
+	return false
+}
+
+func actionPolicy(job *actionlint.Job) (mutable, opaque, externalState bool) {
 	for _, step := range job.Steps {
 		if step == nil || step.Exec == nil {
 			continue
@@ -169,9 +196,23 @@ func actionPolicy(job *actionlint.Job) (mutable, opaque bool) {
 		}
 		repository := strings.ToLower(uses[:at])
 		switch repository {
-		case "actions/checkout", "actions/setup-go":
-			// These are explicitly modeled as repository/toolchain setup. The
-			// checked-out repository state is covered by input_hash.
+		case "actions/checkout":
+			// The checked-out source tree is covered by input_hash only when it
+			// comes from this run's repository tree. Submodules, LFS objects,
+			// alternate repositories, and alternate refs add external inputs.
+			if checkoutUsesExternalState(action) {
+				externalState = true
+			}
+		case "actions/setup-go", "actions/setup-node", "actions/setup-python", "actions/setup-java", "actions/setup-dotnet":
+			// These pinned setup actions have a bounded, explicit interface, but
+			// resolve toolchain binaries outside the repository tree. Preserve the
+			// job definition in the fingerprint and require external freshness.
+			externalState = true
+		case "actions/cache", "actions/cache/restore", "actions/cache/save":
+			// Cache contents are external inputs even when the action and key
+			// are pinned in the workflow. Keep the action definition in the hash
+			// and require freshness evidence before reusing a validation result.
+			externalState = true
 		default:
 			opaque = true
 		}

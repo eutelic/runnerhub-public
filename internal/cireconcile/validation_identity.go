@@ -34,6 +34,41 @@ const (
 	validationExclusionSideEffectingWorkflow = "side-effecting-workflow"
 )
 
+const validationExclusionMutableSnapshotPublication = "mutable-snapshot-publication"
+
+func cachedWorkflowClassification(worker core.Worker) (workflowparser.WorkflowClassification, bool) {
+	if _, ok := cachedWorkerIdentity(worker); ok {
+		return workflowparser.WorkflowClassification{
+			Purpose:            workflowparser.PurposeValidation,
+			OrdinaryValidation: true,
+			Evidence:           []string{"workflow purpose classification was persisted by prior reconciliation"},
+		}, true
+	}
+	if worker.ValidationExclusionAnalysisVersion != ciaudit.AnalyzerVersion ||
+		strings.TrimSpace(worker.ValidationExclusionReason) == "" {
+		return workflowparser.WorkflowClassification{}, false
+	}
+	classification := workflowparser.WorkflowClassification{
+		Evidence: []string{"workflow purpose classification was persisted by prior reconciliation"},
+	}
+	switch worker.ValidationExclusionReason {
+	case validationExclusionWorkflowUnclassified, validationExclusionWorkflowParse,
+		validationExclusionMissingMetadata, validationExclusionInvalidRepository:
+		classification.Purpose = workflowparser.PurposeUnknown
+	case validationExclusionMutableSnapshotPublication:
+		classification.Purpose = workflowparser.PurposeDeployment
+		classification.MutableSnapshotPublish = true
+	case validationExclusionSideEffectingWorkflow:
+		classification.Purpose = workflowparser.PurposeDeployment
+	default:
+		// Validation identity exclusions are only written after source-based
+		// purpose classification has accepted an ordinary validation workflow.
+		classification.Purpose = workflowparser.PurposeValidation
+		classification.OrdinaryValidation = true
+	}
+	return classification, true
+}
+
 var errValidationIdentityUnsupported = errors.New("validation identity is not safely derivable")
 
 type validationIdentityUnsupportedError struct {
@@ -158,6 +193,31 @@ func (r *Reconciler) reconcileValidationIdentity(
 	return certificates.UpsertCIValidationCertificate(ctx, repository, certificate)
 }
 
+func (r *Reconciler) workflowRepositoryFile(
+	ctx context.Context,
+	worker core.Worker,
+	run store.CIWorkflowRun,
+	fileCache map[string]githubrunner.RepositoryFile,
+) (githubrunner.RepositoryFile, error) {
+	if strings.TrimSpace(run.HeadSHA) == "" || strings.TrimSpace(run.Path) == "" {
+		return githubrunner.RepositoryFile{}, unsupportedValidation(validationExclusionMissingMetadata, nil)
+	}
+	scope, ok := repositoryScope(worker.Repository)
+	if !ok {
+		return githubrunner.RepositoryFile{}, unsupportedValidation(validationExclusionInvalidRepository, nil)
+	}
+	cacheKey := normalizeRepository(worker.Repository) + ":" + run.HeadSHA + ":" + run.Path
+	if file, ok := fileCache[cacheKey]; ok {
+		return file, nil
+	}
+	file, err := r.GitHub.GetRepositoryFile(ctx, scope, run.Path, run.HeadSHA)
+	if err != nil {
+		return githubrunner.RepositoryFile{}, err
+	}
+	fileCache[cacheKey] = file
+	return file, nil
+}
+
 func (r *Reconciler) validationIdentity(
 	ctx context.Context,
 	worker core.Worker,
@@ -186,18 +246,9 @@ func (r *Reconciler) validationIdentity(
 	if err != nil || strings.TrimSpace(host.Architecture) == "" {
 		return ciaudit.ValidationIdentity{}, false, unsupportedValidation(validationExclusionMissingHostContext, nil)
 	}
-	scope, ok := repositoryScope(worker.Repository)
-	if !ok {
-		return ciaudit.ValidationIdentity{}, false, unsupportedValidation(validationExclusionInvalidRepository, nil)
-	}
-	cacheKey := normalizeRepository(worker.Repository) + ":" + run.HeadSHA + ":" + run.Path
-	file, ok := fileCache[cacheKey]
-	if !ok {
-		file, err = r.GitHub.GetRepositoryFile(ctx, scope, run.Path, run.HeadSHA)
-		if err != nil {
-			return ciaudit.ValidationIdentity{}, false, err
-		}
-		fileCache[cacheKey] = file
+	file, err := r.workflowRepositoryFile(ctx, worker, run, fileCache)
+	if err != nil {
+		return ciaudit.ValidationIdentity{}, false, err
 	}
 	fingerprint, err := workflowparser.FingerprintJob(file.Content, worker.JobName)
 	if err != nil {

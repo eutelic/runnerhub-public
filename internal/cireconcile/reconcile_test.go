@@ -52,7 +52,40 @@ func (f fakeGitHub) GetPullRequest(_ context.Context, _ core.GitHubScope, number
 func (f fakeGitHub) GetRepositoryFile(_ context.Context, _ core.GitHubScope, path, ref string) (githubrunner.RepositoryFile, error) {
 	file, ok := f.files[ref+":"+path]
 	if !ok {
-		return githubrunner.RepositoryFile{}, fmt.Errorf("file %s at %s not found", path, ref)
+		// Legacy reconciliation fixtures predate workflow-source classification.
+		// Give them explicit conservative source evidence by workflow path.
+		source := `name: test
+on: [push]
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - run: go test ./...
+`
+		if path == ".github/workflows/build.yml" {
+			source = `name: build
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: vendor/unknown-action@0123456789012345678901234567890123456789
+`
+		}
+		if path == ".github/workflows/publish-images.yml" {
+			source = `name: images
+on: [push]
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: docker/build-push-action@0123456789012345678901234567890123456789
+        with:
+          push: true
+          tags: example/app:latest
+`
+		}
+		return githubrunner.RepositoryFile{SHA: "fixture-" + ref, Content: []byte(source)}, nil
 	}
 	return file, nil
 }
@@ -448,7 +481,9 @@ jobs:
     runs-on: runnerhub
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
-      - run: echo "${{ github.sha }}" && go test ./...
+        with:
+          ref: ${{ github.sha }}
+      - run: go test ./...
 `
 	run := func(id int64, sha string, created time.Time) githubrunner.WorkflowRunMetadata {
 		return githubrunner.WorkflowRunMetadata{

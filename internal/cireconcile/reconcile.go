@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/eutelic/runnerhub/internal/ciaudit"
+	"github.com/eutelic/runnerhub/internal/ciaudit/workflowparser"
 	"github.com/eutelic/runnerhub/internal/core"
 	"github.com/eutelic/runnerhub/internal/githubrunner"
 	"github.com/eutelic/runnerhub/internal/store"
@@ -399,6 +400,37 @@ func (r *Reconciler) Once(ctx context.Context) (resultErr error) {
 	}
 
 	workflowFileCache := map[string]githubrunner.RepositoryFile{}
+	workflowClassifications := map[string]workflowparser.WorkflowClassification{}
+	workflowClassificationErrors := map[string]error{}
+	workersByRun := map[string]core.Worker{}
+	for _, worker := range candidates {
+		if worker.WorkflowRunAttempt <= 0 {
+			continue
+		}
+		key := runIdentityKey(worker.Repository, worker.WorkflowRunID, worker.WorkflowRunAttempt)
+		workersByRun[key] = worker
+	}
+	for key, run := range uniqueRuns {
+		worker, ok := workersByRun[key]
+		if !ok {
+			continue
+		}
+		if classification, cached := cachedWorkflowClassification(worker); cached {
+			workflowClassifications[key] = classification
+			continue
+		}
+		file, fileErr := r.workflowRepositoryFile(ctx, worker, run, workflowFileCache)
+		if fileErr != nil {
+			workflowClassificationErrors[key] = fileErr
+			continue
+		}
+		classification, classifyErr := workflowparser.ClassifyWorkflow(file.Content)
+		if classifyErr != nil {
+			workflowClassificationErrors[key] = classifyErr
+			continue
+		}
+		workflowClassifications[key] = classification
+	}
 	for _, worker := range candidates {
 		run, ok := runByWorker[worker.ID]
 		if !ok {
@@ -409,13 +441,43 @@ func (r *Reconciler) Once(ctx context.Context) (resultErr error) {
 			continue
 		}
 
-		if ciaudit.MutableSnapshotPublicationWorkflow(run.Name) &&
+		runKey := runIdentityKey(run.Repository, run.RunID, run.Attempt)
+		classification, classified := workflowClassifications[runKey]
+		if classificationErr := workflowClassificationErrors[runKey]; classificationErr != nil {
+			reason := ""
+			var unsupported *validationIdentityUnsupportedError
+			if errors.As(classificationErr, &unsupported) {
+				reason = unsupported.reason
+			} else if strings.Contains(strings.ToLower(classificationErr.Error()), "parse workflow") {
+				reason = validationExclusionWorkflowParse
+			} else {
+				// API/network failures are retryable. Do not cache them as an
+				// unclassified workflow or suppress the next metadata fetch.
+				errs = append(errs, fmt.Errorf("%s worker %s workflow classification: %w", normalizeRepository(worker.Repository), worker.ID, classificationErr))
+				continue
+			}
+			if reason == validationExclusionWorkflowParse {
+				errs = append(errs, fmt.Errorf("%s worker %s workflow classification: %w", normalizeRepository(worker.Repository), worker.ID, classificationErr))
+			}
+			if err := r.persistValidationExclusion(ctx, worker, reason); err != nil {
+				errs = append(errs, err)
+			}
+			continue
+		}
+		if !classified {
+			if err := r.persistValidationExclusion(ctx, worker, validationExclusionWorkflowUnclassified); err != nil {
+				errs = append(errs, err)
+			}
+			continue
+		}
+		if classification.MutableSnapshotPublish &&
 			strings.EqualFold(run.Event, "push") &&
 			strings.EqualFold(strings.TrimSpace(run.HeadBranch), "main") {
-			if supersededAt, newer, ok := supersedingPublicationRun(run, uniqueRuns, worker.CompletedAt); ok {
+			if supersededAt, newer, ok := supersedingPublicationRun(run, uniqueRuns, workflowClassifications, worker.CompletedAt); ok {
 				if finding, ok := ciaudit.StaleSnapshotPublicationFinding(job, supersededAt, true); ok {
 					finding.Evidence = []string{
-						fmt.Sprintf("workflow %q is explicitly classified as mutable snapshot publication", run.Name),
+						fmt.Sprintf("workflow purpose %q was derived from pinned step/action evidence", classification.Purpose),
+						strings.Join(classification.Evidence, "; "),
 						fmt.Sprintf("run %d (%s) was superseded by run %d (%s)", run.RunID, run.HeadSHA, newer.RunID, newer.HeadSHA),
 						fmt.Sprintf("newer main publication was created at %s", supersededAt.UTC().Format(time.RFC3339)),
 					}
@@ -426,9 +488,11 @@ func (r *Reconciler) Once(ctx context.Context) (resultErr error) {
 			}
 		}
 
-		if !ciaudit.OrdinaryValidationWorkflow(run.Name) {
+		if !classification.OrdinaryValidation {
 			reason := validationExclusionWorkflowUnclassified
-			if ciaudit.MutableSnapshotPublicationWorkflow(run.Name) {
+			if classification.MutableSnapshotPublish {
+				reason = validationExclusionMutableSnapshotPublication
+			} else if classification.Purpose == workflowparser.PurposeDeployment {
 				reason = validationExclusionSideEffectingWorkflow
 			}
 			if err := r.persistValidationExclusion(ctx, worker, reason); err != nil {
@@ -445,7 +509,8 @@ func (r *Reconciler) Once(ctx context.Context) (resultErr error) {
 				}
 				if finding, ok := ciaudit.PostMergeFinding(job, pr.MergedAt, true); ok {
 					finding.Evidence = []string{
-						fmt.Sprintf("workflow %q is explicitly classified as ordinary validation", run.Name),
+						fmt.Sprintf("workflow purpose %q was derived from pinned step/action evidence", classification.Purpose),
+						strings.Join(classification.Evidence, "; "),
 						fmt.Sprintf("pull request #%d merged at %s", number, pr.MergedAt.UTC().Format(time.RFC3339)),
 						fmt.Sprintf("workflow run %d attempt %d continued after merge", run.RunID, run.Attempt),
 					}
@@ -456,10 +521,11 @@ func (r *Reconciler) Once(ctx context.Context) (resultErr error) {
 			}
 		}
 
-		if supersededAt, newer, ok := supersedingRun(run, uniqueRuns, worker.CompletedAt); ok {
+		if supersededAt, newer, ok := supersedingRun(run, uniqueRuns, workflowClassifications, worker.CompletedAt); ok {
 			if finding, ok := ciaudit.SupersededFinding(job, supersededAt, true); ok {
 				finding.Evidence = []string{
-					fmt.Sprintf("workflow %q is explicitly classified as ordinary validation", run.Name),
+					fmt.Sprintf("workflow purpose %q was derived from pinned step/action evidence", classification.Purpose),
+					strings.Join(classification.Evidence, "; "),
 					fmt.Sprintf("run %d (%s) was superseded by run %d (%s)", run.RunID, run.HeadSHA, newer.RunID, newer.HeadSHA),
 					fmt.Sprintf("newer run was created at %s on branch %s", supersededAt.UTC().Format(time.RFC3339), run.HeadBranch),
 				}
@@ -510,7 +576,7 @@ func (r *Reconciler) findWorkerAttempt(ctx context.Context, scope core.GitHubSco
 	return 0, nil, nil
 }
 
-func supersedingRun(current store.CIWorkflowRun, runs map[string]store.CIWorkflowRun, completedAt time.Time) (time.Time, store.CIWorkflowRun, bool) {
+func supersedingRun(current store.CIWorkflowRun, runs map[string]store.CIWorkflowRun, classifications map[string]workflowparser.WorkflowClassification, completedAt time.Time) (time.Time, store.CIWorkflowRun, bool) {
 	event := strings.ToLower(strings.TrimSpace(current.Event))
 	if event != "push" && event != "pull_request" {
 		return time.Time{}, store.CIWorkflowRun{}, false
@@ -523,7 +589,7 @@ func supersedingRun(current store.CIWorkflowRun, runs map[string]store.CIWorkflo
 		if candidate.Repository != current.Repository || candidate.RunID == current.RunID {
 			continue
 		}
-		if !ciaudit.OrdinaryValidationWorkflow(candidate.Name) || !strings.EqualFold(candidate.Name, current.Name) {
+		if !classifications[runIdentityKey(candidate.Repository, candidate.RunID, candidate.Attempt)].OrdinaryValidation {
 			continue
 		}
 		if strings.TrimSpace(candidate.Path) != strings.TrimSpace(current.Path) ||
@@ -547,8 +613,8 @@ func supersedingRun(current store.CIWorkflowRun, runs map[string]store.CIWorkflo
 	return best.CreatedAt, best, true
 }
 
-func supersedingPublicationRun(current store.CIWorkflowRun, runs map[string]store.CIWorkflowRun, completedAt time.Time) (time.Time, store.CIWorkflowRun, bool) {
-	if !ciaudit.MutableSnapshotPublicationWorkflow(current.Name) ||
+func supersedingPublicationRun(current store.CIWorkflowRun, runs map[string]store.CIWorkflowRun, classifications map[string]workflowparser.WorkflowClassification, completedAt time.Time) (time.Time, store.CIWorkflowRun, bool) {
+	if !classifications[runIdentityKey(current.Repository, current.RunID, current.Attempt)].MutableSnapshotPublish ||
 		!strings.EqualFold(strings.TrimSpace(current.Event), "push") ||
 		!strings.EqualFold(strings.TrimSpace(current.HeadBranch), "main") ||
 		strings.TrimSpace(current.Path) == "" ||
@@ -560,8 +626,7 @@ func supersedingPublicationRun(current store.CIWorkflowRun, runs map[string]stor
 		if candidate.Repository != current.Repository || candidate.RunID == current.RunID {
 			continue
 		}
-		if !ciaudit.MutableSnapshotPublicationWorkflow(candidate.Name) ||
-			!strings.EqualFold(candidate.Name, current.Name) ||
+		if !classifications[runIdentityKey(candidate.Repository, candidate.RunID, candidate.Attempt)].MutableSnapshotPublish ||
 			strings.TrimSpace(candidate.Path) != strings.TrimSpace(current.Path) ||
 			!strings.EqualFold(candidate.Event, "push") ||
 			!strings.EqualFold(strings.TrimSpace(candidate.HeadBranch), "main") ||
