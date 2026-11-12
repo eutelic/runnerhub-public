@@ -23,6 +23,7 @@ type aggregateState struct {
 	supported bool
 	version   string
 	driver    string
+	reason    string
 	cpu       map[string]cpuUsageSample
 }
 
@@ -42,42 +43,46 @@ func newAggregateState() *aggregateState {
 	return &aggregateState{cpu: map[string]cpuUsageSample{}}
 }
 
-func (p *Provider) aggregateResourceGroupCapabilities(ctx context.Context) (supported bool, version, driver string) {
+func (p *Provider) aggregateResourceGroupCapabilities(ctx context.Context) (supported bool, version, driver, reason string) {
 	p.aggregate.mu.Lock()
 	defer p.aggregate.mu.Unlock()
 	if p.aggregate.checked {
-		return p.aggregate.supported, p.aggregate.version, p.aggregate.driver
+		return p.aggregate.supported, p.aggregate.version, p.aggregate.driver, p.aggregate.reason
 	}
 	p.aggregate.checked = true
-	p.aggregate.supported, p.aggregate.version, p.aggregate.driver = p.probeAggregateResourceGroups(ctx)
-	return p.aggregate.supported, p.aggregate.version, p.aggregate.driver
+	p.aggregate.supported, p.aggregate.version, p.aggregate.driver, p.aggregate.reason = p.probeAggregateResourceGroups(ctx)
+	return p.aggregate.supported, p.aggregate.version, p.aggregate.driver, p.aggregate.reason
 }
 
 func (p *Provider) disableAggregateResourceGroups() {
 	p.aggregate.mu.Lock()
 	p.aggregate.checked = true
 	p.aggregate.supported = false
+	p.aggregate.reason = "runtime_containment_lost"
 	p.aggregate.mu.Unlock()
 }
 
-func (p *Provider) probeAggregateResourceGroups(ctx context.Context) (bool, string, string) {
+func (p *Provider) probeAggregateResourceGroups(ctx context.Context) (bool, string, string, string) {
 	if !p.cfg.AllowPrivilegedWorkers {
-		return false, "", ""
+		return false, "", "", "privileged_workers_disabled"
 	}
 	out, err := p.run.Run(ctx, p.cfg.DockerBinary, "info", "--format", "{{.CgroupVersion}}|{{.CgroupDriver}}")
 	if err != nil {
-		return false, "", ""
+		return false, "", "", "docker_info_unavailable"
 	}
 	parts := strings.SplitN(strings.TrimSpace(out), "|", 2)
 	if len(parts) != 2 {
-		return false, "", ""
+		return false, "", "", "docker_cgroup_info_invalid"
 	}
 	version, driver := strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1])
-	if version != "2" || (driver != "cgroupfs" && driver != "systemd") {
-		return false, version, driver
+	if version != "2" {
+		return false, version, driver, "cgroup_v2_required"
+	}
+	if driver != "cgroupfs" && driver != "systemd" {
+		return false, version, driver, "unsupported_cgroup_driver"
 	}
 	if !p.cgroupRootReadable() {
-		return false, version, driver
+		return false, version, driver, "host_cgroup_inaccessible"
 	}
 
 	resources := core.Resources{CPUMillis: 1000, MemoryBytes: 1 << 30}
@@ -89,17 +94,17 @@ func (p *Provider) probeAggregateResourceGroups(ctx context.Context) (bool, stri
 		group, err = p.prepareSystemdGroup(ctx, "probe"+strconv.FormatInt(time.Now().UnixNano(), 36), resources)
 	}
 	if err != nil {
-		return false, version, driver
+		return false, version, driver, "parent_creation_failed"
 	}
 	defer p.cleanupAggregateGroup(context.Background(), group)
 
 	if err := p.verifyAggregateLimits(group, resources); err != nil {
-		return false, version, driver
+		return false, version, driver, "parent_limits_unverified"
 	}
 
 	runDir, err := os.MkdirTemp(p.cfg.StateDir, "aggregate-cgroup-probe-")
 	if err != nil {
-		return false, version, driver
+		return false, version, driver, "probe_state_unavailable"
 	}
 	defer os.RemoveAll(runDir)
 	name := "runnerhub-cgroup-probe-" + strconv.FormatInt(time.Now().UnixNano(), 36)
@@ -118,13 +123,13 @@ func (p *Provider) probeAggregateResourceGroups(ctx context.Context) (bool, stri
 		"--registry-mirror=https://mirror.gcr.io",
 	)
 	if err != nil {
-		return false, version, driver
+		return false, version, driver, "probe_sidecar_start_failed"
 	}
 	if err := p.waitForPrivateDocker(ctx, name); err != nil {
-		return false, version, driver
+		return false, version, driver, "probe_private_docker_unavailable"
 	}
 	if err := p.verifyContainerCgroupParent(ctx, name, group.Parent); err != nil {
-		return false, version, driver
+		return false, version, driver, "probe_parent_mismatch"
 	}
 
 	// Docker defaults to a private cgroup namespace on cgroup v2. The DinD
@@ -137,13 +142,13 @@ func (p *Provider) probeAggregateResourceGroups(ctx context.Context) (bool, stri
 		"--entrypoint", "/bin/cat", p.cfg.DinDImage, "/proc/self/cgroup",
 	)
 	if err != nil {
-		return false, version, driver
+		return false, version, driver, "nested_probe_failed"
 	}
 	path := unifiedCgroupPath(nested)
 	if path == "" || path == "/" {
-		return false, version, driver
+		return false, version, driver, "nested_cgroup_not_contained"
 	}
-	return true, version, driver
+	return true, version, driver, ""
 }
 
 func (p *Provider) cgroupRootReadable() bool {
@@ -355,7 +360,7 @@ func (p *Provider) prepareAggregateResourceGroup(ctx context.Context, s provider
 	if !s.AggregateResources {
 		return "", nil
 	}
-	supported, _, driver := p.aggregateResourceGroupCapabilities(ctx)
+	supported, _, driver, _ := p.aggregateResourceGroupCapabilities(ctx)
 	if !supported {
 		return "", fmt.Errorf("aggregate Docker resource groups requested but host verification is unavailable")
 	}

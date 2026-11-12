@@ -138,7 +138,7 @@ func (p *Provider) Capabilities(ctx context.Context) (provider.Capabilities, err
 		features["dockerInDocker"] = true
 		features["containerActions"] = true
 		labels["isolation.container-dind"] = "true"
-		aggregate, version, driver := p.aggregateResourceGroupCapabilities(ctx)
+		aggregate, version, driver, reason := p.aggregateResourceGroupCapabilities(ctx)
 		if version == "2" {
 			features["cgroupV2"] = true
 			labels["docker.cgroup-version"] = version
@@ -148,6 +148,8 @@ func (p *Provider) Capabilities(ctx context.Context) (provider.Capabilities, err
 		}
 		if aggregate {
 			features[aggregateResourceFeature] = true
+		} else if reason != "" {
+			labels["docker.aggregate-fallback-reason"] = reason
 		}
 	}
 	return provider.Capabilities{

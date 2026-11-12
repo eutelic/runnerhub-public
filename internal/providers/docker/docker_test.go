@@ -908,3 +908,43 @@ func TestInspectRunnerExit143ReportsFailureForCanceledPublisherCleanup(t *testin
 		t.Fatalf("safe detail=%q", state.SafeDetail)
 	}
 }
+
+func TestCapabilitiesExplainAggregateFallbackWithoutRelaxingReservation(t *testing.T) {
+	f := &fakeRunner{fn: func(_ string, args ...string) (string, error) {
+		if len(args) > 0 && args[0] == "version" {
+			return "28.0.0", nil
+		}
+		if len(args) > 0 && args[0] == "info" {
+			return "2|systemd", nil
+		}
+		return "", errors.New("unexpected docker command")
+	}}
+	p, err := newWithRunner(Config{
+		StateDir: t.TempDir(), CgroupRoot: filepath.Join(t.TempDir(), "unmounted-cgroup"), AllowedImages: []string{"img"},
+		DinDImage: images.DefaultDinDImage, AllowPrivilegedWorkers: true,
+	}, f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	caps, err := p.Capabilities(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := caps.Labels["docker.aggregate-fallback-reason"]; got != "host_cgroup_inaccessible" {
+		t.Fatalf("fallback reason = %q", got)
+	}
+	if caps.Features[aggregateResourceFeature] {
+		t.Fatal("unverified aggregate containment must not be advertised")
+	}
+	if caps.Labels["isolation.container-dind"] != "true" {
+		t.Fatal("conservative DinD operation should remain available")
+	}
+	p.disableAggregateResourceGroups()
+	caps, err = p.Capabilities(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := caps.Labels["docker.aggregate-fallback-reason"]; got != "runtime_containment_lost" {
+		t.Fatalf("runtime fallback reason = %q", got)
+	}
+}

@@ -671,7 +671,10 @@ function hostTagText(host){return Object.keys(host?.userTags||{}).sort().join(',
 function hostDinDBudgetText(host){
   const tags=host?.tags||{};
   if(tags['feature.aggregateResourceGroups']==='true')return 'aggregate';
-  if(tags['isolation.container-dind']==='true')return 'legacy x2';
+  if(tags['isolation.container-dind']==='true'){
+    const reason=String(tags['docker.aggregate-fallback-reason']||'').replace(/_/g,' ');
+    return reason?'legacy x2 ('+reason+')':'legacy x2';
+  }
   return '—';
 }
 function hostStateRank(host){
