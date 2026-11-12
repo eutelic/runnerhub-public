@@ -43,6 +43,7 @@ type Service struct {
 	DeployerBootstrap         *deployer.BootstrapManager
 	CIReconcilerStatus        *cireconcile.Status
 	fleetAlertMu              sync.Mutex
+	scaleEventMu              sync.Mutex
 	workerScheduleMu          sync.Mutex
 	hostPortProbeMu           sync.Mutex
 	hostPortProbeWaiters      map[string]chan agent.CommandResult

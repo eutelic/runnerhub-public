@@ -448,6 +448,36 @@ func (s *Service) applyScaleEventState(wk *core.Worker, in scaleEventRequest, st
 	return nil
 }
 
+// isReplayedEventDuringCleanup protects an already queued or executing
+// deletion from late/replayed GitHub callbacks. A started/busy replay needs a
+// complete matching job identity; no callback may reopen a cleanup transition.
+func isReplayedEventDuringCleanup(wk core.Worker, in scaleEventRequest, state string) (bool, error) {
+	if wk.State != core.WorkerCleanupPending && wk.State != core.WorkerDeleting {
+		return false, nil
+	}
+	if state != "started" && state != "busy" && state != "completed" && state != "canceled" && state != "failed" {
+		return false, nil
+	}
+	if state == "started" || state == "busy" {
+		if wk.JobID == "" || wk.WorkflowRunID <= 0 || strings.TrimSpace(in.JobID) != wk.JobID || in.WorkflowRunID != wk.WorkflowRunID {
+			return false, errors.New("late started event cannot be verified against the cleaned-up job")
+		}
+	}
+	if wk.JobID != "" && in.JobID != "" && wk.JobID != strings.TrimSpace(in.JobID) {
+		return false, errors.New("terminal event job ID does not match the worker")
+	}
+	if wk.WorkflowRunID > 0 && in.WorkflowRunID > 0 && wk.WorkflowRunID != in.WorkflowRunID {
+		return false, errors.New("terminal event workflow run does not match the worker")
+	}
+	if wk.Repository != "" && in.Repository != "" && !strings.EqualFold(wk.Repository, strings.TrimSpace(in.Repository)) {
+		return false, errors.New("terminal event repository does not match the worker")
+	}
+	if wk.WorkflowRef != "" && in.WorkflowRef != "" && !strings.EqualFold(wk.WorkflowRef, strings.TrimSpace(in.WorkflowRef)) {
+		return false, errors.New("terminal event workflow does not match the worker")
+	}
+	return true, nil
+}
+
 func (s *Service) scaleEvent(w http.ResponseWriter, r *http.Request) {
 	var in scaleEventRequest
 	if !decode(w, r, &in) {
@@ -460,6 +490,12 @@ func (s *Service) scaleEvent(w http.ResponseWriter, r *http.Request) {
 		problem(w, 400, errors.New("unsupported scale event state"))
 		return
 	}
+	// A read/modify/write of a scale-set worker and its cleanup enqueue must be
+	// atomic with respect to a second scale event on this control-plane process.
+	// This prevents duplicate terminal callbacks from reopening cleanup or
+	// submitting a second provider deletion.
+	s.scaleEventMu.Lock()
+	defer s.scaleEventMu.Unlock()
 	workers, err := s.Store.ListWorkers(r.Context())
 	if err != nil {
 		problem(w, 500, err)
@@ -516,6 +552,15 @@ func (s *Service) scaleEvent(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
+	}
+	if replay, err := isReplayedEventDuringCleanup(*wk, in, state); err != nil {
+		problem(w, 409, err)
+		return
+	} else if replay {
+		// Cleanup is already pending or in progress. Never overwrite an observed
+		// result/timestamp, reopen completion, or enqueue a second delete.
+		writeJSON(w, 200, wk)
+		return
 	}
 	wasStarted := !wk.StartedAt.IsZero() || wk.State == core.WorkerBusy
 	wk.Repository = firstNonEmpty(in.Repository, wk.Repository)
