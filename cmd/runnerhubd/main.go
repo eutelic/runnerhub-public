@@ -14,6 +14,7 @@ import (
 	"github.com/eutelic/runnerhub/internal/githubrunner"
 	"github.com/eutelic/runnerhub/internal/images"
 	"github.com/eutelic/runnerhub/internal/machinebootstrap"
+	"github.com/eutelic/runnerhub/internal/mcpaccess"
 	"github.com/eutelic/runnerhub/internal/policy"
 	"github.com/eutelic/runnerhub/internal/reconcile"
 	"github.com/eutelic/runnerhub/internal/scheduler"
@@ -89,12 +90,24 @@ func main() {
 	if root := os.Getenv("RUNNERHUB_CACHE_DIR"); root != "" {
 		cacheStore = &cachepkg.Store{Root: root, MaxBytes: int64Env("RUNNERHUB_CACHE_MAX_OBJECT_BYTES", 8<<30)}
 	}
+	grants, err := mcpaccess.New(filepath.Join(filepath.Dir(dbPath), "mcp_access.json"))
+	must(err)
 	var sessionAuth auth.SessionAuthenticator
 	if githubBrowser != nil {
 		sessionAuth = githubBrowser.Authenticate
 	}
-	authm := auth.New(auth.Config{APIKeys: auth.ParseKeys(os.Getenv("RUNNERHUB_API_KEYS")), TrustOIDCHeaders: boolEnv("RUNNERHUB_TRUST_OIDC_HEADERS", false), SessionAuthenticator: sessionAuth})
-	svc := &apihttp.Service{Store: st, GitHub: gh, Catalog: catalog, GitHubAuth: githubBrowser, Hub: hub, Scheduler: scheduler.Scheduler{Store: st}, Policy: policy.Engine{AllowedImages: allowed, MaxResources: core.Resources{CPUMillis: 64000, MemoryBytes: 256 << 30}, RequirePinnedImages: boolEnv("RUNNERHUB_REQUIRE_PINNED_IMAGES", true), AllowPrivileged: boolEnv("RUNNERHUB_ALLOW_PRIVILEGED_WORKERS", false)}, Metrics: metrics, Auth: authm, Cache: cacheStore, Static: webui.Handler(), MachineBootstrap: machinebootstrap.SSH{}, MachineBootstrapURL: publicURL, MachineAgentImage: env("RUNNERHUB_MACHINE_AGENT_IMAGE", "ghcr.io/eutelic/runnerhub-agent:latest"), AgentUpdateTargetImage: os.Getenv("RUNNERHUB_AGENT_UPDATE_IMAGE"), AgentUpdateTargetRevision: os.Getenv("RUNNERHUB_AGENT_UPDATE_REVISION"), AgentUpdateHelperImage: os.Getenv("RUNNERHUB_AGENT_UPDATE_HELPER_IMAGE"), AgentUpdateEnabled: boolEnv("RUNNERHUB_AGENT_UPDATE_ENABLED", false), DeployerBootstrap: &deployer.BootstrapManager{Root: env("RUNNERHUB_DEPLOYER_BOOTSTRAP_ROOT", "/data/deployer-bootstrap"), MaintenanceToken: strings.TrimSpace(os.Getenv("RUNNERHUB_ADMIN_KEY"))}}
+	authm := auth.New(auth.Config{APIKeys: auth.ParseKeys(os.Getenv("RUNNERHUB_API_KEYS")), TrustOIDCHeaders: boolEnv("RUNNERHUB_TRUST_OIDC_HEADERS", false), SessionAuthenticator: sessionAuth, PairedAuthenticator: func(token string) (auth.Principal, bool) {
+		name, scope, ok := grants.Lookup(token)
+		if !ok {
+			return auth.Principal{}, false
+		}
+		role := auth.RoleViewer
+		if scope == "operator" {
+			role = auth.RoleOperator
+		}
+		return auth.Principal{Name: "mcp:" + name, Role: role, MCP: true}, true
+	}})
+	svc := &apihttp.Service{Store: st, GitHub: gh, Catalog: catalog, GitHubAuth: githubBrowser, Hub: hub, Scheduler: scheduler.Scheduler{Store: st}, Policy: policy.Engine{AllowedImages: allowed, MaxResources: core.Resources{CPUMillis: 64000, MemoryBytes: 256 << 30}, RequirePinnedImages: boolEnv("RUNNERHUB_REQUIRE_PINNED_IMAGES", true), AllowPrivileged: boolEnv("RUNNERHUB_ALLOW_PRIVILEGED_WORKERS", false)}, Metrics: metrics, Auth: authm, MCP: grants, Cache: cacheStore, Static: webui.Handler(), MachineBootstrap: machinebootstrap.SSH{}, MachineBootstrapURL: publicURL, MachineAgentImage: env("RUNNERHUB_MACHINE_AGENT_IMAGE", "ghcr.io/eutelic/runnerhub-agent:latest"), AgentUpdateTargetImage: os.Getenv("RUNNERHUB_AGENT_UPDATE_IMAGE"), AgentUpdateTargetRevision: os.Getenv("RUNNERHUB_AGENT_UPDATE_REVISION"), AgentUpdateHelperImage: os.Getenv("RUNNERHUB_AGENT_UPDATE_HELPER_IMAGE"), AgentUpdateEnabled: boolEnv("RUNNERHUB_AGENT_UPDATE_ENABLED", false), DeployerBootstrap: &deployer.BootstrapManager{Root: env("RUNNERHUB_DEPLOYER_BOOTSTRAP_ROOT", "/data/deployer-bootstrap"), MaintenanceToken: strings.TrimSpace(os.Getenv("RUNNERHUB_ADMIN_KEY"))}}
 	if publishing, ok := gh.(githubrunner.PublicationRunsBackend); ok && svc.DeployerBootstrap != nil {
 		go func() {
 			ticker := time.NewTicker(90 * time.Second)

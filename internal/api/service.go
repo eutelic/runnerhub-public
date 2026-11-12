@@ -9,6 +9,7 @@ import (
 	"github.com/eutelic/runnerhub/internal/githubauth"
 	"github.com/eutelic/runnerhub/internal/githubrunner"
 	"github.com/eutelic/runnerhub/internal/machinebootstrap"
+	"github.com/eutelic/runnerhub/internal/mcpaccess"
 	"github.com/eutelic/runnerhub/internal/policy"
 	"github.com/eutelic/runnerhub/internal/scheduler"
 	"github.com/eutelic/runnerhub/internal/store"
@@ -28,6 +29,7 @@ type Service struct {
 	Metrics                   *telemetry.Metrics
 	EnrollmentToken           string
 	Auth                      *auth.Manager
+	MCP                       *mcpaccess.Registry
 	Cache                     *cachepkg.Store
 	Static                    http.Handler
 	MachineBootstrap          machinebootstrap.Bootstrapper
@@ -50,6 +52,10 @@ type Service struct {
 
 func (s *Service) Handler() http.Handler {
 	m := http.NewServeMux()
+	m.HandleFunc("GET /api/v1/mcp/pair/status", s.mcpPairStatus)
+	m.HandleFunc("POST /api/v1/mcp/pair/request", s.mcpPairRequest)
+	m.HandleFunc("GET /mcp/connections", s.mcpConnections)
+	m.HandleFunc("POST /mcp/connections", s.mcpConnections)
 	m.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, 200, map[string]string{"status": "ok"}) })
 	m.HandleFunc("GET /auth/github/status", s.githubAuthStatus)
 	m.HandleFunc("GET /auth/github/login", s.githubLogin)

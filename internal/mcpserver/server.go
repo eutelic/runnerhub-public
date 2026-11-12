@@ -4,6 +4,8 @@ package mcpserver
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,6 +13,8 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -22,15 +26,21 @@ const maxResponseBytes = 4 << 20
 
 // Config connects the MCP adapter to an existing RunnerHub control plane.
 type Config struct {
-	BaseURL string
-	Token   string
-	Client  *http.Client
+	BaseURL         string
+	Token           string
+	Client          *http.Client
+	Pair            bool
+	AllowHTTP       bool
+	CredentialsFile string
 }
 
 type Server struct {
-	baseURL string
-	token   string
-	client  *http.Client
+	baseURL        string
+	token          string
+	client         *http.Client
+	pair           bool
+	credentialFile string
+	mu             sync.RWMutex
 }
 
 func New(cfg Config) (*Server, error) {
@@ -44,11 +54,22 @@ func New(cfg Config) (*Server, error) {
 		return nil, errors.New("RUNNERHUB_URL must be an absolute http or https URL")
 	}
 	loopback := isLoopbackHost(u.Hostname())
-	if !loopback && u.Scheme != "https" {
+	if !loopback && u.Scheme != "https" && !cfg.AllowHTTP {
 		return nil, errors.New("remote RunnerHub connections require https")
 	}
-	if !loopback && token == "" {
+	if cfg.Pair && token != "" {
+		return nil, errors.New("pairing mode cannot use RUNNERHUB_API_TOKEN")
+	}
+	if !loopback && token == "" && !cfg.Pair {
 		return nil, errors.New("RUNNERHUB_API_TOKEN is required for remote RunnerHub connections")
+	}
+	credentialFile := cfg.CredentialsFile
+	if cfg.Pair {
+		var err error
+		token, credentialFile, err = loadPairToken(baseURL, credentialFile)
+		if err != nil {
+			return nil, err
+		}
 	}
 	client := cfg.Client
 	if client == nil {
@@ -59,12 +80,57 @@ func New(cfg Config) (*Server, error) {
 			},
 		}
 	}
-	return &Server{baseURL: baseURL, token: token, client: client}, nil
+	return &Server{baseURL: baseURL, token: token, client: client, pair: cfg.Pair, credentialFile: credentialFile}, nil
 }
 
 func (s *Server) MCP() *mcp.Server {
 	server := mcp.NewServer(&mcp.Implementation{Name: "runnerhub", Version: "1.0.0"}, nil)
+	if !s.pair {
+		s.registerTools(server)
+		return server
+	}
+	var once sync.Once
+	installTools := func() { once.Do(func() { s.registerTools(server) }) }
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "request_access",
+		Description: "Request access to RunnerHub. Approve in the existing dashboard before using other tools.",
+		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: false, DestructiveHint: boolPtr(false), OpenWorldHint: boolPtr(false)},
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, args struct {
+		ClientName string `json:"client_name,omitempty" jsonschema:"optional name shown in the dashboard"`
+	}) (*mcp.CallToolResult, any, error) {
+		status, err := s.pairStatus(ctx)
+		if err != nil {
+			return nil, nil, err
+		}
+		if status == "unregistered" {
+			if err := s.rotatePairToken(); err != nil {
+				return nil, nil, err
+			}
+			name := strings.TrimSpace(args.ClientName)
+			if name == "" {
+				name = "Codex Linux"
+			}
+			status, err = s.pairRequest(ctx, name)
+			if err != nil {
+				return nil, nil, err
+			}
+		}
+		if status == "approved" {
+			installTools()
+		}
+		return nil, map[string]string{
+			"status":       status,
+			"approval_url": s.baseURL + "/mcp/connections",
+			"message":      "Approve read-only or operator access in the RunnerHub dashboard, then call request_access again. Restart the client if its tool list is cached.",
+		}, nil
+	})
+	if status, err := s.pairStatus(context.Background()); err == nil && status == "approved" {
+		installTools()
+	}
+	return server
+}
 
+func (s *Server) registerTools(server *mcp.Server) {
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "runnerhub_overview",
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true, OpenWorldHint: boolPtr(false), Title: "RunnerHub overview"},
@@ -212,7 +278,6 @@ func (s *Server) MCP() *mcp.Server {
 		return nil, result, nil
 	})
 
-	return server
 }
 
 func (s *Server) get(ctx context.Context, path string, out any) error {
@@ -251,12 +316,28 @@ func (s *Server) getMany(ctx context.Context, paths map[string]string) (map[stri
 }
 
 func (s *Server) request(ctx context.Context, method, path string, body io.Reader, out any) error {
+	if s.pair {
+		status, err := s.pairStatus(ctx)
+		if err != nil {
+			return err
+		}
+		if status != "approved" {
+			return errors.New("MCP access not approved; call request_access")
+		}
+	}
+	return s.requestRaw(ctx, method, path, body, out)
+}
+
+func (s *Server) requestRaw(ctx context.Context, method, path string, body io.Reader, out any) error {
 	req, err := http.NewRequestWithContext(ctx, method, s.baseURL+path, body)
 	if err != nil {
 		return err
 	}
-	if s.token != "" {
-		req.Header.Set("Authorization", "Bearer "+s.token)
+	s.mu.RLock()
+	token := s.token
+	s.mu.RUnlock()
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
 	}
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
@@ -293,3 +374,115 @@ func isLoopbackHost(host string) bool {
 }
 
 func boolPtr(value bool) *bool { return &value }
+
+type pairCredential struct {
+	URL   string `json:"url"`
+	Token string `json:"token"`
+}
+
+func loadPairToken(baseURL, path string) (string, string, error) {
+	if path == "" {
+		dir, err := os.UserConfigDir()
+		if err != nil {
+			return "", "", err
+		}
+		path = filepath.Join(dir, "runnerhub-mcp", "credentials.json")
+	}
+	if info, err := os.Stat(path); err == nil {
+		if info.Mode().Perm()&0077 != 0 {
+			return "", "", errors.New("MCP credentials file must have mode 0600")
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return "", "", err
+		}
+		var old pairCredential
+		if err := json.Unmarshal(data, &old); err != nil {
+			return "", "", errors.New("invalid MCP credential file")
+		}
+		if old.URL == baseURL && len(old.Token) >= 40 {
+			return old.Token, path, nil
+		}
+	} else if !os.IsNotExist(err) {
+		return "", "", err
+	}
+	token, err := writePairToken(baseURL, path)
+	return token, path, err
+}
+
+func writePairToken(url, path string) (string, error) {
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		return "", err
+	}
+	random := make([]byte, 32)
+	if _, err := rand.Read(random); err != nil {
+		return "", err
+	}
+	token := base64.RawURLEncoding.EncodeToString(random)
+	data, err := json.Marshal(pairCredential{URL: url, Token: token})
+	if err != nil {
+		return "", err
+	}
+	f, err := os.CreateTemp(filepath.Dir(path), ".pair-*")
+	if err != nil {
+		return "", err
+	}
+	defer os.Remove(f.Name())
+	if err := f.Chmod(0600); err != nil {
+		f.Close()
+		return "", err
+	}
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		return "", err
+	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		return "", err
+	}
+	if err := f.Close(); err != nil {
+		return "", err
+	}
+	if err := os.Rename(f.Name(), path); err != nil {
+		return "", err
+	}
+	return token, nil
+}
+
+func (s *Server) rotatePairToken() error {
+	token, err := writePairToken(s.baseURL, s.credentialFile)
+	if err != nil {
+		return err
+	}
+	s.mu.Lock()
+	s.token = token
+	s.mu.Unlock()
+	return nil
+}
+
+func (s *Server) pairStatus(ctx context.Context) (string, error) {
+	var result struct {
+		Status string `json:"status"`
+	}
+	if err := s.requestRaw(ctx, http.MethodGet, "/api/v1/mcp/pair/status", nil, &result); err != nil {
+		return "", err
+	}
+	return result.Status, nil
+}
+
+func (s *Server) pairRequest(ctx context.Context, name string) (string, error) {
+	s.mu.RLock()
+	token := s.token
+	s.mu.RUnlock()
+	body, err := json.Marshal(map[string]string{"token": token, "name": name})
+	if err != nil {
+		return "", err
+	}
+	var result struct {
+		Status string `json:"status"`
+	}
+	if err := s.requestRaw(ctx, http.MethodPost, "/api/v1/mcp/pair/request", bytes.NewReader(body), &result); err != nil {
+		return "", err
+	}
+	return result.Status, nil
+}

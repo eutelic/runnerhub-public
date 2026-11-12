@@ -11,8 +11,10 @@ import (
 
 func main() {
 	server, err := mcpserver.New(mcpserver.Config{
-		BaseURL: env("RUNNERHUB_URL", "http://127.0.0.1:8080"),
-		Token:   os.Getenv("RUNNERHUB_API_TOKEN"),
+		BaseURL:   env("RUNNERHUB_URL", "http://127.0.0.1:8080"),
+		Token:     os.Getenv("RUNNERHUB_API_TOKEN"),
+		Pair:      os.Getenv("RUNNERHUB_MCP_PAIR") == "true",
+		AllowHTTP: os.Getenv("RUNNERHUB_ALLOW_HTTP") == "true",
 	})
 	if err != nil {
 		log.Printf("runnerhub-mcp: %v", err)

@@ -74,6 +74,59 @@ explicitly configured repositories and workflow IDs, validate inputs
 server-side, and require per-call user confirmation. Never accept arbitrary
 workflow URLs or shell commands from the model.
 
+
+## Recommended: dashboard-approved local Codex pairing
+
+This is the same no-tunnel model used by File Ingest. Codex launches a local
+RunnerHub stdio MCP process, which connects out to the **existing RunnerHub API**
+(on your TrueNAS deployment, usually port 8788). No extra container or inbound
+MCP port is required.
+
+1. Redeploy RunnerHub with the pairing-enabled control-plane image.
+   The persistent mcp_access.json grant registry is written alongside
+   RUNNERHUB_DB (typically /data/mcp_access.json). Keep that directory mounted.
+2. On the Linux computer running Codex, with a current checkout of RunnerHub:
+
+   ```bash
+   cd ~/repos/runnerhub
+   git pull
+   bash scripts/install-codex-mcp.sh http://RUNNERHUB_HOST:8788
+   ```
+
+   Change the URL if RunnerHub is reachable through another hostname or port.
+   The installer builds the existing Go adapter and registers a local stdio
+   `runnerhub` MCP in Codex. Go 1.26.11 or compatible toolchain
+   auto-download support is required.
+3. Restart Codex and ask: **Call request_access on RunnerHub MCP.**
+4. Sign into the existing RunnerHub dashboard as an administrator.
+   Open **MCP connections**, choose **Approve read-only** (recommended), or
+   **Approve operator** to allow explicitly requested worker starts.
+5. Ask Codex to call `request_access` again to refresh available
+   tools. Restart Codex if its tool-list cache does not refresh.
+
+Before approval, only `request_access` is available. No API key
+needs to be copied into Codex. After approval the client stores a generated,
+revocable credential in `~/.config/runnerhub-mcp/credentials.json`
+(mode 0600). The NAS stores only its SHA-256 digest; an approved grant persists
+through reboots until you revoke it from the dashboard.
+
+Viewer scope permits only the MCP's documented fleet/worker read endpoints.
+Operator scope also permits a single `POST /api/v1/pools/{id}/workers`
+per explicit tool invocation. A paired operator cannot access unrelated API
+mutations such as pool editing, host draining, deployer operations or scaling
+APIs. Revocation is checked on every RunnerHub API call.
+
+Unapproved public pairing endpoints use bounded inputs, per-IP throttling,
+pending expiration after 10 minutes, and explicit administrative approval.
+The connections page requires RunnerHub administrator authentication and
+same-origin form submissions.
+
+**Network security:** Use private HTTPS whenever possible. The installer
+allows plain HTTP only when explicitly opting in to trusted-LAN connections.
+Unencrypted HTTP can expose the revocable credential to anyone able to observe
+network traffic; never port-forward the RunnerHub dashboard to the Internet.
+An existing API token can still be used instead of pairing when required.
+
 ## Connect a local MCP client
 
 Run `cmd/runnerhub-mcp` as the MCP client's stdio command. It defaults to

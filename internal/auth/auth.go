@@ -25,6 +25,7 @@ const (
 type Principal struct {
 	Name string `json:"name"`
 	Role Role   `json:"role"`
+	MCP  bool   `json:"-"`
 }
 
 type SessionAuthenticator func(*http.Request) (Principal, bool)
@@ -33,12 +34,14 @@ type Config struct {
 	APIKeys              map[string]Principal
 	TrustOIDCHeaders     bool
 	SessionAuthenticator SessionAuthenticator
+	PairedAuthenticator  func(string) (Principal, bool)
 }
 
 type Manager struct {
 	keys       map[[32]byte]Principal
 	trustOIDC  bool
 	browser    SessionAuthenticator
+	paired     func(string) (Principal, bool)
 	localAdmin bool
 }
 
@@ -49,6 +52,7 @@ func New(c Config) *Manager {
 		keys:       map[[32]byte]Principal{},
 		trustOIDC:  c.TrustOIDCHeaders,
 		browser:    c.SessionAuthenticator,
+		paired:     c.PairedAuthenticator,
 		localAdmin: len(c.APIKeys) == 0 && !c.TrustOIDCHeaders && c.SessionAuthenticator == nil,
 	}
 	for k, p := range c.APIKeys {
@@ -87,6 +91,11 @@ func (m *Manager) Authenticate(r *http.Request) (Principal, error) {
 	if strings.HasPrefix(authz, "Bearer ") {
 		token = strings.TrimSpace(strings.TrimPrefix(authz, "Bearer "))
 	}
+	if token != "" && m.paired != nil {
+		if p, ok := m.paired(token); ok {
+			return p, nil
+		}
+	}
 	sum := sha256.Sum256([]byte(token))
 	for key, p := range m.keys {
 		if subtle.ConstantTimeCompare(sum[:], key[:]) == 1 {
@@ -98,7 +107,9 @@ func (m *Manager) Authenticate(r *http.Request) (Principal, error) {
 
 func (m *Manager) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/healthz" || strings.HasPrefix(r.URL.Path, "/api/v1/agent/") || !strings.HasPrefix(r.URL.Path, "/api/") {
+		if (r.URL.Path == "/api/v1/mcp/pair/status" && r.Method == http.MethodGet) ||
+			(r.URL.Path == "/api/v1/mcp/pair/request" && r.Method == http.MethodPost) ||
+			r.URL.Path == "/healthz" || strings.HasPrefix(r.URL.Path, "/api/v1/agent/") || !strings.HasPrefix(r.URL.Path, "/api/") {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -118,6 +129,10 @@ func (m *Manager) Middleware(next http.Handler) http.Handler {
 			return
 		}
 
+		if p.MCP && !mcpAllowed(r, p.Role) {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
 		need := RoleViewer
 		if r.Method != http.MethodGet && r.Method != http.MethodHead {
 			need = RoleOperator
@@ -209,4 +224,31 @@ func remoteIsLoopback(remote string) bool {
 	}
 	ip := net.ParseIP(strings.Trim(host, "[]"))
 	return ip != nil && ip.IsLoopback()
+}
+
+// mcpAllowed prevents a paired operator credential from becoming a general API
+// operator credential. This is enforced server-side before route dispatch.
+func mcpAllowed(r *http.Request, role Role) bool {
+	path := r.URL.Path
+	if r.Method == http.MethodGet {
+		switch path {
+		case "/api/v1/runtime-health", "/api/v1/pools", "/api/v1/hosts",
+			"/api/v1/workers", "/api/v1/workers/history",
+			"/api/v1/workers/progress", "/api/v1/scalesets/status",
+			"/api/v1/fleet/versions":
+			return true
+		}
+		if strings.HasPrefix(path, "/api/v1/pools/") &&
+			strings.HasSuffix(path, "/health") {
+			parts := strings.Split(path, "/")
+			return len(parts) == 6 && parts[4] != "" && parts[5] == "health"
+		}
+		return false
+	}
+	if r.Method == http.MethodPost && role == RoleOperator {
+		parts := strings.Split(path, "/")
+		return len(parts) == 6 && parts[1] == "api" && parts[2] == "v1" &&
+			parts[3] == "pools" && parts[4] != "" && parts[5] == "workers"
+	}
+	return false
 }
