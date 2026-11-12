@@ -89,8 +89,8 @@ jobs:
           cleanup() {
             # The DinD sidecar joins the runner network namespace, so it must
             # be removed before the runner that owns that namespace.
-            docker rm -f "$sidecar" >/dev/null 2>&1 || true
-            docker rm -f "$runner" >/dev/null 2>&1 || true
+            docker rm -f -v "$sidecar" >/dev/null 2>&1 || true
+            docker rm -f -v "$runner" >/dev/null 2>&1 || true
             # The publisher runner is ephemeral, so root-owned DinD socket
             # state can be left in RUNNER_TEMP after containers are removed.
           }
@@ -113,6 +113,19 @@ jobs:
             --mount "type=bind,src=$run_dir,dst=/run/runnerhub-docker" \
             docker:29.8.1-dind@sha256:3f3c01aaaebf7cce837356b688b7c059a4749f10bd7660dec7c58fc454a283f0 \
             dockerd --host=unix:///run/runnerhub-docker/docker.sock --group="$docker_gid" >/dev/null
+
+          # Record the actual image-declared volume identities before
+          # teardown; Docker's `rm -v` must remove these anonymous volumes.
+          # The sidecar uses only bind mounts configured above, never a named
+          # user-managed volume.
+          sidecar_volumes="$(docker inspect "$sidecar" --format '{{range .Mounts}}{{if eq .Type "volume"}}{{.Name}} {{end}}{{end}}')"
+          if [[ -z "$sidecar_volumes" ]]; then
+            echo "DinD image declared no anonymous volumes to validate" >&2
+            exit 1
+          fi
+          for volume in $sidecar_volumes; do
+            docker volume inspect "$volume" >/dev/null
+          done
 
           for _ in $(seq 1 60); do
             if docker exec \
@@ -178,5 +191,13 @@ jobs:
               sh -c 'echo RunnerHub nested container passed'
 
           # Verify the cleanup dependency explicitly before the trap repeats it.
-          docker rm -f "$sidecar" >/dev/null
-          docker rm -f "$runner" >/dev/null
+          docker rm -f -v "$sidecar" >/dev/null
+          docker rm -f -v "$runner" >/dev/null
+          # All tracked image-declared anonymous volumes must be physically
+          # absent, not merely detached, after docker rm -v.
+          for volume in $sidecar_volumes; do
+            if docker volume inspect "$volume" >/dev/null 2>&1; then
+              echo "DinD anonymous sidecar volume was not reclaimed" >&2
+              exit 1
+            fi
+          done
