@@ -400,37 +400,7 @@ func (r *Reconciler) Once(ctx context.Context) (resultErr error) {
 	}
 
 	workflowFileCache := map[string]githubrunner.RepositoryFile{}
-	workflowClassifications := map[string]workflowparser.WorkflowClassification{}
-	workflowClassificationErrors := map[string]error{}
-	workersByRun := map[string]core.Worker{}
-	for _, worker := range candidates {
-		if worker.WorkflowRunAttempt <= 0 {
-			continue
-		}
-		key := runIdentityKey(worker.Repository, worker.WorkflowRunID, worker.WorkflowRunAttempt)
-		workersByRun[key] = worker
-	}
-	for key, run := range uniqueRuns {
-		worker, ok := workersByRun[key]
-		if !ok {
-			continue
-		}
-		if classification, cached := cachedWorkflowClassification(worker); cached {
-			workflowClassifications[key] = classification
-			continue
-		}
-		file, fileErr := r.workflowRepositoryFile(ctx, worker, run, workflowFileCache)
-		if fileErr != nil {
-			workflowClassificationErrors[key] = fileErr
-			continue
-		}
-		classification, classifyErr := workflowparser.ClassifyWorkflow(file.Content)
-		if classifyErr != nil {
-			workflowClassificationErrors[key] = classifyErr
-			continue
-		}
-		workflowClassifications[key] = classification
-	}
+	workflowClassifications, workflowClassificationErrors := r.classifyWorkflowRuns(ctx, candidates, uniqueRuns, workflowFileCache)
 	for _, worker := range candidates {
 		run, ok := runByWorker[worker.ID]
 		if !ok {
@@ -444,24 +414,7 @@ func (r *Reconciler) Once(ctx context.Context) (resultErr error) {
 		runKey := runIdentityKey(run.Repository, run.RunID, run.Attempt)
 		classification, classified := workflowClassifications[runKey]
 		if classificationErr := workflowClassificationErrors[runKey]; classificationErr != nil {
-			reason := ""
-			var unsupported *validationIdentityUnsupportedError
-			if errors.As(classificationErr, &unsupported) {
-				reason = unsupported.reason
-			} else if strings.Contains(strings.ToLower(classificationErr.Error()), "parse workflow") {
-				reason = validationExclusionWorkflowParse
-			} else {
-				// API/network failures are retryable. Do not cache them as an
-				// unclassified workflow or suppress the next metadata fetch.
-				errs = append(errs, fmt.Errorf("%s worker %s workflow classification: %w", normalizeRepository(worker.Repository), worker.ID, classificationErr))
-				continue
-			}
-			if reason == validationExclusionWorkflowParse {
-				errs = append(errs, fmt.Errorf("%s worker %s workflow classification: %w", normalizeRepository(worker.Repository), worker.ID, classificationErr))
-			}
-			if err := r.persistValidationExclusion(ctx, worker, reason); err != nil {
-				errs = append(errs, err)
-			}
+			errs = append(errs, r.workflowClassificationExclusionErrors(ctx, worker, classificationErr)...)
 			continue
 		}
 		if !classified {
@@ -470,22 +423,8 @@ func (r *Reconciler) Once(ctx context.Context) (resultErr error) {
 			}
 			continue
 		}
-		if classification.MutableSnapshotPublish &&
-			strings.EqualFold(run.Event, "push") &&
-			strings.EqualFold(strings.TrimSpace(run.HeadBranch), "main") {
-			if supersededAt, newer, ok := supersedingPublicationRun(run, uniqueRuns, workflowClassifications, worker.CompletedAt); ok {
-				if finding, ok := ciaudit.StaleSnapshotPublicationFinding(job, supersededAt, true); ok {
-					finding.Evidence = []string{
-						fmt.Sprintf("workflow purpose %q was derived from pinned step/action evidence", classification.Purpose),
-						strings.Join(classification.Evidence, "; "),
-						fmt.Sprintf("run %d (%s) was superseded by run %d (%s)", run.RunID, run.HeadSHA, newer.RunID, newer.HeadSHA),
-						fmt.Sprintf("newer main publication was created at %s", supersededAt.UTC().Format(time.RFC3339)),
-					}
-					if err := findingStore.UpsertCIFinding(ctx, normalizeRepository(worker.Repository), finding); err != nil {
-						errs = append(errs, err)
-					}
-				}
-			}
+		if err := r.persistStalePublicationFinding(ctx, findingStore, worker, job, run, uniqueRuns, workflowClassifications, classification); err != nil {
+			errs = append(errs, err)
 		}
 
 		if !classification.OrdinaryValidation {
@@ -543,6 +482,99 @@ func (r *Reconciler) Once(ctx context.Context) (resultErr error) {
 	}
 
 	return errors.Join(errs...)
+}
+
+// classifyWorkflowRuns caches one conservative interpretation per workflow
+// attempt. Transient source failures remain retryable rather than being
+// certified as ordinary validation.
+func (r *Reconciler) classifyWorkflowRuns(
+	ctx context.Context, candidates []core.Worker, uniqueRuns map[string]store.CIWorkflowRun,
+	workflowFileCache map[string]githubrunner.RepositoryFile,
+) (map[string]workflowparser.WorkflowClassification, map[string]error) {
+	classifications := map[string]workflowparser.WorkflowClassification{}
+	classificationErrors := map[string]error{}
+	workersByRun := map[string]core.Worker{}
+	for _, worker := range candidates {
+		if worker.WorkflowRunAttempt <= 0 {
+			continue
+		}
+		key := runIdentityKey(worker.Repository, worker.WorkflowRunID, worker.WorkflowRunAttempt)
+		workersByRun[key] = worker
+	}
+	for key, run := range uniqueRuns {
+		worker, ok := workersByRun[key]
+		if !ok {
+			continue
+		}
+		if classification, cached := cachedWorkflowClassification(worker); cached {
+			classifications[key] = classification
+			continue
+		}
+		file, fileErr := r.workflowRepositoryFile(ctx, worker, run, workflowFileCache)
+		if fileErr != nil {
+			classificationErrors[key] = fileErr
+			continue
+		}
+		classification, classifyErr := workflowparser.ClassifyWorkflow(file.Content)
+		if classifyErr != nil {
+			classificationErrors[key] = classifyErr
+			continue
+		}
+		classifications[key] = classification
+	}
+	return classifications, classificationErrors
+}
+
+// workflowClassificationExclusionErrors retains the existing distinction
+// between retryable GitHub failures and fail-closed parse/source exclusions.
+func (r *Reconciler) workflowClassificationExclusionErrors(ctx context.Context, worker core.Worker, classificationErr error) []error {
+	detail := fmt.Errorf("%s worker %s workflow classification: %w", normalizeRepository(worker.Repository), worker.ID, classificationErr)
+	reason := ""
+	var unsupported *validationIdentityUnsupportedError
+	if errors.As(classificationErr, &unsupported) {
+		reason = unsupported.reason
+	} else if strings.Contains(strings.ToLower(classificationErr.Error()), "parse workflow") {
+		reason = validationExclusionWorkflowParse
+	} else {
+		return []error{detail}
+	}
+	var errs []error
+	if reason == validationExclusionWorkflowParse {
+		errs = append(errs, detail)
+	}
+	if err := r.persistValidationExclusion(ctx, worker, reason); err != nil {
+		errs = append(errs, err)
+	}
+	return errs
+}
+
+// persistStalePublicationFinding only records independently verified mutable
+// main-branch publications; versioned/immutable releases are unaffected.
+func (r *Reconciler) persistStalePublicationFinding(
+	ctx context.Context, findingStore store.CIFindingStore, worker core.Worker,
+	job ciaudit.JobExecution, run store.CIWorkflowRun, uniqueRuns map[string]store.CIWorkflowRun,
+	classifications map[string]workflowparser.WorkflowClassification, classification workflowparser.WorkflowClassification,
+) error {
+	if !classification.MutableSnapshotPublish ||
+		!strings.EqualFold(run.Event, "push") ||
+		!strings.EqualFold(strings.TrimSpace(run.HeadBranch), "main") {
+		return nil
+	}
+	supersededAt, newer, ok := supersedingPublicationRun(run, uniqueRuns, classifications, worker.CompletedAt)
+	if !ok {
+		return nil
+	}
+	finding, ok := ciaudit.StaleSnapshotPublicationFinding(job, supersededAt, true)
+	if !ok {
+		return nil
+	}
+	finding.Evidence = []string{
+		fmt.Sprintf("workflow purpose %q was derived from pinned step/action evidence", classification.Purpose),
+		strings.Join(classification.Evidence, "; "),
+		fmt.Sprintf("run %d (%s) was superseded by run %d (%s)", run.RunID, run.HeadSHA, newer.RunID, newer.HeadSHA),
+		fmt.Sprintf("newer main publication was created at %s", supersededAt.UTC().Format(time.RFC3339)),
+	}
+	return findingStore.UpsertCIFinding(ctx, normalizeRepository(worker.Repository), finding)
 }
 
 func (r *Reconciler) findWorkerAttempt(ctx context.Context, scope core.GitHubScope, worker core.Worker, latest githubrunner.WorkflowRunMetadata, cache map[string][]githubrunner.WorkflowJob) (int, *githubrunner.WorkflowJob, error) {

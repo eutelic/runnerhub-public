@@ -112,3 +112,30 @@ jobs:
 		t.Fatal("malformed workflow must fail classification")
 	}
 }
+
+func TestClassifyWorkflowPinnedActionRegression(t *testing.T) {
+	tests := []struct {
+		name    string
+		action  string
+		with    string
+		want    WorkflowPurpose
+		mutable bool
+	}{
+		{name: "unpinned push action", action: "docker/build-push-action@v6", with: "push: true", want: PurposeUnknown},
+		{name: "pinned build only", action: "docker/build-push-action@0123456789012345678901234567890123456789", with: "push: false", want: PurposeBuild},
+		{name: "pinned immutable publish", action: "docker/build-push-action@0123456789012345678901234567890123456789", with: "push: true\n          tags: ghcr.io/example/app:sha-abc123", want: PurposeDeployment},
+		{name: "pinned mutable publish", action: "docker/build-push-action@0123456789012345678901234567890123456789", with: "push: true\n          tags: ghcr.io/example/app:latest", want: PurposeDeployment, mutable: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			source := "on: [push]\njobs:\n  check:\n    runs-on: self-hosted\n    steps:\n      - uses: " + tc.action + "\n        with:\n          " + tc.with + "\n"
+			got, err := ClassifyWorkflow([]byte(source))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.Purpose != tc.want || got.MutableSnapshotPublish != tc.mutable || got.OrdinaryValidation {
+				t.Fatalf("classification=%+v, want purpose=%v mutable=%v", got, tc.want, tc.mutable)
+			}
+		})
+	}
+}

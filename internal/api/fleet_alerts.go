@@ -220,10 +220,23 @@ func listenerAlertSignalUnknown(alert store.FleetAlert, pools []core.RunnerPool,
 	return connected > 0 && unknown
 }
 
+// detectServerFleetAlerts combines independent fleet signals and maintains
+// deterministic ordering for incident reconciliation. Maintenance suppresses
+// sampling entirely; no alert is inferred from intentionally idle hosts.
 func detectServerFleetAlerts(hosts []core.Host, pools []core.RunnerPool, workers []core.Worker, statuses []scaleSetStatusResponse, maintenancePaused bool, now time.Time) []fleetAlertCandidate {
 	if maintenancePaused {
 		return nil
 	}
+	out := detectOfflineHostAlerts(hosts, now)
+	out = append(out, detectListenerFleetAlerts(pools, statuses, now)...)
+	out = append(out, detectRuntimeFleetAlerts(pools, workers, now)...)
+	out = append(out, detectWorkerFleetAlerts(workers, now)...)
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out
+}
+
+// detectOfflineHostAlerts only reports sustained offline enrolled hosts.
+func detectOfflineHostAlerts(hosts []core.Host, now time.Time) []fleetAlertCandidate {
 	var out []fleetAlertCandidate
 	for _, host := range hosts {
 		if host.State != core.HostOffline || host.LastSeenAt.IsZero() || now.Sub(host.LastSeenAt) < fleetAlertSustainment {
@@ -235,6 +248,13 @@ func detectServerFleetAlerts(hosts []core.Host, pools []core.RunnerPool, workers
 			Href:   "/diagnostics.html", Severity: "warning", Cause: "host_offline", Type: "host", EntityID: host.ID,
 		})
 	}
+	return out
+}
+
+// detectListenerFleetAlerts distinguishes partial degradation from total loss
+// of confirmed, connected listener readiness.
+func detectListenerFleetAlerts(pools []core.RunnerPool, statuses []scaleSetStatusResponse, now time.Time) []fleetAlertCandidate {
+	var out []fleetAlertCandidate
 	statusByPool := make(map[string]scaleSetStatusResponse, len(statuses))
 	ready := 0
 	connected := 0
@@ -256,7 +276,7 @@ func detectServerFleetAlerts(hosts []core.Host, pools []core.RunnerPool, workers
 			ready++
 		}
 		staleReady := exists && status.State == "ready" && !statusFresh
-		if !maintenancePaused && exists && (status.State == "error" || status.State == "backing_off" || staleReady) {
+		if exists && (status.State == "error" || status.State == "backing_off" || staleReady) {
 			cause := "listener_error"
 			title := "Listener " + pool.Name + " " + status.State
 			detail := "The scale-set listener reports a sustained error or retry backoff. Check listener authentication, GitHub API access, and diagnostics."
@@ -273,48 +293,60 @@ func detectServerFleetAlerts(hosts []core.Host, pools []core.RunnerPool, workers
 			})
 		}
 	}
-	if !maintenancePaused && connected > 0 && ready == 0 && allStatusesKnown {
+	if connected > 0 && ready == 0 && allStatusesKnown {
 		out = append(out, fleetAlertCandidate{
 			ID: "listeners:none-ready", Title: "No connected scale-set listeners are ready",
 			Detail: "All enabled connected pools have reported listener state, but none is ready. Check listener diagnostics and GitHub access.",
 			Href:   "/diagnostics.html", Severity: "critical", Cause: "no_ready_listeners", Type: "fleet", EntityID: "listeners",
 		})
 	}
-	if !maintenancePaused {
-		connectedPools := map[string]struct{}{}
-		for _, pool := range pools {
-			if !pool.ScaleSetDisabled && pool.GitHubInstallationID > 0 {
-				connectedPools[pool.ID] = struct{}{}
-			}
-		}
-		for _, health := range fleet.RuntimeHealthByPool(pools, workers, now) {
-			if _, connected := connectedPools[health.PoolID]; !connected {
-				continue
-			}
-			if health.State != "degraded" || health.LastFailureAt.IsZero() || health.LastFailureAt.Before(now.Add(-24*time.Hour)) {
-				continue
-			}
-			poolName := health.PoolID
-			for _, pool := range pools {
-				if pool.ID == health.PoolID {
-					poolName = firstNonBlank(pool.Name, pool.ID)
-					break
-				}
-			}
-			var repository string
-			for _, pool := range pools {
-				if pool.ID == health.PoolID {
-					repository = fleetPoolRepository(pool)
-					break
-				}
-			}
-			out = append(out, fleetAlertCandidate{
-				ID: "runtime:" + health.PoolID, Title: "Runtime " + poolName + " degraded",
-				Detail: "Recent worker failure evidence is newer than the last successful job. Review sanitized runner diagnostics.",
-				Href:   "/diagnostics.html", Severity: "warning", Cause: "runtime_degraded", Type: "pool", EntityID: health.PoolID, Repo: repository,
-			})
+	return out
+}
+
+// detectRuntimeFleetAlerts uses observed worker runtime evidence only for
+// currently connected pools.
+func detectRuntimeFleetAlerts(pools []core.RunnerPool, workers []core.Worker, now time.Time) []fleetAlertCandidate {
+	var out []fleetAlertCandidate
+	connectedPools := map[string]struct{}{}
+	for _, pool := range pools {
+		if !pool.ScaleSetDisabled && pool.GitHubInstallationID > 0 {
+			connectedPools[pool.ID] = struct{}{}
 		}
 	}
+	for _, health := range fleet.RuntimeHealthByPool(pools, workers, now) {
+		if _, connected := connectedPools[health.PoolID]; !connected {
+			continue
+		}
+		if health.State != "degraded" || health.LastFailureAt.IsZero() || health.LastFailureAt.Before(now.Add(-24*time.Hour)) {
+			continue
+		}
+		poolName := health.PoolID
+		for _, pool := range pools {
+			if pool.ID == health.PoolID {
+				poolName = firstNonBlank(pool.Name, pool.ID)
+				break
+			}
+		}
+		var repository string
+		for _, pool := range pools {
+			if pool.ID == health.PoolID {
+				repository = fleetPoolRepository(pool)
+				break
+			}
+		}
+		out = append(out, fleetAlertCandidate{
+			ID: "runtime:" + health.PoolID, Title: "Runtime " + poolName + " degraded",
+			Detail: "Recent worker failure evidence is newer than the last successful job. Review sanitized runner diagnostics.",
+			Href:   "/diagnostics.html", Severity: "warning", Cause: "runtime_degraded", Type: "pool", EntityID: health.PoolID, Repo: repository,
+		})
+	}
+	return out
+}
+
+// detectWorkerFleetAlerts measures startup failures and cleanup backlog
+// independently; neither count is inferred from zero/no telemetry.
+func detectWorkerFleetAlerts(workers []core.Worker, now time.Time) []fleetAlertCandidate {
+	var out []fleetAlertCandidate
 	failures := map[string]int{}
 	for _, worker := range workers {
 		if worker.JobName != "" || worker.JobResult != "" || worker.WorkflowRunID != 0 || worker.State != core.WorkerFailed || worker.FailureReason == "" {
@@ -366,7 +398,6 @@ func detectServerFleetAlerts(hosts []core.Host, pools []core.RunnerPool, workers
 			Href:   "/diagnostics.html", Severity: "warning", Cause: "runner_startup_failures", Type: "pool", EntityID: poolID,
 		})
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return out
 }
 
