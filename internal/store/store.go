@@ -3,6 +3,8 @@ package store
 import (
 	"context"
 	"errors"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/eutelic/runnerhub/internal/agent"
@@ -57,6 +59,38 @@ type MaintenanceStore interface {
 // It is deliberately optional for store wrappers that do not persist agent results.
 type ProviderDeleteResultRecorder interface {
 	RecordProviderDeleteResult(context.Context, string, string, string, core.AuditEvent) (bool, error)
+}
+
+// ProviderDeleteSummary reports durable authenticated agent responses. These
+// records describe provider Delete calls, not independent physical reclamation.
+type ProviderDeleteSummary struct {
+	Reports             int64      `json:"reports"`
+	Failures            int64      `json:"failures"`
+	Measured            int64      `json:"measured"`
+	DurationTotalNanos  int64      `json:"durationTotalNanos"`
+	FirstObservedAt     *time.Time `json:"firstObservedAt,omitempty"`
+	LastObservedAt      *time.Time `json:"lastObservedAt,omitempty"`
+	Scope               string     `json:"scope"`
+	PhysicalReclamation bool       `json:"physicalReclamationVerified"`
+}
+
+// ProviderDeleteSummaryReader returns the durable coverage window for agent
+// delete responses independently of the process-local telemetry counters.
+type ProviderDeleteSummaryReader interface {
+	ProviderDeleteSummary(context.Context) (ProviderDeleteSummary, error)
+}
+
+func providerDeleteDuration(detail string) int64 {
+	for _, field := range strings.Fields(detail) {
+		if value, ok := strings.CutPrefix(field, "agent_duration_ns="); ok {
+			duration, err := strconv.ParseInt(value, 10, 64)
+			if err == nil && duration > 0 && duration <= int64(24*time.Hour) {
+				return duration
+			}
+			return 0
+		}
+	}
+	return 0
 }
 
 type Store interface {

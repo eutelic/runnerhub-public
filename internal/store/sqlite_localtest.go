@@ -188,7 +188,43 @@ func (s *SQLite) RecordProviderDeleteResult(_ context.Context, commandID, hostID
 	if s.providerDeleteSeen[commandID] {
 		return false, nil
 	}
+	if event.CreatedAt.IsZero() {
+		event.CreatedAt = time.Now().UTC()
+	}
 	s.providerDeleteSeen[commandID] = true
 	s.audit = append(s.audit, event)
 	return true, nil
+}
+
+func (s *SQLite) ProviderDeleteSummary(context.Context) (ProviderDeleteSummary, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var summary ProviderDeleteSummary
+	for _, event := range s.audit {
+		if event.Action != "provider_delete_result" {
+			continue
+		}
+		summary.Reports++
+		if event.Result == "agent_reported_failure" {
+			summary.Failures++
+		}
+		if duration := providerDeleteDuration(event.SafeDetail); duration > 0 {
+			summary.Measured++
+			if duration > int64(^uint64(0)>>1)-summary.DurationTotalNanos {
+				summary.DurationTotalNanos = int64(^uint64(0) >> 1)
+			} else {
+				summary.DurationTotalNanos += duration
+			}
+		}
+		observed := event.CreatedAt
+		if summary.FirstObservedAt == nil || observed.Before(*summary.FirstObservedAt) {
+			summary.FirstObservedAt = &observed
+		}
+		if summary.LastObservedAt == nil || observed.After(*summary.LastObservedAt) {
+			summary.LastObservedAt = &observed
+		}
+	}
+	summary.Scope = "durable-audit-ledger"
+	summary.PhysicalReclamation = false
+	return summary, nil
 }

@@ -53,6 +53,7 @@ CREATE TABLE IF NOT EXISTS audit_events(id INTEGER PRIMARY KEY AUTOINCREMENT, ac
 -- Retain command IDs for durable, exactly-once result observation across retries/restarts.
 CREATE TABLE IF NOT EXISTS provider_delete_results(command_id TEXT PRIMARY KEY, observed_at TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS idx_audit_created_at ON audit_events(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_audit_provider_delete ON audit_events(id) WHERE action='provider_delete_result';
 CREATE TABLE IF NOT EXISTS agent_commands(id TEXT PRIMARY KEY, host_id TEXT NOT NULL, worker_id TEXT NOT NULL, command_type TEXT NOT NULL, payload BLOB NOT NULL, created_at TEXT NOT NULL, lease_until TEXT, attempts INTEGER NOT NULL DEFAULT 0, acked_at TEXT);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_commands_active_semantic ON agent_commands(host_id, worker_id, command_type) WHERE acked_at IS NULL;
 CREATE INDEX IF NOT EXISTS idx_agent_commands_delivery ON agent_commands(host_id, acked_at, lease_until, created_at);
@@ -359,4 +360,47 @@ SELECT id,? FROM agent_commands WHERE id=? AND host_id=? AND worker_id=? AND com
 		return false, err
 	}
 	return true, nil
+}
+
+func (s *SQLite) ProviderDeleteSummary(ctx context.Context) (ProviderDeleteSummary, error) {
+	var summary ProviderDeleteSummary
+	rows, err := s.db.QueryContext(ctx, `SELECT result,safe_detail,created_at FROM audit_events WHERE action='provider_delete_result' ORDER BY id`)
+	if err != nil {
+		return summary, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var result, detail, createdAt string
+		if err := rows.Scan(&result, &detail, &createdAt); err != nil {
+			return summary, err
+		}
+		observedAt, err := time.Parse(time.RFC3339Nano, createdAt)
+		if err != nil {
+			return summary, err
+		}
+		summary.Reports++
+		if result == "agent_reported_failure" {
+			summary.Failures++
+		}
+		if summary.FirstObservedAt == nil || observedAt.Before(*summary.FirstObservedAt) {
+			summary.FirstObservedAt = &observedAt
+		}
+		if summary.LastObservedAt == nil || observedAt.After(*summary.LastObservedAt) {
+			summary.LastObservedAt = &observedAt
+		}
+		if durationNanos := providerDeleteDuration(detail); durationNanos > 0 {
+			summary.Measured++
+			if durationNanos > int64(^uint64(0)>>1)-summary.DurationTotalNanos {
+				summary.DurationTotalNanos = int64(^uint64(0) >> 1)
+			} else {
+				summary.DurationTotalNanos += durationNanos
+			}
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return summary, err
+	}
+	summary.Scope = "durable-audit-ledger"
+	summary.PhysicalReclamation = false
+	return summary, nil
 }

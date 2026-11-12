@@ -290,6 +290,40 @@ function showRepositoryAudit(repositories, pools, statuses, poolHealth) {
   }
 }
 
+function showCleanupEvidence(metrics){
+  const container=document.getElementById('cleanup-evidence');
+  if(!container)return;
+  container.replaceChildren();
+  const note=document.createElement('p');
+  if(!metrics?.ok||!metrics.value||typeof metrics.value!=='object'){
+    note.textContent='Cleanup metrics are unavailable.';
+    container.append(note);
+    return;
+  }
+  const current=metrics.value;
+  const history=current.providerDeleteHistory;
+  note.textContent='Current controller process: '+String(current.providerDeleteAttempts||0)+
+    ' provider-delete reports, '+String(current.providerDeleteFailures||0)+' failures; scope '+
+    String(current.scope||'unknown')+'.';
+  container.append(note);
+  const durable=document.createElement('p');
+  if(history){
+    const window=history.firstObservedAt&&history.lastObservedAt?
+      String(history.firstObservedAt)+' through '+String(history.lastObservedAt):'no durable observation window yet';
+    durable.textContent='Durable agent reports: '+String(history.reports||0)+' total, '+
+      String(history.failures||0)+' failures, '+String(history.measured||0)+' measured durations; coverage '+
+      window+'. Physical reclamation independently verified: '+
+      String(history.physicalReclamationVerified===true)+'.';
+  }else{
+    durable.textContent='Durable provider-delete history is unavailable in this controller version.';
+  }
+  container.append(durable);
+  const legacy=document.createElement('p');
+  legacy.textContent='cleanupTotal is a process-local duration, not a cleanup count: '+
+    String(current.cleanupTotal||0)+' ns.';
+  container.append(legacy);
+}
+
 async function buildBundle(){
   refreshButton.disabled=true;
   copyButton.disabled=true;
@@ -313,6 +347,7 @@ async function buildBundle(){
     if(workers.ok)workers.value=sortWorkers(workers.value);
     showReadiness(pools,scalesets,poolHealth);
     showRepositoryAudit(repositories,pools,scalesets,poolHealth);
+    showCleanupEvidence(metrics);
     incidentSnapshot=[fullWorkerEvidence,pools,hosts,scalesets,runtime];
     renderIncidents();
     if(auth.ok&&auth.value&&typeof auth.value==='object'){

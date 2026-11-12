@@ -2,12 +2,15 @@ package api
 
 import (
 	"errors"
-	"github.com/eutelic/runnerhub/internal/core"
-	"github.com/eutelic/runnerhub/internal/githubrunner"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/eutelic/runnerhub/internal/core"
+	"github.com/eutelic/runnerhub/internal/githubrunner"
+	"github.com/eutelic/runnerhub/internal/store"
+	"github.com/eutelic/runnerhub/internal/telemetry"
 )
 
 type scaleSetStatusResponse struct {
@@ -183,10 +186,22 @@ func (s *Service) audit(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, 200, v)
 }
-func (s *Service) metrics(w http.ResponseWriter, _ *http.Request) {
-	if s.Metrics == nil {
-		writeJSON(w, 200, map[string]int{})
-		return
+func (s *Service) metrics(w http.ResponseWriter, r *http.Request) {
+	current := telemetry.Snapshot{Scope: "process-local-volatile"}
+	if s.Metrics != nil {
+		current = s.Metrics.Snapshot()
 	}
-	writeJSON(w, 200, s.Metrics.Snapshot())
+	response := struct {
+		telemetry.Snapshot
+		ProviderDeleteHistory *store.ProviderDeleteSummary `json:"providerDeleteHistory,omitempty"`
+	}{Snapshot: current}
+	if reader, ok := s.Store.(store.ProviderDeleteSummaryReader); ok {
+		summary, err := reader.ProviderDeleteSummary(r.Context())
+		if err != nil {
+			problem(w, http.StatusInternalServerError, errors.New("failed to load durable provider-delete evidence"))
+			return
+		}
+		response.ProviderDeleteHistory = &summary
+	}
+	writeJSON(w, 200, response)
 }
