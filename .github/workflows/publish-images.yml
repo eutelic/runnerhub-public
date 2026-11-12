@@ -1,4 +1,5 @@
 name: publish-images
+run-name: RunnerHub publish ${{ inputs.request_id || github.sha }}
 
 on:
   # CI still runs on main merges; publishing is an explicit operation.
@@ -8,6 +9,10 @@ on:
       - 'v*'
   workflow_dispatch:
     inputs:
+      request_id:
+        description: "Optional opaque request ID for Dev Control Plane publish tracking"
+        type: string
+        required: false
       redeploy_runnerhub:
         description: "Drain RunnerHub CI and redeploy the control image after publishing"
         type: boolean
