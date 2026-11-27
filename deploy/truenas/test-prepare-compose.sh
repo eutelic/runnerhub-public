@@ -104,7 +104,7 @@ bash "$prepare" \
   --github-app-id 42424242 \
   --github-client-id Iv1.managed \
   --github-app-slug runnerhub-managed \
-  --public-url http://TRUENAS_HOST:8787 \
+  --public-url http://runnerhub.example.test:8787 \
   --github-app-key-path "$managed_key" \
   --github-client-secret-path "$managed_client_secret" \
   --output "$managed"
