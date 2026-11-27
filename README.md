@@ -8,6 +8,8 @@ RunnerHub is a control plane for running GitHub Actions on compute you already o
 
 The default target is **trusted private-repository CI** with ephemeral workers. RunnerHub keeps long-lived GitHub credentials in trusted control components, hands workers only short-lived JIT configuration, schedules pools across hosts, reconciles provider and GitHub state independently, and removes workers by exact identity.
 
+> **Portfolio mirror:** This copy is for source review and resume display. GitHub Actions should remain disabled; the checked-in workflows target private RunnerHub self-hosted runners.
+
 **Start with the [alpha quickstart](docs/QUICKSTART.md)** for the complete GitHub App → Docker host → automatic first-job path. For TrueNAS SCALE, use the dedicated [TrueNAS Custom App guide](deploy/truenas/README.md).
 
 For KVM-backed Android emulator CI, see [dedicated native emulator host setup](docs/ANDROID_EMULATOR_RUNNERS.md). This requires a verified Linux amd64 process host; ordinary TrueNAS Docker workers do not expose KVM.
