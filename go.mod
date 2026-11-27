@@ -4,7 +4,7 @@ go 1.26.11
 
 require (
 	github.com/gorilla/websocket v1.5.3
-	github.com/modelcontextprotocol/go-sdk v1.7.0
+	github.com/modelcontextprotocol/go-sdk v1.8.0
 	github.com/rhysd/actionlint v1.7.12
 	modernc.org/sqlite v1.61.1
 )
